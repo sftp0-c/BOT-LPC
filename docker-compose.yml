@@ -1,0 +1,23 @@
+services:
+  bot:
+    build:
+      context: .
+      args:
+        INSTALL_RU_CA: "1"
+    image: bot-lpc:latest
+    container_name: bot-lpc
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8080"
+      DATABASE_PATH: /app/data/database.db
+    ports:
+      # Только localhost: HTTPS для webhook отдаёт обратный прокси (Caddy / nginx), см. README.
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - bot_data:/app/data
+
+volumes:
+  bot_data:
+    name: bot-lpc-data

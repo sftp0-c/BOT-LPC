@@ -7,3 +7,4 @@ __pycache__/
 .venv/
 venv/
 data/
+.pytest_cache/
