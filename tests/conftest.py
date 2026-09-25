@@ -4,7 +4,11 @@ import bot
 import config
 import database as db
 
+from itertools import count
+
 BOT_ID = 999
+
+_click_seq = count(1)
 
 
 class FakeAPI:
@@ -50,10 +54,15 @@ def msg(user, text):
 
 
 def click(user, payload):
-    # как в реальном MAX: message.sender — бот, нажавший пользователь — в callback.user
+    # как в реальном MAX: message.sender — бот, нажавший пользователь — в callback.user,
+    # а callback_id уникален для каждого нажатия (нужно для проверок дедупликации)
     return {
         "update_type": "message_callback",
-        "callback": {"callback_id": "cb-" + payload, "payload": payload, "user": {"user_id": int(user)}},
+        "callback": {
+            "callback_id": f"cb-{next(_click_seq)}-{payload}",
+            "payload": payload,
+            "user": {"user_id": int(user)},
+        },
         "message": {
             "sender": {"user_id": BOT_ID, "is_bot": True},
             "recipient": {"chat_id": 1, "chat_type": "dialog"},

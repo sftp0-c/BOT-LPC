@@ -4,6 +4,7 @@
 Режим определяется настройкой MAX_WEBHOOK_URL: задан — webhook, пусто — long polling.
 """
 import asyncio
+import hashlib
 import hmac
 import logging
 from collections import defaultdict
@@ -810,6 +811,36 @@ async def run_broadcast(sender: str, aud: str, text: str):
 _locks: defaultdict = defaultdict(asyncio.Lock)  # один пользователь — один обработчик за раз
 
 
+def update_key(u: dict):
+    """Уникальный «отпечаток» события для защиты от дублей доставки.
+
+    MAX доставляет события с гарантией «как минимум один раз»: long polling
+    может переотдать события после обрыва соединения, webhook — повторить по
+    своей политике ретраев, а два процесса бота могут забрать одно событие
+    одновременно. Возвращает ключ, на котором бот делает дедупликацию, или
+    None, если отпечаток построить нельзя (событие пропустит дедупликацию).
+    """
+    kind = u.get("update_type")
+    if kind == "message_callback":
+        cid = ((u.get("callback") or {}).get("callback_id"))
+        return f"cb:{cid}" if cid else None
+    if kind == "message_created":
+        m = u.get("message") or {}
+        ts = m.get("timestamp") or u.get("timestamp")
+        chat = (m.get("recipient") or {}).get("chat_id")
+        uid = (m.get("sender") or {}).get("user_id")
+        text = (m.get("body") or {}).get("text")
+        if ts is None or chat is None or uid is None:
+            return None
+        digest = hashlib.sha1(s(text).encode("utf-8", "ignore")).hexdigest()[:16]
+        return f"mc:{chat}:{ts}:{uid}:{digest}"
+    if kind == "bot_started":
+        ts = u.get("timestamp")
+        uid = (u.get("user") or {}).get("user_id")
+        return f"bs:{uid}:{ts}" if ts is not None and uid is not None else None
+    return None
+
+
 def sender_id(u: dict) -> str:
     """ID пользователя, который действовал.
 
@@ -826,6 +857,14 @@ def sender_id(u: dict) -> str:
 
 
 async def process(u: dict):
+    key = update_key(u)
+    if key:
+        try:
+            if not await db.mark_processed(key):
+                log.debug("Пропускаю повторную доставку события %s", key)
+                return
+        except Exception as exc:  # сбой базы не должен ронять обработку события
+            log.warning("не удалось отметить событие %s: %s", key, exc)
     x = ""
     try:
         kind = u.get("update_type")
@@ -882,6 +921,14 @@ async def lifespan(app: FastAPI):
     await db.init_db()
     poller = None
     if config.WEBHOOK_URL:
+        try:  # удаляем старую подписку с этим URL, чтобы при рестартах не было двойной доставки
+            for sub in await api.subscriptions():
+                if sub.get("url") == config.WEBHOOK_URL:
+                    await api.unsubscribe(config.WEBHOOK_URL)
+                    log.info("Удалена прежняя подписка %s (защита от дублей событий)", config.WEBHOOK_URL)
+                    break
+        except Exception as exc:
+            log.warning("не удалось проверить/очистить подписки: %s", exc)
         await api.subscribe(config.WEBHOOK_URL, config.WEBHOOK_SECRET)
         log.info("Webhook зарегистрирован: %s", config.WEBHOOK_URL)
     else:

@@ -65,6 +65,10 @@ CREATE TABLE IF NOT EXISTS broadcasts(
     failed     INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS processed_updates(
+    key        TEXT PRIMARY KEY,                         -- отпечаток события (см. bot.update_key)
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -179,3 +183,20 @@ async def add_ticket_message(ticket_id: int, sender_id: str, role: str, text: st
 
 async def set_ticket_status(ticket_id: int, status: str) -> None:
     await run("UPDATE tickets SET status=?, updated_at=datetime('now') WHERE ticket_id=?", (status, ticket_id))
+
+
+# ── защита от дублей событий ───────────────────────────────────────────────
+async def mark_processed(key: str, ttl_hours: int = 24) -> bool:
+    """Помечает событие обработанным. True — событие новое, False — дубль.
+
+    MAX доставляет события «как минимум один раз»: long polling может
+    переотдать события после обрыва, webhook — повторить по своей политике,
+    а два процесса/воркера бота могут забрать одно событие. Атомарный
+    INSERT OR IGNORE гарантирует, что один ключ разовьётся ровно один раз,
+    даже при конкурентной обработке. Старые записи вычищаются по TTL.
+    """
+    async with _conn() as c:
+        cur = await c.execute("INSERT OR IGNORE INTO processed_updates(key) VALUES(?)", (key,))
+        await c.execute("DELETE FROM processed_updates WHERE created_at < datetime('now', ?)", (f"-{ttl_hours} hours",))
+        await c.commit()
+        return cur.rowcount > 0

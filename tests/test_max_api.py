@@ -1,8 +1,9 @@
 import json
 
 import httpx
+import pytest
 
-from max_api import MaxAPI, btn, split_text
+from max_api import MaxAPI, MaxAPIError, btn, split_text
 
 
 def make_api(handler):
@@ -56,15 +57,73 @@ async def test_updates_params_and_error_handling():
 
 
 async def test_http_error_raises():
-    import pytest
-
-    from max_api import MaxAPIError
-
     api = make_api(lambda r: httpx.Response(401, json={"message": "unauthorized"}))
     with pytest.raises(MaxAPIError) as info:
         await api.send(1, "x")
     assert info.value.status == 401
     await api.close()
+
+
+async def test_send_is_not_retried_on_connect_error():
+    """POST /messages не повторяется при обрыве: первая попытка могла быть применена,
+    повтор создал бы пользователю дубликат сообщения."""
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        raise httpx.ConnectError("connection refused")
+
+    api = make_api(handler)
+    with pytest.raises(httpx.ConnectError):
+        await api.send(1, "важное сообщение")
+    await api.close()
+    assert calls == 1
+
+
+async def test_updates_is_retried_on_connect_error():
+    """GET /updates идемпотентен — его можно и нужно повторять при обрыве."""
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        raise httpx.ConnectError("connection refused")
+
+    api = make_api(handler)
+    with pytest.raises(httpx.ConnectError):
+        await api.updates(1, timeout=1)
+    await api.close()
+    assert calls == 3
+
+
+async def test_send_retries_on_429_but_not_on_500():
+    """429 — сервер явно отклонил; 500 после применения — повтор создаст дубль."""
+    responses = [httpx.Response(429, json={})]
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        return responses.pop(0) if responses else httpx.Response(200, json={})
+
+    api = make_api(handler)
+    await api.send(1, "привет")
+    await api.close()
+    assert calls == 2
+
+    calls = 0
+
+    def handler_500(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(503, json={})
+
+    api = make_api(handler_500)
+    with pytest.raises(Exception):
+        await api.send(1, "привет")
+    await api.close()
+    assert calls == 1
 
 
 def test_split_text_keeps_everything():

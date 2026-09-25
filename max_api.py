@@ -99,14 +99,22 @@ class MaxAPI:
         if slot > now:
             await asyncio.sleep(slot - now)
 
+    # Идемпотентные методы: их можно безопасно повторить после обрыва соединения.
+    # POST (отправка/подтверждение) не повторяем: запрос мог быть применён
+    # сервером до обрыва — повтор создал бы пользователю дубликат сообщения.
+    _SAFE_METHODS = {"GET", "DELETE"}
+
     async def _request(self, method: str, path: str, *, params=None, json=None, timeout=None, retry_5xx=False):
+        safe = method in self._SAFE_METHODS
         last: Exception | None = None
         for attempt in range(1, 4):
             await self._global_wait()
             try:
                 resp = await self._http().request(method, path, params=params, json=json, timeout=timeout)
-            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:  # запрос гарантированно не дошёл
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
                 last = exc
+                if not safe or attempt == 3:
+                    break
                 log.warning("MAX API недоступен (%s), попытка %s/3", exc, attempt)
                 await asyncio.sleep(attempt)
                 continue

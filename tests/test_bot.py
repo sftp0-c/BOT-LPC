@@ -233,7 +233,7 @@ async def test_bot_started_and_callback_answer(api):
     await bot.process({"update_type": "bot_started", "user": {"user_id": 100}})
     assert "ФИО" in api.last("100")[1]
     await bot.process(click("100", "home"))
-    assert api.answers == ["cb-home"]
+    assert api.answers and api.answers[-1].startswith("cb-")
 
 
 async def test_handler_error_does_not_crash_and_user_is_told(api, monkeypatch):
@@ -245,6 +245,54 @@ async def test_handler_error_does_not_crash_and_user_is_told(api, monkeypatch):
     monkeypatch.setitem(bot.CALLBACKS, "profile", boom)
     await press(STUDENT, "profile")
     assert "пошло не так" in api.last(STUDENT)[1]
+
+
+# ── защита от дублей доставки ─────────────────────────────────────────────
+
+
+async def test_redelivered_callback_is_processed_once(api):
+    """Повторная доставка того же нажатия (webhook retry / long polling) не дублирует ответ."""
+    await register(STUDENT)
+    api.sent.clear()
+    dup = click(STUDENT, "profile")
+    await bot.process(dup)
+    assert "Профиль" in api.last(STUDENT)[1]
+    api.sent.clear()
+    await bot.process(dup)
+    assert not api.to(STUDENT), "повторно доставленный callback не должен обрабатываться"
+
+
+async def test_redelivered_message_is_processed_once(api):
+    api.sent.clear()
+    dup = {
+        "update_type": "message_created",
+        "message": {
+            "sender": {"user_id": int(STUDENT), "is_bot": False},
+            "recipient": {"chat_id": int(STUDENT), "chat_type": "dialog"},
+            "timestamp": 1710000000000,
+            "body": {"text": "/id"},
+        },
+    }
+    await bot.process(dup)
+    await bot.process(dup)
+    assert len(api.to(STUDENT)) == 1, "ответ /id должен прийти ровно один раз"
+
+
+async def test_redelivered_bot_started_is_processed_once(api):
+    dup = {"update_type": "bot_started", "user": {"user_id": int(STUDENT)}, "timestamp": 1700000000000}
+    await bot.process(dup)
+    api.sent.clear()
+    await bot.process(dup)
+    assert not api.to(STUDENT)
+
+
+async def test_distinct_callback_presses_are_all_processed(api):
+    """Разные нажатия одной кнопки (разные callback_id) обрабатываются все."""
+    await register(STUDENT)
+    api.sent.clear()
+    await bot.process(click(STUDENT, "profile"))
+    await bot.process(click(STUDENT, "profile"))
+    assert len(api.to(STUDENT)) == 2, "два разных нажатия — два ответа"
 
 
 # ── webhook ─────────────────────────────────────────────────────────────────
