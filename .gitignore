@@ -1,11 +1,3 @@
-# Environment
-.env
-.env.local
-
-# Python compiled files
 __pycache__/
 *.pyc
-# Local run artifacts (Windows start.bat)
-.venv/
-data/
-bot-lpc-updates.zip
+bot-lpc.zip
