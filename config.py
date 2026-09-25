@@ -6,6 +6,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _split_ids(name: str) -> list[str]:
+    """Список MAX ID из переменной окружения: цифры, разделители «,;» и пробелы.
+
+    Нецифровые токены игнорируются — их видно в предупреждении validate().
+    """
+    return [t for t in re.split(r"[,;\s]+", os.getenv(name, "").strip()) if t.isdigit()]
+
 # Значения-заглушки из .env.example считаются «не заданными».
 _PLACEHOLDERS = {"PASTE_YOUR_MAX_BOT_TOKEN_HERE", "YOUR_MAX_USER_ID", "change_me_to_random_secret"}
 
@@ -22,7 +30,8 @@ MAX_API_URL = _get("MAX_API_URL", "https://platform-api2.max.ru").rstrip("/")
 # Пусто — бот работает через long polling.
 WEBHOOK_URL = _get("MAX_WEBHOOK_URL")
 WEBHOOK_SECRET = _get("MAX_WEBHOOK_SECRET")
-SUPERADMIN_IDS = re.findall(r"\d+", os.getenv("SUPERADMIN_IDS", ""))
+SUPERADMIN_IDS = _split_ids("SUPERADMIN_IDS")  # старое имя переменной — для совместимости
+SYSADMIN_IDS = sorted(set(_split_ids("SYSADMIN_IDS")) | set(SUPERADMIN_IDS))
 DATABASE_PATH = _get("DATABASE_PATH", "data/database.db")
 # Необязательный путь к PEM-файлу с доверенными сертификатами (если нужен свой набор CA).
 CA_BUNDLE = _get("MAX_CA_BUNDLE")
@@ -42,9 +51,9 @@ def validate() -> list[str]:
                 "MAX_WEBHOOK_SECRET должен быть длиной 5–256 символов из набора A-Z a-z 0-9 _ - "
                 "(и не значением по умолчанию из .env.example)"
             )
-    if not SUPERADMIN_IDS:
+    if not SYSADMIN_IDS:
         warnings.append(
-            "SUPERADMIN_IDS не задан: напишите боту /id, впишите свой ID в .env и перезапустите бота"
+            "SYSADMIN_IDS не задан: напишите боту /id, впишите свой ID в .env и перезапустите бота"
         )
     if errors:
         raise RuntimeError("Ошибка настройки: " + "; ".join(errors))

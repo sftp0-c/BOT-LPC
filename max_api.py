@@ -28,9 +28,12 @@ class MaxAPIError(Exception):
         self.body = body
 
 
+MAX_PAYLOAD = 1024  # предельная длина callback-payload по спецификации MAX API
+
+
 def btn(text: str, payload: str) -> dict:
-    """Callback-кнопка (payload ≤ 1024 символов)."""
-    return {"type": "callback", "text": text[:128], "payload": payload}
+    """Callback-кнопка (payload ≤ 1024 символов — усекается при превышении)."""
+    return {"type": "callback", "text": text[:128], "payload": payload[:MAX_PAYLOAD]}
 
 
 def link_btn(text: str, url: str) -> dict:
@@ -142,7 +145,12 @@ class MaxAPI:
             if keyboard and i == len(parts) - 1:
                 body["attachments"] = [{"type": "inline_keyboard", "payload": {"buttons": keyboard}}]
             await self._user_wait(user_id)
-            result = await self._request("POST", "/messages", params={"user_id": int(user_id)}, json=body)
+            # user_id в системе — строка; MAX API ожидает числовой id
+            try:
+                uid: int | str = int(user_id)
+            except (TypeError, ValueError):
+                uid = user_id
+            result = await self._request("POST", "/messages", params={"user_id": uid}, json=body)
         return result
 
     async def answer(self, callback_id: str, notification: str | None = None) -> None:
