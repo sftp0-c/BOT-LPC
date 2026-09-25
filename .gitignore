@@ -1,10 +1,7 @@
+# Environment
 .env
-*.db
-*.sqlite
-*.sqlite3
+.env.local
+
+# Python compiled files
 __pycache__/
 *.pyc
-.venv/
-venv/
-data/
-.pytest_cache/

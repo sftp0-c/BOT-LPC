@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS users(
 CREATE TABLE IF NOT EXISTS admins(
     user_id         TEXT PRIMARY KEY,
     full_name       TEXT NOT NULL,
-    role_type       TEXT NOT NULL DEFAULT 'staff',      -- staff | superadmin
+    role_type       TEXT NOT NULL DEFAULT 'staff',      -- staff | sysadmin (сис-админ)
     ticket_category TEXT NOT NULL DEFAULT 'all',        -- feedback | certificates | all
     can_broadcast   INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS ticket_messages(
 CREATE INDEX IF NOT EXISTS idx_ticket_messages ON ticket_messages(ticket_id);
 CREATE TABLE IF NOT EXISTS schedules(
     group_code TEXT PRIMARY KEY,
-    pdf_url    TEXT NOT NULL
+    pdf_url    TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS settings(
     key   TEXT PRIMARY KEY,
@@ -89,10 +90,10 @@ async def init_db() -> None:
     async with _conn() as c:
         await c.execute("PRAGMA journal_mode=WAL")
         await c.executescript(SCHEMA)
-        for admin_id in config.SUPERADMIN_IDS:
+        for admin_id in config.SYSADMIN_IDS:
             await c.execute(
-                "INSERT INTO admins(user_id, full_name, role_type, can_broadcast) VALUES(?, 'Superadmin', 'superadmin', 1) "
-                "ON CONFLICT(user_id) DO UPDATE SET role_type='superadmin', can_broadcast=1",
+                "INSERT INTO admins(user_id, full_name, role_type, can_broadcast) VALUES(?, 'Сис-админ', 'sysadmin', 1) "
+                "ON CONFLICT(user_id) DO UPDATE SET role_type='sysadmin', can_broadcast=1",
                 (admin_id,),
             )
         await c.commit()
@@ -149,40 +150,7 @@ async def set_setting(key: str, value: str) -> None:
     )
 
 
-# ── обращения ─────────────────────────────────────────────────────────────────
-async def create_ticket(student_id: str, admin_id: str, category: str, text: str) -> int:
-    """Создаёт обращение и его первое сообщение в одной транзакции."""
-    async with _conn() as c:
-        cur = await c.execute(
-            "INSERT INTO tickets(student_id, target_admin_id, category, text_content) VALUES(?,?,?,?)",
-            (student_id, admin_id, category, text),
-        )
-        ticket_id = cur.lastrowid
-        await c.execute(
-            "INSERT INTO ticket_messages(ticket_id, sender_id, sender_role, text) VALUES(?,?,?,?)",
-            (ticket_id, student_id, "student", text),
-        )
-        await c.commit()
-    return ticket_id
-
-
-async def add_ticket_message(ticket_id: int, sender_id: str, role: str, text: str, new_status: str | None = None) -> None:
-    async with _conn() as c:
-        await c.execute(
-            "INSERT INTO ticket_messages(ticket_id, sender_id, sender_role, text) VALUES(?,?,?,?)",
-            (ticket_id, sender_id, role, text),
-        )
-        if new_status:
-            await c.execute(
-                "UPDATE tickets SET status=?, updated_at=datetime('now') WHERE ticket_id=?", (new_status, ticket_id)
-            )
-        else:
-            await c.execute("UPDATE tickets SET updated_at=datetime('now') WHERE ticket_id=?", (ticket_id,))
-        await c.commit()
-
-
-async def set_ticket_status(ticket_id: int, status: str) -> None:
-    await run("UPDATE tickets SET status=?, updated_at=datetime('now') WHERE ticket_id=?", (status, ticket_id))
+# Примечание: SQL-запросы по обращениям вынесены в repository.py (слой запросов).
 
 
 # ── защита от дублей событий ───────────────────────────────────────────────
