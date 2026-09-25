@@ -1,10 +1,84 @@
-"""Панель сис-админа: сотрудники, расписания групп, настройки, статистика."""
+"""Панель сис-админа: сотрудники, справочник групп, расписания, настройки, статистика."""
+import ipaddress
+import time
+from urllib.parse import urlsplit
+
+import httpx
+
+import config
 import database as db
 import repository as repo
-from handlers.common import BACK, DEFAULT_WELCOME, admin_of, api, is_super, need_super, notify
+from handlers.common import BACK, DEFAULT_WELCOME, admin_of, api, is_super, log, need_super, notify, spawn
 from handlers.registry import callback, state
 from max_api import btn
-from utils import STAFF_CATS, STATUS, norm_group, short
+from utils import STAFF_CATS, STATUS, as_str, norm_group, short, tail_file, valid_group
+
+
+# ── общие мелочи для строк из БД ─────────────────────────────────────────────
+def _field(row, *names: str, default: str = "") -> str:
+    for name in names:
+        try:
+            value = row[name]
+        except (KeyError, IndexError, TypeError):
+            continue
+        if value is not None:
+            return as_str(value)
+    return default
+
+
+def _flag(value) -> bool:
+    return as_str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def staff_id_of(a) -> str:
+    return _field(a, "id", "user_id", "admin_id")
+
+
+def role_of(a) -> str:
+    return _field(a, "role", "role_type", "position")
+
+
+def office_of(a) -> str:
+    return _field(a, "office", "room")
+
+
+# ── должности сотрудников ────────────────────────────────────────────────────
+STAFF_ROLES = {
+    "director": "👔 Директор",
+    "deputy_uvr": "👥 Заместитель директора по УВР",
+    "deputy_upr": "👥 Заместитель директора по УПР",
+    "deputy_unr": "👥 Заместитель директора по УНР",
+    "social_pedagogue": "🧑‍🏫 Социальный педагог",
+}
+
+
+def role_text(a) -> str:
+    return STAFF_ROLES.get(role_of(a), "не назначена")
+
+
+def sysadmin_ids() -> list[str]:
+    return [str(i) for i in (config.SYSADMIN_IDS or [])]
+
+
+async def audit(actor: str, text: str) -> None:
+    for uid in sysadmin_ids():
+        if uid != str(actor):
+            await notify(uid, f"🔔 {text}")
+
+
+async def notify_schedule_subscribers(group: str, text: str) -> None:
+    getter = getattr(repo, "schedule_subscribers", None)
+    if getter is None:
+        return
+    try:
+        subscribers = await getter(norm_group(as_str(group)))
+    except Exception:
+        return
+    for user_id in subscribers or []:
+        try:
+            await notify(user_id, text)
+        except Exception:
+            continue
 
 
 # ── статистика ────────────────────────────────────────────────────────────────
@@ -49,20 +123,25 @@ async def send_staff_card(x: str, staff_id: str):
     a = await admin_of(staff_id)
     if not a or is_super(a):
         return await api.send(x, "Сотрудник не найден.", [[btn("↩️ К списку", "admins")]])
+    sid = staff_id_of(a) or as_str(staff_id)
+    cat = _field(a, "ticket_category", default="all") or "all"
     text = (
-        f"👤 {a['full_name']}\nMAX ID: {a['user_id']}\nОбращения: {STAFF_CATS[a['ticket_category']]}\n"
-        f"Рассылка: {'разрешена' if a['can_broadcast'] else 'запрещена'}"
+        f"👤 {_field(a, 'full_name')}\nMAX ID: {sid}\n"
+        f"Должность: {role_text(a)}\nКабинет: {office_of(a) or '—'}\n"
+        f"Обращения: {STAFF_CATS.get(cat, cat)}\n"
+        f"Рассылка: {'разрешена' if _flag(_field(a, 'can_broadcast', default='0')) else 'запрещена'}"
     )
-    cat_row = [btn(("● " if code == a["ticket_category"] else "") + label, f"sfc:{staff_id}:{code}")
+    cat_row = [btn(("● " if code == cat else "") + label, f"sfc:{sid}:{code}")
                for code, label in STAFF_CATS.items()]
+    cat_rows = [cat_row[i:i + 2] for i in range(0, len(cat_row), 2)]
     await api.send(
         x,
         text,
         [
-            cat_row[:2],
-            cat_row[2:],
-            [btn("📢 Рассылка: " + ("запретить" if a["can_broadcast"] else "разрешить"), f"sfb:{staff_id}")],
-            [btn("🗑 Удалить", f"sfd:{staff_id}"), btn("↩️ К списку", "admins")],
+            [btn("✏️ Должность", f"sfr:{sid}"), btn("🏢 Кабинет", f"sfo:{sid}")],
+            *cat_rows,
+            [btn("📢 Рассылка: " + ("запретить" if _flag(_field(a, "can_broadcast", default="0")) else "разрешить"), f"sfb:{sid}")],
+            [btn("🗑 Удалить", f"sfd:{sid}"), btn("↩️ К списку", "admins")],
         ],
     )
 
@@ -71,6 +150,61 @@ async def send_staff_card(x: str, staff_id: str):
 async def cb_staff_card(x, arg):
     if await need_super(x):
         await send_staff_card(x, arg)
+
+
+@callback("sfr")
+async def cb_staff_role_pick(x, arg):
+    if not await need_super(x):
+        return
+    a = await admin_of(arg)
+    if not a or is_super(a):
+        return await send_staff_card(x, arg)
+    current = role_of(a)
+    await api.send(
+        x,
+        f"Должность сотрудника {_field(a, 'full_name')}:",
+        [
+            [btn(("● " if code == current else "") + label, f"srset:{staff_id_of(a) or as_str(arg)}:{code}")]
+            for code, label in STAFF_ROLES.items()
+        ],
+    )
+
+
+@callback("srset")
+async def cb_staff_role_set(x, arg):
+    sid, _, role = arg.partition(":")
+    a = await admin_of(sid)
+    if await need_super(x) and a and not is_super(a) and role in STAFF_ROLES:
+        await repo.set_admin_profile(sid, role=role)
+        await send_staff_card(x, sid)
+
+
+@callback("sfo")
+async def cb_staff_office_ask(x, arg):
+    if not await need_super(x):
+        return
+    a = await admin_of(arg)
+    if not a or is_super(a):
+        return await send_staff_card(x, arg)
+    await db.set_state(x, "staff_office", {"admin_id": staff_id_of(a) or as_str(arg)})
+    await api.send(x, f"Отправьте кабинет сотрудника {_field(a, 'full_name')} (например, 214) или /cancel.")
+
+
+@state("staff_office")
+async def st_staff_office(x, text, p):
+    if not await need_super(x):
+        return await db.clear_state(x)
+    sid = as_str((p or {}).get("admin_id"))
+    a = await admin_of(sid)
+    if not a or is_super(a):
+        await db.clear_state(x)
+        return await send_staff_card(x, sid)
+    office = short(text, 100)
+    if not office:
+        return await api.send(x, "Введите кабинет сотрудника.")
+    await repo.set_admin_profile(sid, office=office)
+    await db.clear_state(x)
+    await send_staff_card(x, sid)
 
 
 @callback("sfc")
@@ -86,7 +220,7 @@ async def cb_staff_category(x, arg):
 async def cb_staff_broadcast(x, arg):
     a = await admin_of(arg)
     if await need_super(x) and a and not is_super(a):
-        await repo.set_staff_broadcast(arg, not a["can_broadcast"])
+        await repo.set_staff_broadcast(arg, not _flag(_field(a, "can_broadcast", default="0")))
         await send_staff_card(x, arg)
 
 
@@ -94,7 +228,7 @@ async def cb_staff_broadcast(x, arg):
 async def cb_staff_delete_ask(x, arg):
     a = await admin_of(arg)
     if await need_super(x) and a and not is_super(a):
-        await api.send(x, f"Удалить сотрудника {a['full_name']}?",
+        await api.send(x, f"Удалить сотрудника {_field(a, 'full_name')}?",
                        [[btn("🗑 Да, удалить", f"sfdy:{arg}"), btn("Отмена", f"sf:{arg}")]])
 
 
@@ -150,7 +284,183 @@ async def st_add_staff_name(x, text, p):
     await send_staff_card(x, p["id"])
 
 
+# ── справочник групп ──────────────────────────────────────────────────────────
+GROUP_HINT = ("Код группы состоит из букв, цифр, дефисов и точек (без пробелов), до 30 символов.\n"
+              "Например: ИС-21. Попробуйте ещё раз.")
+
+
+async def list_groups(active_only: bool = False):
+    lister = getattr(repo, "list_groups", None) or getattr(repo, "groups", None)
+    return await lister(active_only=active_only) if lister is not None else []
+
+
+async def all_groups() -> list[tuple[str, bool]]:
+    seen: dict[str, bool] = {}
+    for r in await (list_groups(active_only=False) or []):
+        code = norm_group(_field(r, "code", "group_code", "group"))
+        if code:
+            seen[code] = _flag(_field(r, "active", "is_active", default="1"))
+    return sorted(seen.items())
+
+
+async def send_groups(x: str, note: str = ""):
+    rows = await all_groups()
+    kb = [[btn(f"{'🟢' if active else '⚪'} {code}", f"groupedit:{code}"),
+           btn("🔄 Скрыть" if active else "👁 Показать", f"grouptoggle:{code}"),
+           btn("🗑 Удалить", f"groupdel:{code}")] for code, active in rows]
+    text = f"👥 Группы в справочнике: {len(rows)}" if rows else "👥 Справочник групп пуст. Добавьте первую группу."
+    await api.send(x, "\n".join(part for part in (text, note) if part),
+                   [*kb, [btn("➕ Добавить группу", "groupadd")], *BACK])
+
+
+@callback("groups")
+async def cb_groups(x, arg):
+    if await need_super(x):
+        await send_groups(x)
+
+
+@callback("groupadd")
+async def cb_group_add(x, arg):
+    if not await need_super(x):
+        return
+    await db.set_state(x, "group_add")
+    await api.send(x, "Введите код группы, например ИС-21 (или /cancel).")
+
+
+@state("group_add")
+async def st_group_add(x, text, p):
+    if not await need_super(x):
+        return await db.clear_state(x)
+    code = norm_group(text)
+    if not valid_group(code):
+        return await api.send(x, GROUP_HINT)
+    if code in dict(await all_groups()):
+        return await api.send(x, f"Группа {code} уже есть в справочнике.")
+    await repo.upsert_group(code)
+    await db.clear_state(x)
+    await send_groups(x, f"✅ Группа {code} добавлена.")
+
+
+@callback("groupedit")
+async def cb_group_edit(x, arg):
+    if not await need_super(x):
+        return
+    code = norm_group(arg)
+    if code not in dict(await all_groups()):
+        return await send_groups(x, f"⚠️ Группа {code} не найдена в справочнике.")
+    await db.set_state(x, "group_edit", {"code": code})
+    await api.send(x, f"Код группы: {code}\nОтправьте новый код группы (например, ИС-22) или «-», чтобы ничего не менять.")
+
+
+@state("group_edit")
+async def st_group_edit(x, text, p):
+    if not await need_super(x):
+        return await db.clear_state(x)
+    old = norm_group(as_str((p or {}).get("code")))
+    if text.strip() in ("-", "—", "0", "не менять", "без изменений"):
+        await db.clear_state(x)
+        return await api.send(x, f"Код группы не изменился: {old}.")
+    code = norm_group(text)
+    if not valid_group(code):
+        return await api.send(x, GROUP_HINT)
+    rows = dict(await all_groups())
+    if old not in rows:
+        await db.clear_state(x)
+        return await send_groups(x, f"⚠️ Группа {old} не найдена в справочнике.")
+    if code == old:
+        await db.clear_state(x)
+        return await send_groups(x, f"Код группы не изменился: {old}.")
+    if code in rows:
+        return await api.send(x, f"Группа {code} уже есть в справочнике. Введите другой код.")
+    renamer = getattr(repo, "rename_group", None)
+    if renamer is None:
+        await repo.upsert_group(code)
+        await repo.delete_group(old)
+    else:
+        renamed = await renamer(old, code)
+        if renamed is False:
+            return await api.send(x, f"⚠️ Не удалось переименовать группу {old} → {code}.")
+    await db.clear_state(x)
+    await send_groups(x, f"✅ Группа переименована: {old} → {code}.")
+
+
+@callback("grouptoggle")
+async def cb_group_toggle(x, arg):
+    if not await need_super(x):
+        return
+    code = norm_group(arg)
+    rows = dict(await all_groups())
+    if code not in rows:
+        return await send_groups(x, f"⚠️ Группа {code} не найдена в справочнике.")
+    active = not rows[code]
+    await repo.set_group_active(code, active)
+    await send_groups(x, f"{'👁 Группа' if active else '⚪ Группа'} {code} {'активна' if active else 'скрыта'}.")
+
+
+@callback("groupdel")
+async def cb_group_delete(x, arg):
+    if not await need_super(x):
+        return
+    code = norm_group(arg)
+    if code not in dict(await all_groups()):
+        return await send_groups(x, f"⚠️ Группа {code} не найдена в справочнике.")
+    await repo.delete_group(code)
+    await send_groups(x, f"🗑 Группа {code} удалена из справочника.")
+
+
+# ── проверка ссылки на расписание ─────────────────────────────────────────────
+PROBE_TIMEOUT = 8.0
+PROBE_BYTES = 2048
+PDF_TYPES = ("application/pdf", "application/octet-stream", "binary")
+BLOCKED_HOST_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home", ".arpa")
+
+
+def probe_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(PROBE_TIMEOUT))
+
+
+def host_allowed(host) -> bool:
+    h = as_str(host).strip().lower().strip("[]")
+    if not h or h == "localhost" or h.endswith(BLOCKED_HOST_SUFFIXES):
+        return False
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return True
+    return not (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved
+                or ip.is_multicast or ip.is_unspecified)
+
+
+async def probe_pdf_url(url: str) -> tuple[bool, str]:
+    parsed = urlsplit(url)
+    if parsed.scheme.lower() not in ("http", "https"):
+        return False, "Нужна ссылка вида https://… (http или https)."
+    if not host_allowed(parsed.hostname):
+        return False, "Этот адрес проверять нельзя: локальный или служебный хост."
+    try:
+        async with probe_client() as client:
+            async with client.stream("GET", url, headers={"Range": f"bytes=0-{PROBE_BYTES - 1}"}) as resp:
+                status = resp.status_code
+                ctype = resp.headers.get("content-type", "").lower()
+                async for _ in resp.aiter_bytes():
+                    break
+    except Exception as exc:
+        log.warning("не удалось проверить ссылку %s: %s", url, exc)
+        return False, "Ссылка не открывается: сервер недоступен или адрес неверный."
+    if status not in (200, 206):
+        return False, f"Сервер ответил кодом {status} — по ссылке нет файла."
+    if not any(t in ctype for t in PDF_TYPES) and not parsed.path.lower().endswith(".pdf"):
+        return False, "По ссылке отдаётся не PDF-файл. Нужна прямая ссылка на .pdf."
+    return True, ""
+
+
 # ── расписания ────────────────────────────────────────────────────────────────
+async def schedule_group_codes() -> list[str]:
+    codes = {norm_group(_field(r, "group_code", "code")) for r in (await repo.schedule_groups() or [])}
+    codes |= {code for code, _ in await all_groups()}
+    return sorted(codes - {""})
+
+
 @callback("schedules")
 async def cb_schedules(x, arg):
     if not await need_super(x):
@@ -175,23 +485,27 @@ async def cb_schedule_card(x, group):
 
 @callback("scdel")
 async def cb_schedule_delete(x, group):
-    if await need_super(x):
-        await repo.delete_schedule(group)
-        await cb_schedules(x, "")
+    if not await need_super(x):
+        return
+    code = norm_group(as_str(group))
+    if not await repo.get_schedule(code):
+        return await api.send(x, f"Расписание группы {code} не найдено.", [[btn("↩️ К списку", "schedules")]])
+    await repo.delete_schedule(code)
+    await notify_schedule_subscribers(code, f"🗑 Расписание группы {code} удалено.")
+    await api.send(x, f"🗑 Расписание группы {code} удалено.")
+    await audit(x, f"Сис-админ {x} удалил расписание группы {code}.")
+    await cb_schedules(x, "")
 
 
 @callback("scadd")
 async def cb_schedule_add(x, arg):
-    if await need_super(x):
-        await db.set_state(x, "sc_group")
-        await api.send(x, "Введите код группы, например ИС-21 (или /cancel).")
-
-
-@callback("scedit")
-async def cb_schedule_edit(x, group):
-    if await need_super(x):
-        await db.set_state(x, "sc_url", {"group": group})
-        await api.send(x, f"Отправьте новую ссылку на расписание группы {group} (http/https).")
+    if not await need_super(x):
+        return
+    await db.set_state(x, "sc_group")
+    codes = await schedule_group_codes()
+    kb = [[btn(code, f"scaddg:{code}")] for code in codes]
+    text = "Введите код группы, например ИС-21, или выберите группу из списка (или /cancel)."
+    await api.send(x, text, [*kb, [btn("↩️ К расписаниям", "schedules")]])
 
 
 @state("sc_group")
@@ -199,27 +513,62 @@ async def st_sc_group(x, text, p):
     if not await need_super(x):
         return await db.clear_state(x)
     group = norm_group(text)
-    if not 1 <= len(group) <= 30:
-        return await api.send(x, "Код группы — до 30 символов.")
-    await db.set_state(x, "sc_url", {"group": group})
-    await api.send(x, f"Отправьте ссылку на расписание группы {group} (http/https).")
+    if not valid_group(group):
+        return await api.send(x, GROUP_HINT)
+    await db.set_state(x, "add_sched", {"group": group})
+    await api.send(x, f"Отправьте ссылку на расписание группы {group} (http/https). Проверим, что это PDF.")
 
 
-def is_http_url(text: str) -> bool:
-    url = text.strip()
-    return url.lower().startswith(("http://", "https://")) and " " not in url
+@callback("scaddg")
+async def cb_schedule_add_group(x, arg):
+    if not await need_super(x):
+        return
+    await db.set_state(x, "add_sched", {"group": norm_group(arg)})
+    await api.send(x, f"Отправьте ссылку на расписание группы {norm_group(arg)} (http/https). Проверим, что это PDF.")
 
 
-@state("sc_url")
-async def st_sc_url(x, text, p):
+@callback("scedit")
+async def cb_schedule_edit(x, group):
+    if not await need_super(x):
+        return
+    code = norm_group(group)
+    await db.set_state(x, "update_sched", {"group": code})
+    await api.send(x, f"Отправьте новую ссылку на расписание группы {code} (http/https). Проверим, что это PDF.")
+
+
+async def save_schedule(x, group: str, url: str, edit: bool) -> None:
+    code = norm_group(as_str(group))
+    ok, reason = await probe_pdf_url(url)
+    if not ok:
+        return await api.send(x, f"⚠️ {reason}\nСсылка не сохранена — попробуйте ещё раз.")
+    await repo.upsert_schedule(code, url)
+    await notify_schedule_subscribers(code, f"📅 Расписание группы {code} обновлено\n{url}")
+    await db.clear_state(x)
+    await api.send(x, f"✅ Ссылка на расписание группы {code} сохранена.")
+    await audit(x, f"Сис-админ {x} {'изменил' if edit else 'добавил'} ссылку на расписание группы {code}.")
+    await cb_schedules(x, "")
+
+
+@state("add_sched")
+async def st_add_sched(x, text, p):
     if not await need_super(x):
         return await db.clear_state(x)
-    if not is_http_url(text):
-        return await api.send(x, "Нужна ссылка вида https://… Попробуйте ещё раз.")
-    await repo.upsert_schedule(p["group"], text.strip())
-    await db.clear_state(x)
-    await api.send(x, f"✅ Расписание группы {p['group']} сохранено.")
-    await cb_schedules(x, "")
+    group = norm_group(as_str((p or {}).get("group")))
+    if not valid_group(group):
+        await db.clear_state(x)
+        return await api.send(x, "Не задан код группы. Начните заново: «➕ Добавить / изменить».", BACK)
+    await save_schedule(x, group, text.strip(), edit=False)
+
+
+@state("update_sched")
+async def st_update_sched(x, text, p):
+    if not await need_super(x):
+        return await db.clear_state(x)
+    group = norm_group(as_str((p or {}).get("group")))
+    if not valid_group(group):
+        await db.clear_state(x)
+        return await api.send(x, "Не задан код группы. Откройте карточку расписания.", BACK)
+    await save_schedule(x, group, text.strip(), edit=True)
 
 
 # ── настройки ─────────────────────────────────────────────────────────────────
@@ -263,3 +612,90 @@ async def st_set_welcome(x, text, p):
     await db.set_setting("welcome_text", text.strip()[:500] or DEFAULT_WELCOME)
     await db.clear_state(x)
     await send_settings(x)
+
+
+# ── служебные команды и самопроверка ──────────────────────────────────────────
+LOG_TAIL = 15  # сколько строк журнала показывать в ответ на /logs
+OPEN = ("new", "accepted", "in_progress")
+
+
+def panel_url() -> str:
+    """Адрес веб-панели: из WEBHOOK_URL, иначе — подсказка для режима polling."""
+    if config.WEBHOOK_URL:
+        return config.WEBHOOK_URL.rsplit("/", 1)[0] + "/panel"
+    return "http://<хост>:8080/panel"
+
+
+def panel_hint() -> str:
+    if config.WEB_PANEL_PASSWORD:
+        return panel_url()
+    return f"{panel_url()} — выключена, задайте WEB_PANEL_PASSWORD в .env"
+
+
+async def diagnostics_text(x: str) -> str:
+    """Сводка о состоянии бота — для кнопки «🧪 Тест и журнал» и команд /test, /diag."""
+    st = await repo.stats_overview()
+    counts = await repo.status_counts()
+    dedupe = await repo.dedupe_stats()
+    log.info("самопроверка: сис-админ %s", x)
+    return (
+        "🧪 Самопроверка бота\n"
+        f"Ваш MAX ID: {x}\n"
+        f"Режим: {'webhook' if config.WEBHOOK_URL else 'long polling'}\n"
+        f"Журнал: {config.LOG_FILE} (уровень {config.LOG_LEVEL})\n"
+        f"Обработано событий: {dedupe['processed']}\n"
+        f"Студентов: {st['students']}, сотрудников: {st['staff']}, обращений: {st['total']} "
+        f"(открытых {sum(counts.get(code, 0) for code in OPEN)})\n"
+        f"Панель: {panel_hint()}"
+    )
+
+
+async def check_api(x: str) -> None:
+    """Фоновая проверка связи с MAX API: ответ приходит отдельным сообщением."""
+    started = time.monotonic()
+    try:
+        info = await api.me()
+    except Exception as exc:
+        log.warning("проверка API не удалась: %s", exc)
+        await notify(x, f"❌ MAX API не отвечает: {exc}")
+        return
+    await notify(x, f"✅ MAX API отвечает ({time.monotonic() - started:.1f} с): {info}")
+
+
+@callback("diag")
+async def cb_diag(x, arg):
+    if not await need_super(x):
+        return
+    await api.send(x, f"{await diagnostics_text(x)}\n\nПроверяю связь с MAX API…", BACK)
+    spawn(check_api(x))
+
+
+async def command(x: str, cmd: str) -> bool:
+    """Служебные команды сис-админа. True — обработано (иначе команда считается неизвестной)."""
+    if cmd not in ("/logs", "/test", "/diag", "/panel"):
+        return False
+    if not await need_super(x):
+        return True  # не показываем, что команда вообще существует
+    if cmd == "/logs":
+        records = tail_file(config.LOG_FILE, LOG_TAIL)
+        tail = "\n".join(short(line, 150) for line in records) or "Журнал пока пуст."
+        dedupe = await repo.dedupe_stats()
+        await api.send(
+            x, f"🧾 Журнал: {config.LOG_FILE}\nСобытий обработано: {dedupe['processed']}\n\n{tail}", BACK
+        )
+        return True
+    if cmd == "/panel":
+        await api.send(x, "🖥 Веб-панель сис-админа\n"
+                          f"{panel_hint()}\n\nВход: ваш MAX ID и пароль WEB_PANEL_PASSWORD из .env.", BACK)
+        return True
+    await api.send(x, f"{await diagnostics_text(x)}\n\nПроверяю связь с MAX API…", BACK)
+    spawn(check_api(x))
+    return True
+
+    if cmd == "/panel":
+        await api.send(x, f"🖥 Веб-панель сис-админа\n{panel_hint()}\n\n"
+                          "Вход: ваш MAX ID и пароль WEB_PANEL_PASSWORD из .env.", BACK)
+        return True
+    await api.send(x, (await diagnostics_text(x)) + "\n\nПроверяю связь с MAX API…", BACK)
+    spawn(check_api(x))
+    return True

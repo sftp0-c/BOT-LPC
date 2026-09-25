@@ -1,10 +1,11 @@
+from itertools import count
+
 import pytest
 
 import bot
 import config
 import database as db
-
-from itertools import count
+from handlers import admin, broadcast, common, menus, tickets
 
 BOT_ID = 999
 
@@ -74,9 +75,10 @@ def click(user, payload):
 @pytest.fixture(autouse=True)
 async def env(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DATABASE_PATH", str(tmp_path / "test.db"))
-    monkeypatch.setattr(config, "SUPERADMIN_IDS", ["1"])
+    monkeypatch.setattr(config, "SYSADMIN_IDS", ["1"])
     fake = FakeAPI()
-    monkeypatch.setattr(bot, "api", fake)
+    for module in (bot, common, admin, broadcast, menus, tickets):
+        monkeypatch.setattr(module, "api", fake)
     bot._locks.clear()
     await db.init_db()
     return fake

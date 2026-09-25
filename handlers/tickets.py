@@ -1,11 +1,96 @@
 """Обращения студентов: создание, переписка, статусы, списки."""
+from datetime import datetime, timedelta
+
+import config
 import database as db
 import repository as repo
+from handlers.admin import STAFF_ROLES
 from handlers.common import BACK, admin_of, api, is_super, notify
 from handlers.menus import need_student
 from handlers.registry import callback, state
-from max_api import btn
-from utils import CATS, OPEN_STATUSES, STATUS, short, to_int
+from max_api import btn, link_btn
+from utils import ACCEPT_ON_REPLY, CATS, OPEN_STATUSES, STATUS, TOPIC_CATS, as_str, short, to_int, topic_title
+
+NEXT_STATUSES = {
+    "new": ("accepted", "rejected"),
+    "accepted": ("ready", "rejected"),
+    "in_progress": ("ready", "rejected"),
+    "ready": ("accepted",),
+    "rejected": ("accepted",),
+    "completed": ("accepted",),
+}
+READY_HOUR = 18
+READY_LEAD = timedelta(hours=1)
+READY_MAX = 100
+PICKUP_FALLBACK = "кабинет не указан"
+OFFICE_REQUIRED = "Сначала укажите кабинет в карточке сотрудника"
+LEGACY_COMPLETED_FROM = ("new", "accepted", "in_progress")
+
+
+def _get(row, key: str, default=None):
+    if row is None or not hasattr(row, "keys") or key not in row.keys():
+        return default
+    return row[key]
+
+
+def _row_value(row, key: str) -> str:
+    return as_str(_get(row, key)).strip()
+
+
+def _person(person, tail: str = "", prefix: str = "") -> str:
+    name = _row_value(person, "full_name")
+    if not name:
+        return ""
+    value = _row_value(person, tail)
+    return f"{name} ({prefix}{value})" if value else name
+
+
+def role_of(person) -> str:
+    return _row_value(person, "role") or _row_value(person, "position")
+
+
+def role_label(person) -> str:
+    role = role_of(person)
+    if not role:
+        return ""
+    label = STAFF_ROLES.get(role, "")
+    return f"{label} ({role})" if label else role
+
+
+def staff_pick_label(person) -> str:
+    name = _row_value(person, "full_name")
+    role = role_label(person)
+    return f"{name} · {role}" if name and role else name
+
+
+async def ticket_people(t) -> dict:
+    student = _get(t, "student") or _get(t, "sender") or await repo.get_user(t["student_id"])
+    staff = _get(t, "staff") or await admin_of(t["target_admin_id"])
+    return {**t, "student": student, "staff": staff}
+
+
+def cat_topic_line(cat: str, topic: str) -> str:
+    line = f"[Тип] {CATS.get(cat, cat)}"
+    return f"{line}\n[Тема] {as_str(topic).strip()}" if as_str(topic).strip() else line
+
+
+def office_of(person) -> str:
+    for key in ("office", "cabinet", "pickup_place", "room"):
+        value = _row_value(person, key)
+        if value:
+            return value
+    return ""
+
+
+def ready_deadline(kind: str) -> str:
+    now = datetime.now()
+    if kind == "today":
+        day = now.replace(hour=READY_HOUR, minute=0, second=0, microsecond=0)
+        if day - now < READY_LEAD:
+            day += timedelta(days=1)
+    else:
+        day = (now + timedelta(days=1)).replace(hour=READY_HOUR, minute=0, second=0, microsecond=0)
+    return f"{day:%d.%m.%Y} до {READY_HOUR}:00"
 
 
 async def load_ticket(x: str, ticket_id: int):
@@ -27,7 +112,7 @@ def ticket_kb(t, staff_side: bool):
         rows = [[btn("✍️ Написать сотруднику", f"rp:{tid}")]] if status in OPEN_STATUSES else []
         return [*rows, [btn("↩️ К списку", "tickets")]]
     rows = [[btn("💬 Ответить", f"rp:{tid}")]]
-    changes = [btn(label, f"st:{tid}:{code}") for code, label in STATUS.items() if code not in (status, "new")]
+    changes = [btn(STATUS[code], f"st:{tid}:{code}") for code in NEXT_STATUSES.get(status, ())]
     rows += [changes[i : i + 2] for i in range(0, len(changes), 2)]
     return [*rows, [btn("↩️ К списку", "staff")]]
 
@@ -42,12 +127,15 @@ async def sender_label(m) -> str:
 
 
 async def ticket_text(t, staff_side: bool) -> str:
+    t = await ticket_people(t)
     lines = [f"📂 Обращение №{t['ticket_id']} · {STATUS.get(t['status'], t['status'])}",
-             f"Категория: {CATS.get(t['category'], t['category'])}"]
-    st = await repo.get_user(t["student_id"])
-    ad = await admin_of(t["target_admin_id"])
-    lines.append(f"Студент: {st['full_name']} ({st['group_code']})" if st else "Студент: —")
-    lines.append(f"Ответственный: {ad['full_name']} (ID {ad['user_id']})" if ad else "Ответственный: —")
+             cat_topic_line(t["category"], _row_value(t, "topic"))]
+    lines.append(f"Студент: {_person(_get(t, 'student'), 'group_code') or '—'}")
+    lines.append(f"Ответственный: {_person(_get(t, 'staff'), 'user_id', 'ID ') or '—'}")
+    when = _row_value(t, "ready_until")
+    if when:
+        place = _row_value(t, "pickup_place") or office_of(_get(t, "staff")) or PICKUP_FALLBACK
+        lines.append(f"Готово: {when} · {place}")
     msgs = await repo.ticket_messages(t["ticket_id"])
     lines.append("")
     for m in reversed(msgs):
@@ -70,22 +158,51 @@ async def cb_new_ticket(x, cat):
         return
     if await db.get_setting("tickets_enabled", "1") != "1":
         return await api.send(x, "Приём обращений временно отключён. Попробуйте позже.", BACK)
+    if cat in TOPIC_CATS:
+        return await api.send(x, f"{CATS[cat]}\nВыберите тему обращения:",
+                              [[btn(label, f"topic:{cat}:{code}")] for code, label in TOPIC_CATS[cat].items()] + BACK)
     rows = await repo.staff_for_category(cat)
     if not rows:
         return await api.send(x, "Сотрудники для этого раздела пока не назначены. Обратитесь в учебную часть.", BACK)
-    kb = [[btn(short(r["full_name"], 60), f"pick:{cat}:{r['user_id']}")] for r in rows]
+    kb = [[btn(short(staff_pick_label(r), 60), f"pick:{cat}:{r['user_id']}")] for r in rows]
     await api.send(x, f"{CATS[cat]}\nВыберите сотрудника:", kb + BACK)
+
+
+@callback("topic")
+async def cb_ticket_topic(x, arg):
+    cat, _, code = arg.partition(":")
+    title = topic_title(cat, code)
+    if not title or not await need_student(x):
+        return
+    if await db.get_setting("tickets_enabled", "1") != "1":
+        return await api.send(x, "Приём обращений временно отключён. Попробуйте позже.", BACK)
+    rows = await repo.staff_for_category(cat)
+    if not rows:
+        return await api.send(x, "Сотрудники для этого раздела пока не назначены. Обратитесь в учебную часть.", BACK)
+    await db.set_state(x, "ticket", {"cat": cat, "topic": title})
+    kb = [[btn(short(staff_pick_label(r), 60), f"pick:{cat}:{r['user_id']}:{code}")] for r in rows]
+    await api.send(x, f"{CATS[cat]} · {title}\nВыберите сотрудника:", kb + BACK)
+
+
+async def _pending_topic(x: str, cat: str, code: str) -> str:
+    topic = topic_title(cat, code)
+    if topic:
+        return topic
+    st = await db.get_state(x)
+    payload = st["payload"] if st and st["state"] == "ticket" else {}
+    return as_str(payload.get("topic", "")).strip() if payload.get("cat") == cat else ""
 
 
 @callback("pick")
 async def cb_pick_staff(x, arg):
-    cat, _, admin_id = arg.partition(":")
+    cat, _, rest = arg.partition(":")
+    admin_id, _, code = rest.partition(":")
     if cat not in CATS or not await need_student(x):
         return
     a = await admin_of(admin_id)
     if not a or is_super(a) or a["ticket_category"] not in (cat, "all"):
         return await api.send(x, "Этот сотрудник больше не принимает такие обращения. Выберите другого.", BACK)
-    await db.set_state(x, "ticket", {"admin": admin_id, "cat": cat})
+    await db.set_state(x, "ticket", {"admin": admin_id, "cat": cat, "topic": await _pending_topic(x, cat, code)})
     await api.send(x, f"Кому: {a['full_name']}\nНапишите обращение одним сообщением (или /cancel для отмены).")
 
 
@@ -97,21 +214,32 @@ async def st_ticket(x, text, p):
     if await db.get_setting("tickets_enabled", "1") != "1":
         await db.clear_state(x)
         return await api.send(x, "Приём обращений временно отключён.", BACK)
-    admin = await admin_of(p["admin"])
+    admin_id = as_str(p.get("admin"))
+    if not admin_id:
+        await db.clear_state(x)
+        return await api.send(x, "Сначала выберите сотрудника: нажмите «↩️ В меню» и начните заново.", BACK)
+    admin = await admin_of(admin_id)
     if not admin:
         await db.clear_state(x)
         return await api.send(x, "Сотрудник больше недоступен. Начните заново.", BACK)
     text = text[:3000]
-    tid = await repo.create_ticket(x, p["admin"], p["cat"], text)
+    topic = " ".join(as_str(p.get("topic", "")).split())[:READY_MAX]
+    tid = await repo.create_ticket(x, admin_id, p["cat"], text, topic=topic)
     await db.clear_state(x)
     t = await repo.get_ticket(tid)
     delivered = await notify(
-        p["admin"],
-        f"🔔 Новое обращение №{tid}\nКатегория: {CATS[p['cat']]}\nОт: {user['full_name']} ({user['group_code']})\n\n{text}",
+        admin_id,
+        f"🔔 Новое обращение №{tid}\n{cat_topic_line(p['cat'], topic)}\n"
+        f"От: {user['full_name']} ({user['group_code']})\n\n{text}",
         ticket_kb(t, True),
     )
-    note = "" if delivered else "\n⚠️ Сотрудник пока не запускал бота — уведомление не дошло, но обращение сохранено."
-    await api.send(x, f"✅ Обращение №{tid} отправлено.{note}", [[btn("📂 Открыть", f"t:{tid}")], *BACK])
+    lines = [f"✅ Обращение №{tid} отправлено."]
+    if topic:
+        lines.append(f"Тема: {topic}")
+    lines += ["", short(text, 700)]
+    if not delivered:
+        lines.append("\n⚠️ Сотрудник пока не запускал бота — уведомление не дошло, но обращение сохранено.")
+    await api.send(x, "\n".join(lines), [[btn("📂 Открыть", f"t:{tid}")], *BACK])
 
 
 @callback("tickets")
@@ -165,7 +293,9 @@ async def st_reply(x, text, p):
     await db.clear_state(x)
     tid = t["ticket_id"]
     if staff_side:
-        await repo.add_ticket_message(tid, x, "staff", text, "in_progress" if t["status"] == "new" else None)
+        await repo.add_ticket_message(tid, x, "staff", text)
+        if t["status"] in ACCEPT_ON_REPLY:
+            await repo.transition_ticket_status(tid, t["status"], "accepted")
         t = await repo.get_ticket(tid)
         await notify(t["student_id"], f"💬 Ответ по обращению №{tid}:\n\n{text}",
                      [[btn("✍️ Ответить", f"rp:{tid}"), btn("📂 Открыть", f"t:{tid}")]])
@@ -180,15 +310,146 @@ async def st_reply(x, text, p):
     await api.send(x, f"✅ Сообщение по обращению №{tid} отправлено.", [[btn("📂 Открыть", f"t:{tid}")], *BACK])
 
 
+def _status_change_error(t, status: str) -> str:
+    current = as_str(_get(t, "status")).strip()
+    if current in ("rejected", "completed"):
+        return (
+            f"Заявка №{t['ticket_id']} закрыта. Сначала верните её в работу: "
+            f"нажмите «{STATUS['accepted']}»."
+        )
+    return (
+        f"Заявка №{t['ticket_id']} нельзя перевести из статуса "
+        f"«{STATUS.get(current, current)}» в «{STATUS.get(status, status)}»."
+    )
+
+
+async def _notify_office_required(x: str, t):
+    message = (
+        f"{OFFICE_REQUIRED}. Обращение №{t['ticket_id']} нельзя перевести в готовность."
+    )
+    keyboard = [[btn("📂 Открыть", f"t:{t['ticket_id']}")], *BACK]
+    recipients = {str(x), as_str(_get(t, "target_admin_id"))}
+    recipients.update(str(value) for value in config.SYSADMIN_IDS)
+    for recipient in recipients:
+        if recipient:
+            await notify(recipient, message, keyboard)
+
+
 @callback("st")
 async def cb_status(x, arg):
-    tid, _, status = arg.partition(":")
+    tid, _, requested_status = arg.partition(":")
     t, staff_side = await load_ticket(x, to_int(tid))
-    if not t or not staff_side or status not in STATUS:
+    if not t or not staff_side or requested_status not in STATUS:
         return
-    if t["status"] != status:
-        await repo.set_ticket_status(t["ticket_id"], status)
-        await notify(t["student_id"], f"🔔 Статус обращения №{t['ticket_id']}: {STATUS[status]}",
-                     [[btn("📂 Открыть", f"t:{t['ticket_id']}")]])
-        t = await repo.get_ticket(t["ticket_id"])
+    current_status = as_str(_get(t, "status")).strip()
+    status = requested_status
+    if status == "in_progress" and current_status in ("new", "in_progress"):
+        status = "accepted"
+    legacy_completed = status == "completed" and current_status in LEGACY_COMPLETED_FROM
+    if status == "ready" and current_status == "ready":
+        return await start_ready(x, t)
+    if not legacy_completed and status not in NEXT_STATUSES.get(current_status, ()):
+        return await api.send(
+            x,
+            _status_change_error(t, status),
+            [[btn("📂 Открыть", f"t:{t['ticket_id']}")], *BACK],
+        )
+    if status == "ready":
+        return await start_ready(x, t)
+    changed = await repo.transition_ticket_status(t["ticket_id"], current_status, status)
+    if not changed:
+        current = await repo.get_ticket(t["ticket_id"])
+        if current:
+            await send_ticket(x, current, True)
+        return
+    await notify(t["student_id"], f"🔔 Статус обращения №{t['ticket_id']}: {STATUS[status]}",
+                 [[btn("📂 Открыть", f"t:{t['ticket_id']}")]])
+    t = await repo.get_ticket(t["ticket_id"])
+    await send_ticket(x, t, True)
+
+
+async def start_ready(x: str, t):
+    tid = t["ticket_id"]
+    status = as_str(_get(t, "status")).strip()
+    if status == "ready":
+        return await api.send(x, f"📄 Заявка №{tid} уже готова — время выдачи: "
+                                 f"{_row_value(t, 'ready_until') or 'не задано'}.",
+                              [[btn("📂 Открыть", f"t:{tid}")], *BACK])
+    if "ready" not in NEXT_STATUSES.get(status, ()):
+        return await api.send(x, _status_change_error(t, "ready"), BACK)
+    staff = (await ticket_people(t))["staff"]
+    if not office_of(staff):
+        return await _notify_office_required(x, t)
+    await api.send(x, f"📄 Заявка №{tid}: когда студент сможет забрать документ?",
+                   [[btn("Сегодня до 18:00", f"rt:{tid}:today")],
+                    [btn("Завтра до 18:00", f"rt:{tid}:tomorrow")],
+                    [btn("✏️ Ввести своё", f"rt:{tid}:custom")], *BACK])
+
+
+@callback("rt")
+async def cb_ready_time(x, arg):
+    tid, _, kind = arg.partition(":")
+    t, staff_side = await load_ticket(x, to_int(tid))
+    if not t or not staff_side:
+        return
+    status = as_str(_get(t, "status")).strip()
+    if status == "ready":
+        return await start_ready(x, t)
+    if "ready" not in NEXT_STATUSES.get(status, ()):
+        return await api.send(x, _status_change_error(t, "ready"), BACK)
+    staff = (await ticket_people(t))["staff"]
+    if not office_of(staff):
+        return await _notify_office_required(x, t)
+    if kind == "custom":
+        await db.set_state(x, "ready_time", {"tid": t["ticket_id"]})
+        return await api.send(x, "Введите время выдачи: например, «завтра до 15:00» или «25.09.2026 до 18:00».")
+    if kind not in ("today", "tomorrow"):
+        return
+    await set_ready(x, t, ready_deadline(kind))
+
+
+@state("ready_time")
+async def st_ready_time(x, text, p):
+    await db.clear_state(x)
+    value = " ".join(as_str(text).split())[:READY_MAX]
+    t, staff_side = await load_ticket(x, to_int(p.get("tid")))
+    if not value or not t or not staff_side:
+        return await api.send(x, "Обращение недоступно. Нажмите «Готово» ещё раз.", BACK)
+    staff = (await ticket_people(t))["staff"]
+    if not office_of(staff):
+        return await _notify_office_required(x, t)
+    await set_ready(x, t, value)
+
+
+async def set_ready(x: str, t, ready_until: str):
+    tid = t["ticket_id"]
+    status = as_str(_get(t, "status")).strip()
+    if status == "ready":
+        return await start_ready(x, t)
+    if "ready" not in NEXT_STATUSES.get(status, ()):
+        return await api.send(x, _status_change_error(t, "ready"), BACK)
+    staff = (await ticket_people(t))["staff"]
+    place = _row_value(t, "pickup_place") or office_of(staff)
+    doc = _row_value(t, "doc_url")
+    await repo.set_ticket_ready(tid, ready_until, place, doc)
+    updated = await repo.get_ticket(tid)
+    if updated:
+        t = updated
+    when = _row_value(t, "ready_until") or ready_until
+    place = _row_value(t, "pickup_place") or place or PICKUP_FALLBACK
+    doc = _row_value(t, "doc_url") or doc
+    staff = (await ticket_people(t))["staff"]
+    name = _row_value(staff, "full_name") or "не указан"
+    lines = [
+        f"📄 Заявка готова №{tid}",
+        f"Ответственный: {name}",
+        f"Должность: {role_label(staff) or 'не назначена'}",
+        f"Когда забрать: {when}",
+        f"Где забрать: {place}",
+    ]
+    kb = [[btn("📂 Открыть", f"t:{tid}")]]
+    if doc:
+        lines.append(f"Документ: {doc}")
+        kb.insert(0, [link_btn("📄 Открыть документ", doc)])
+    await notify(t["student_id"], "\n".join(lines), kb)
     await send_ticket(x, t, True)

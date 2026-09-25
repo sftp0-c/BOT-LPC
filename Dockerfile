@@ -28,7 +28,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY config.py database.py max_api.py bot.py ./
+COPY config.py database.py max_api.py repository.py updates.py utils.py bot.py ./
+COPY handlers ./handlers
 
 RUN useradd --system --uid 10001 --home-dir /app app \
     && mkdir -p /app/data \

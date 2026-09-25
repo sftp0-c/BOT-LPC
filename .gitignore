@@ -2,6 +2,15 @@
 .env
 .env.local
 
+.venv/
+.certs/
+data/
+logs/
+.pytest_cache/
+*.db
+*.db-shm
+*.db-wal
+
 # Python compiled files
 __pycache__/
 *.pyc

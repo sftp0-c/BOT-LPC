@@ -1,6 +1,6 @@
 """Тонкий клиент MAX Bot API — https://dev.max.ru/docs-api
 
-* база: platform-api2.max.ru (сертификат НУЦ Минцифры должен быть в системном хранилище — Dockerfile это делает);
+* база: platform-api2.max.ru (сертификаты НУЦ Минцифры берутся из системного хранилища, MAX_CA_BUNDLE или .certs/max-ca.pem);
 * токен передаётся в заголовке Authorization (без «Bearer»);
 * лимиты платформы: ≤ 2 сообщений/сек в один диалог, текст ≤ 4000 символов — оба соблюдаются здесь.
 """
@@ -8,6 +8,7 @@ import asyncio
 import logging
 import ssl
 import time
+from pathlib import Path
 
 import httpx
 
@@ -54,10 +55,16 @@ def split_text(text: str, size: int = MAX_TEXT) -> list[str]:
     return parts
 
 
+_LOCAL_CA_BUNDLE = Path(__file__).resolve().parent / ".certs" / "max-ca.pem"
+
+
 def _ssl_context() -> ssl.SSLContext:
     if config.CA_BUNDLE:
         return ssl.create_default_context(cafile=config.CA_BUNDLE)
-    return ssl.create_default_context()  # системное хранилище (в Docker — с сертификатами Минцифры)
+    context = ssl.create_default_context()
+    if _LOCAL_CA_BUNDLE.is_file():
+        context.load_verify_locations(cafile=_LOCAL_CA_BUNDLE)
+    return context
 
 
 class MaxAPI:

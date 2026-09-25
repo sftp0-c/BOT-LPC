@@ -5,6 +5,7 @@ import bot
 import config
 import database as db
 from conftest import add_staff, click, press, register, say
+from handlers.common import pending_tasks
 
 STUDENT, STAFF, STAFF2, OTHER = "100", "200", "201", "300"
 
@@ -49,7 +50,7 @@ async def test_id_command_and_hidden_admin_command(api):
 
 async def test_superadmin_seeded_from_env(api):
     row = await db.one("SELECT role_type, can_broadcast FROM admins WHERE user_id='1'")
-    assert row["role_type"] == "superadmin" and row["can_broadcast"] == 1
+    assert row["role_type"] == "sysadmin" and row["can_broadcast"] == 1
 
 
 async def test_full_ticket_conversation(api):
@@ -65,13 +66,13 @@ async def test_full_ticket_conversation(api):
     assert (t["student_id"], t["target_admin_id"], t["status"]) == (STUDENT, STAFF, "new")
     notice = api.last(STAFF)
     assert "Не работает электронный журнал" in notice[1] and "Иванов Иван Иванович" in notice[1]
-    assert {f"rp:{t['ticket_id']}", f"st:{t['ticket_id']}:in_progress"} <= set(api.payloads(STAFF))
+    assert {f"rp:{t['ticket_id']}", f"st:{t['ticket_id']}:accepted"} <= set(api.payloads(STAFF))
 
     # сотрудник отвечает — студент получает, статус «в работе»
     await press(STAFF, f"rp:{t['ticket_id']}")
     await say(STAFF, "Проверим, ответим сегодня")
     assert "Проверим, ответим сегодня" in api.last(STUDENT)[1]
-    assert (await db.one("SELECT status FROM tickets"))["status"] == "in_progress"
+    assert (await db.one("SELECT status FROM tickets"))["status"] == "accepted"
 
     # студент отвечает — сотрудник получает
     await press(STUDENT, f"rp:{t['ticket_id']}")
@@ -124,7 +125,13 @@ async def test_admin_callbacks_are_protected(api):
     assert await db.get_setting("tickets_enabled", "1") == "1"
 
 
-async def test_schedule_management_and_student_view(api):
+async def test_schedule_management_and_student_view(api, monkeypatch):
+    async def fake_probe(url):
+        if str(url).startswith("https://"):
+            return True, ""
+        return False, "Нужна ссылка вида https://…"
+
+    monkeypatch.setattr("handlers.admin.probe_pdf_url", fake_probe)
     await register(STUDENT)
     await press(STUDENT, "sched")
     assert "не добавлено" in api.last(STUDENT)[1]
@@ -142,10 +149,17 @@ async def test_schedule_management_and_student_view(api):
 
 
 async def test_profile_edit(api):
-    await register(STUDENT)
+    await register(STUDENT)  # группа ИС-21 попадает в справочник при регистрации
+    # группы, которой нет в справочнике, бот просит подтвердить вручную
     await press(STUDENT, "pf:group")
     await say(STUDENT, "ис-31")
+    assert "не найдена в активном справочнике" in api.last(STUDENT)[1]
+    await press(STUDENT, "regok:ИС-31:Иванов Иван Иванович")
     assert (await db.one("SELECT group_code FROM users"))["group_code"] == "ИС-31"
+    # а на группу из справочника — без лишних вопросов
+    await press(STUDENT, "pf:group")
+    await say(STUDENT, "ис-21")
+    assert (await db.one("SELECT group_code FROM users"))["group_code"] == "ИС-21"
 
 
 async def test_tickets_can_be_switched_off(api):
@@ -172,7 +186,7 @@ async def test_broadcast_permissions_and_group_targeting(api):
     assert "1 чел." in api.last(STAFF2)[1]
     api.sent.clear()
     await press(STAFF2, "bcgo")
-    await bot.asyncio.gather(*list(bot._tasks))
+    await bot.asyncio.gather(*pending_tasks())
     assert "Завтра сокращённые пары" in api.last(STUDENT)[1]
     assert not [m for m in api.to(OTHER) if "Завтра" in m[1]]
     assert "Доставлено: 1" in api.last(STAFF2)[1]
@@ -187,7 +201,7 @@ async def test_broadcast_counts_undelivered(api):
     await press("1", "bcaud:all")
     await say("1", "Всем привет")
     await press("1", "bcgo")
-    await bot.asyncio.gather(*list(bot._tasks))
+    await bot.asyncio.gather(*pending_tasks())
     assert "Доставлено: 1, не доставлено: 1" in api.last("1")[1]
 
 
@@ -195,6 +209,56 @@ async def test_bcgo_without_prepared_broadcast_does_nothing(api):
     await press("1", "bcgo")
     assert "Нет подготовленной" in api.last("1")[1]
     assert await db.one("SELECT 1 FROM broadcasts") is None
+
+
+async def test_broadcast_is_signed_with_sender_name_and_position(api):
+    """Студент видит, от кого объявление: ФИО, должность и кабинет отправителя."""
+    await register(STUDENT, "Иванов Иван", "ис-21")
+    await add_staff(STAFF2, "Козлов Иван", broadcast=True)
+    await press("1", f"srset:{STAFF2}:director")
+    await press("1", f"sfo:{STAFF2}")
+    await say("1", "214")
+
+    await press(STAFF2, "broadcast")
+    await press(STAFF2, "bcaud:all")
+    await say(STAFF2, "Завтра сокращённые пары")
+    # предпросмотр у отправителя — с той же подписью
+    assert "— Козлов Иван, 👔 Директор, каб. 214" in api.last(STAFF2)[1]
+
+    api.sent.clear()
+    await press(STAFF2, "bcgo")
+    await bot.asyncio.gather(*pending_tasks())
+    sent = api.last(STUDENT)[1]
+    assert sent.startswith("📢 Объявление колледжа:")
+    assert "— Козлов Иван, 👔 Директор, каб. 214" in sent
+    row = await db.one("SELECT * FROM broadcasts")
+    assert (row["sender_name"], row["sender_role"]) == ("Козлов Иван", "👔 Директор")
+
+
+async def test_sysadmin_broadcast_signed_as_sysadmin(api):
+    await register(STUDENT, "Иванов Иван", "ис-21")
+    await press("1", "broadcast")
+    await press("1", "bcaud:all")
+    await say("1", "Праздник")
+    await press("1", "bcgo")
+    await bot.asyncio.gather(*pending_tasks())
+    assert "— Сис-админ" in api.last(STUDENT)[1]
+
+
+async def test_sysadmin_service_commands(api):
+    await say("1", "/logs")
+    assert "Журнал" in api.last("1")[1]
+    await say("1", "/panel")
+    assert "панель сис-админа" in api.last("1")[1].lower()
+    await say("1", "/test")
+    assert "Самопроверка" in api.last("1")[1]
+    await bot.asyncio.gather(*pending_tasks())
+
+
+async def test_service_commands_are_invisible_for_students(api):
+    await register(STUDENT, "Иванов Иван", "ис-21")
+    await say(STUDENT, "/logs")
+    assert "Журнал" not in api.last(STUDENT)[1]
 
 
 async def test_delete_staff_blocked_while_tickets_open(api):

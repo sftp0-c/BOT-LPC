@@ -7,12 +7,15 @@
 * handlers/ — обработчики кнопок и состояний (регистрируются в handlers.registry);
 * repository.py — SQL-запросы; database.py — схема и доступ к SQLite;
 * updates.py — разбор «сырых» обновлений MAX API; max_api.py — клиент API;
+* webpanel.py — веб-панель сис-админа (/panel);
 * config.py — настройки из .env / переменных окружения.
 """
 import asyncio
 import hmac
 import logging
 from contextlib import asynccontextmanager
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request
 
@@ -23,11 +26,35 @@ from handlers.common import api, log, notify, pending_tasks, spawn
 from handlers.registry import CALLBACKS, STATES
 from updates import callback_id, callback_payload, is_dialog, message_text, sender_id, update_key
 from utils import UserLocks
+from webpanel import router as panel_router
 
-logging.basicConfig(level=config.LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+def setup_logging() -> None:
+    """Настройка журнала: консоль + rotating-файл (его читает панель и команда /logs)."""
+    root = logging.getLogger()
+    root.setLevel(config.LOG_LEVEL)
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler)
+               for h in root.handlers):
+        console = logging.StreamHandler()
+        console.setFormatter(formatter)
+        root.addHandler(console)
+    if config.LOG_FILE and not any(isinstance(h, RotatingFileHandler) for h in root.handlers):
+        try:
+            path = Path(config.LOG_FILE)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            file_handler = RotatingFileHandler(path, maxBytes=5_000_000, backupCount=3, encoding="utf-8")
+            file_handler.setFormatter(formatter)
+            root.addHandler(file_handler)
+        except OSError as exc:  # нет прав на каталог — работаем только с консоли
+            root.warning("файл журнала %s недоступен: %s", config.LOG_FILE, exc)
+
+
+setup_logging()
 logging.getLogger("httpx").setLevel(logging.WARNING)  # не пишем в лог каждый HTTP-запрос
 
 _locks = UserLocks()  # один пользователь — один обработчик за раз; ключи чистятся, память не растёт
+SHUTDOWN_TIMEOUT = 60  # сколько ждём завершения фоновых задач при остановке (docker stop_grace_period = 70s)
 
 
 async def on_callback(x: str, payload: str):
@@ -102,49 +129,62 @@ async def poll():
 # ───────────────────────── FastAPI ─────────────────────────
 
 
+async def shutdown(poller):
+    """Остановка фоновых задач и HTTP-клиента. Выполняется всегда: и при штатном выходе, и при сбое старта."""
+    try:
+        if poller:
+            poller.cancel()
+            await asyncio.gather(poller, return_exceptions=True)
+        # даём фоновым задачам (например, незавершённой рассылке) доработать,
+        # иначе итог и запись в историю рассылок потеряются при рестарте/деплое
+        pending = [t for t in pending_tasks() if not t.done()]
+        if pending:
+            log.info("Ожидание %d фоновых задач перед остановкой…", len(pending))
+            done, still = await asyncio.wait(pending, timeout=SHUTDOWN_TIMEOUT)
+            for t in still:
+                t.cancel()
+            if still:
+                await asyncio.gather(*still, return_exceptions=True)
+    finally:
+        try:
+            await api.close()
+        except Exception as exc:  # сбой закрытия клиента не должен замаскировать причину остановки
+            log.warning("не удалось закрыть API-клиент: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    for warning in config.validate():
-        log.warning(warning)
-    await db.init_db()
     poller = None
-    if config.WEBHOOK_URL:
-        try:  # удаляем старую подписку с этим URL, чтобы при рестартах не было двойной доставки
-            for sub in await api.subscriptions():
-                if sub.get("url") == config.WEBHOOK_URL:
-                    await api.unsubscribe(config.WEBHOOK_URL)
-                    log.info("Удалена прежняя подписка %s (защита от дублей событий)", config.WEBHOOK_URL)
-                    break
-        except Exception as exc:
-            log.warning("не удалось проверить/очистить подписки: %s", exc)
-        await api.subscribe(config.WEBHOOK_URL, config.WEBHOOK_SECRET)
-        log.info("Webhook зарегистрирован: %s", config.WEBHOOK_URL)
-    else:
-        try:
-            if await api.subscriptions():
-                log.warning("У бота есть webhook-подписка: long polling не получит события, пока её не удалить (DELETE /subscriptions).")
-        except Exception as exc:
-            log.warning("не удалось проверить подписки: %s", exc)
-        poller = spawn(poll())
-        log.info("Запущен long polling")
-    yield
-    if poller:
-        poller.cancel()
-        await asyncio.gather(poller, return_exceptions=True)
-    # даём фоновым задачам (например, незавершённой рассылке) доработать,
-    # иначе итог и запись в историю рассылок потеряются при рестарте/деплое
-    pending = [t for t in pending_tasks() if not t.done()]
-    if pending:
-        log.info("Ожидание %d фоновых задач перед остановкой…", len(pending))
-        done, still = await asyncio.wait(pending, timeout=60)
-        for t in still:
-            t.cancel()
-        if still:
-            await asyncio.gather(*still, return_exceptions=True)
-    await api.close()
+    try:
+        for warning in config.validate():
+            log.warning(warning)
+        await db.init_db()
+        if config.WEBHOOK_URL:
+            try:  # удаляем старую подписку с этим URL, чтобы при рестартах не было двойной доставки
+                for sub in await api.subscriptions():
+                    if sub.get("url") == config.WEBHOOK_URL:
+                        await api.unsubscribe(config.WEBHOOK_URL)
+                        log.info("Удалена прежняя подписка %s (защита от дублей событий)", config.WEBHOOK_URL)
+                        break
+            except Exception as exc:
+                log.warning("не удалось проверить/очистить подписки: %s", exc)
+            await api.subscribe(config.WEBHOOK_URL, config.WEBHOOK_SECRET)
+            log.info("Webhook зарегистрирован: %s", config.WEBHOOK_URL)
+        else:
+            try:
+                if await api.subscriptions():
+                    log.warning("У бота есть webhook-подписка: long polling не получит события, пока её не удалить (DELETE /subscriptions).")
+            except Exception as exc:
+                log.warning("не удалось проверить подписки: %s", exc)
+            poller = spawn(poll())
+            log.info("Запущен long polling")
+        yield
+    finally:  # try/finally обязателен: при сбое старта клиент тоже должен закрыться
+        await shutdown(poller)
 
 
 app = FastAPI(title="College MAX bot", lifespan=lifespan)
+app.include_router(panel_router)
 
 
 @app.get("/health")
