@@ -5,3 +5,6 @@
 # Python compiled files
 __pycache__/
 *.pyc
+# Local run artifacts (Windows start.bat)
+.venv/
+data/
