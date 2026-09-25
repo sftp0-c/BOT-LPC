@@ -42,6 +42,7 @@ if not errorlevel 1 (
     echo сохраните (Ctrl+O, Enter) и выйдите (Ctrl+X) в открывшемся Блокноте.
     echo.
     notepad ".env"
+    if exist ".env.txt" move /y ".env.txt" ".env" >nul
 )
 
 rem --- виртуальное окружение + зависимости ---------------------------
@@ -67,6 +68,8 @@ if errorlevel 1 (
         exit /b 1
     )
 )
+
+if not exist "data" mkdir "data"
 
 rem --- запуск --------------------------------------------------------
 echo.
