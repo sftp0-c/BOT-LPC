@@ -87,7 +87,7 @@ async def admin_tickets(admin_id: Optional[str], limit: int = 20) -> list:
 
 async def ticket_messages(ticket_id: int, limit: int = 10) -> list:
     return await db.many(
-        "SELECT sender_role, text FROM ticket_messages WHERE ticket_id=? ORDER BY id DESC LIMIT ?", (ticket_id, limit)
+        "SELECT sender_id, sender_role, text FROM ticket_messages WHERE ticket_id=? ORDER BY id DESC LIMIT ?", (ticket_id, limit)
     )
 
 

@@ -19,7 +19,8 @@ from fastapi import FastAPI, Header, HTTPException, Request
 import config
 import database as db
 from handlers import admin, broadcast, menus, tickets  # noqa: F401  — регистрация обработчиков при импорте
-from handlers.common import api, log, notify, pending_tasks, spawn
+from handlers import common
+from handlers.common import log, notify, pending_tasks, spawn
 from handlers.registry import CALLBACKS, STATES
 from updates import callback_id, callback_payload, is_dialog, message_text, sender_id, update_key
 from utils import UserLocks
@@ -63,13 +64,13 @@ async def process(u: dict):
                     return  # группы и каналы не обслуживаем
                 text = message_text(u)
                 if not text:
-                    return await api.send(x, "Пока я понимаю только текстовые сообщения.")
+                    return await common.api.send(x, "Пока я понимаю только текстовые сообщения.")
                 await menus.on_message(x, text)
             elif kind == "message_callback":
                 cid = callback_id(u)
                 if cid:
                     try:
-                        await api.answer(cid)
+                        await common.api.answer(cid)
                     except Exception as exc:
                         log.debug("answer не удался: %s", exc)
                 await on_callback(x, callback_payload(u))
@@ -86,7 +87,7 @@ async def poll():
     marker = None
     while True:
         try:
-            data = await api.updates(marker)
+            data = await common.api.updates(marker)
             new_marker = data.get("marker")
             if new_marker is not None:  # без свежего маркера повторяем старый — иначе MAX отдаст события заново
                 marker = new_marker
@@ -110,18 +111,18 @@ async def lifespan(app: FastAPI):
     poller = None
     if config.WEBHOOK_URL:
         try:  # удаляем старую подписку с этим URL, чтобы при рестартах не было двойной доставки
-            for sub in await api.subscriptions():
+            for sub in await common.api.subscriptions():
                 if sub.get("url") == config.WEBHOOK_URL:
-                    await api.unsubscribe(config.WEBHOOK_URL)
+                    await common.api.unsubscribe(config.WEBHOOK_URL)
                     log.info("Удалена прежняя подписка %s (защита от дублей событий)", config.WEBHOOK_URL)
                     break
         except Exception as exc:
             log.warning("не удалось проверить/очистить подписки: %s", exc)
-        await api.subscribe(config.WEBHOOK_URL, config.WEBHOOK_SECRET)
+        await common.api.subscribe(config.WEBHOOK_URL, config.WEBHOOK_SECRET)
         log.info("Webhook зарегистрирован: %s", config.WEBHOOK_URL)
     else:
         try:
-            if await api.subscriptions():
+            if await common.api.subscriptions():
                 log.warning("У бота есть webhook-подписка: long polling не получит события, пока её не удалить (DELETE /subscriptions).")
         except Exception as exc:
             log.warning("не удалось проверить подписки: %s", exc)
@@ -141,7 +142,7 @@ async def lifespan(app: FastAPI):
             t.cancel()
         if still:
             await asyncio.gather(*still, return_exceptions=True)
-    await api.close()
+    await common.api.close()
 
 
 app = FastAPI(title="College MAX bot", lifespan=lifespan)

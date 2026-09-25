@@ -1,3 +1,4 @@
+import asyncio
 import pytest
 from fastapi.testclient import TestClient
 
@@ -49,7 +50,7 @@ async def test_id_command_and_hidden_admin_command(api):
 
 async def test_superadmin_seeded_from_env(api):
     row = await db.one("SELECT role_type, can_broadcast FROM admins WHERE user_id='1'")
-    assert row["role_type"] == "superadmin" and row["can_broadcast"] == 1
+    assert row["role_type"] == "sysadmin" and row["can_broadcast"] == 1
 
 
 async def test_full_ticket_conversation(api):
@@ -172,7 +173,8 @@ async def test_broadcast_permissions_and_group_targeting(api):
     assert "1 чел." in api.last(STAFF2)[1]
     api.sent.clear()
     await press(STAFF2, "bcgo")
-    await bot.asyncio.gather(*list(bot._tasks))
+    from handlers.common import pending_tasks
+    await asyncio.gather(*pending_tasks())
     assert "Завтра сокращённые пары" in api.last(STUDENT)[1]
     assert not [m for m in api.to(OTHER) if "Завтра" in m[1]]
     assert "Доставлено: 1" in api.last(STAFF2)[1]
@@ -187,7 +189,8 @@ async def test_broadcast_counts_undelivered(api):
     await press("1", "bcaud:all")
     await say("1", "Всем привет")
     await press("1", "bcgo")
-    await bot.asyncio.gather(*list(bot._tasks))
+    from handlers.common import pending_tasks
+    await asyncio.gather(*pending_tasks())
     assert "Доставлено: 1, не доставлено: 1" in api.last("1")[1]
 
 

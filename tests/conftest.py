@@ -4,6 +4,8 @@ import bot
 import config
 import database as db
 
+from handlers import common
+
 from itertools import count
 
 BOT_ID = 999
@@ -74,9 +76,9 @@ def click(user, payload):
 @pytest.fixture(autouse=True)
 async def env(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DATABASE_PATH", str(tmp_path / "test.db"))
-    monkeypatch.setattr(config, "SUPERADMIN_IDS", ["1"])
+    monkeypatch.setattr(config, "SYSADMIN_IDS", ["1"])
     fake = FakeAPI()
-    monkeypatch.setattr(bot, "api", fake)
+    monkeypatch.setattr(common, "api", fake)
     bot._locks.clear()
     await db.init_db()
     return fake
