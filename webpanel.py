@@ -26,6 +26,7 @@ import config
 import database as db
 import repository as repo
 import timetable as tt
+import charts
 from handlers import schedules
 from handlers.admin import STAFF_ROLES, approve_request, notify_schedule_subscribers, probe_pdf_url, reject_request
 from handlers.broadcast import run_broadcast
@@ -33,6 +34,7 @@ from handlers.common import api as max_api
 from handlers.common import notify, spawn
 from timetable import WEEKDAYS_FULL
 from utils import (
+    CATS,
     CODE_TTL_CHOICES,
     OPEN_STATUSES,
     STAFF_CATS,
@@ -139,50 +141,106 @@ async def require_form(request: Request) -> str:
 
 # ── HTML ──────────────────────────────────────────────────────────────────────
 STYLE = """
-:root{--bg:#f4f5f7;--card:#fff;--line:#dfe3e8;--ink:#1c2530;--mut:#6a7684;--acc:#2563eb;--bad:#c0392b}
+:root{--bg:#eef1f6;--card:#fff;--line:#dde3ec;--ink:#1b2430;--mut:#67748a;--acc:#2563eb;
+      --acc-soft:#eff4ff;--bad:#d13b32;--ok:#17915b;--warn:#c98a12;--radius:12px;
+      --shadow:0 1px 2px rgba(16,24,40,.06),0 4px 12px rgba(16,24,40,.06)}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);
-     font:15px/1.5 -apple-system,"Segoe UI",Roboto,Arial,sans-serif}
-header{background:#1f2a37;color:#fff;padding:12px 20px}
-header h1{margin:0;font-size:17px;font-weight:600}
-header .sub{color:#9fb0c3;font-size:13px}
-nav{display:flex;flex-wrap:wrap;gap:2px;background:#243244;padding:0 12px}
-nav a{color:#c7d3e0;padding:10px 13px;text-decoration:none;font-size:14px;border-bottom:3px solid transparent}
-nav a:hover{background:#2e3f54;color:#fff}
-nav a.on{color:#fff;border-bottom-color:var(--acc);background:#2e3f54}
-main{max-width:1100px;margin:20px auto;padding:0 16px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px;margin-bottom:16px}
-.card h2{margin:0 0 12px;font-size:16px}
-h3{margin:18px 0 8px;font-size:14px;color:var(--mut);text-transform:uppercase;letter-spacing:.4px}
+     font:15px/1.55 -apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+     -webkit-font-smoothing:antialiased}
+a{color:var(--acc)}
+header{background:linear-gradient(135deg,#1e293b,#2b3b53);color:#fff;padding:14px 22px;
+      display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline}
+header h1{margin:0;font-size:17px;font-weight:650;letter-spacing:.2px}
+header .sub{color:#a8b8cc;font-size:13px;margin-left:auto}
+nav{display:flex;flex-wrap:wrap;gap:2px;background:#fff;border-bottom:1px solid var(--line);
+    padding:0 10px;position:sticky;top:0;z-index:5}
+nav a{color:#4a586c;padding:11px 13px;text-decoration:none;font-size:14px;font-weight:500;
+      border-bottom:2px solid transparent;border-radius:6px 6px 0 0}
+nav a:hover{background:var(--acc-soft);color:var(--acc)}
+nav a.on{color:var(--acc);border-bottom-color:var(--acc);font-weight:600}main{max-width:1180px;margin:22px auto;padding:0 18px 40px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+      padding:18px 20px;margin-bottom:18px;box-shadow:var(--shadow)}
+.card h2{margin:0 0 14px;font-size:16px;font-weight:650}
+.card h2:first-child{margin-top:-2px}
+h3{margin:20px 0 8px;font-size:13px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px}
 table{width:100%;border-collapse:collapse;font-size:14px}
-th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
-th{color:var(--mut);font-weight:600;font-size:13px;white-space:nowrap}
+th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--mut);font-weight:600;font-size:12.5px;text-transform:uppercase;letter-spacing:.3px;
+   white-space:nowrap;background:#fafbfd}
+tbody tr:hover{background:#f8fafd}
 tr:last-child td{border-bottom:0}
-.cards{display:flex;flex-wrap:wrap;gap:10px}
-.stat{flex:1 1 140px;background:#f8fafc;border:1px solid var(--line);border-radius:8px;padding:12px}
-.stat b{display:block;font-size:24px;line-height:1.2}
+.cards{display:flex;flex-wrap:wrap;gap:12px}
+.stat{flex:1 1 150px;background:linear-gradient(180deg,#fff,#f7f9fc);border:1px solid var(--line);
+      border-radius:var(--radius);padding:14px 16px}
+.stat b{display:block;font-size:26px;line-height:1.2;font-variant-numeric:tabular-nums}
 .stat span{color:var(--mut);font-size:13px}
-input,select,textarea{width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:6px;
-     font:inherit;background:#fff;color:var(--ink)}
+input,select,textarea{width:100%;padding:8px 10px;border:1px solid #cdd6e2;border-radius:8px;
+      font:inherit;background:#fff;color:var(--ink);transition:border-color .15s,box-shadow .15s}
+input:focus,select:focus,textarea:focus{outline:0;border-color:var(--acc);
+     box-shadow:0 0 0 3px rgba(37,99,235,.12)}
 textarea{min-height:110px;resize:vertical}
-label{display:block;margin:8px 0 3px;font-size:13px;color:var(--mut)}
-button,.btn{display:inline-block;padding:7px 13px;border:0;border-radius:6px;background:var(--acc);
-     color:#fff;font:inherit;cursor:pointer;text-decoration:none}
-button:hover,.btn:hover{filter:brightness(1.08)}
-.btn-grey{background:#5b6675}.btn-bad{background:var(--bad)}.btn-ok{background:#1d8a4e}
-.grid{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end}
-.grid>*{flex:1 1 160px}
+label{display:block;margin:8px 0 4px;font-size:12.5px;color:var(--mut);font-weight:500}
+button,.btn{display:inline-block;padding:8px 14px;border:0;border-radius:8px;background:var(--acc);
+     color:#fff;font:inherit;font-weight:500;cursor:pointer;text-decoration:none;
+     transition:filter .15s,transform .05s}
+button:hover,.btn:hover{filter:brightness(1.07)}
+button:active,.btn:active{transform:translateY(1px)}
+.btn-grey{background:#64748b}.btn-bad{background:var(--bad)}.btn-ok{background:var(--ok)}
+.grid{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end}
+.grid>*{flex:1 1 170px}
 .grid .full{flex:1 1 100%}
 .mut{color:var(--mut)}.small{font-size:13px}
-pre{background:#111a24;color:#cfe0f0;padding:14px;border-radius:8px;overflow:auto;
-     max-height:560px;font:12.5px/1.45 Consolas,Menlo,monospace;white-space:pre-wrap;word-break:break-all}
-.msg{padding:10px 12px;border-radius:6px;margin-bottom:12px;font-size:14px}
-.msg-ok{background:#e6f6ec;border:1px solid #b6e0c6}
-.msg-bad{background:#fdecea;border:1px solid #f2c2bd}
-.pill{display:inline-block;padding:1px 8px;border-radius:10px;background:#eef1f5;color:#41505f;font-size:12px}
-.pill-on{background:#e6f6ec;color:#1d6b3d}.pill-off{background:#f1f2f4;color:#77808a}
+pre{background:#0f1723;color:#d3e2f0;padding:16px;border-radius:var(--radius);overflow:auto;
+     max-height:560px;font:12.5px/1.5 Consolas,Menlo,monospace;white-space:pre-wrap;word-break:break-all}
+.msg{padding:12px 14px;border-radius:10px;margin-bottom:14px;font-size:14px}
+.msg-ok{background:#e8f7ef;border:1px solid #b6e2c9;color:#12603d}
+.msg-bad{background:#fdeceb;border:1px solid #f3c3bf;color:#8f241d}
+.pill{display:inline-block;padding:2px 9px;border-radius:999px;background:#eef1f5;color:#41505f;
+      font-size:12px;font-weight:500}
+.pill-on{background:#e6f6ec;color:#14663c}.pill-off{background:#f1f2f4;color:#77808a}
 form.inline{display:inline}
-footer{color:var(--mut);font-size:12px;padding:10px 16px 24px;text-align:center}
+footer{color:var(--mut);font-size:12px;padding:12px 18px 28px;text-align:center}
+
+/* ── диаграммы и карточки аналитики ─────────────────────────────────────── */
+.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
+.chart-box{margin:0;background:#fbfcfe;border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.chart-box figcaption{font-size:13px;font-weight:600;color:var(--mut);margin-bottom:8px}
+.chart{width:100%;height:auto;display:block}
+.chart .grid-line{stroke:#e6eaf0;stroke-width:1}
+.chart .axis{font-size:10px;fill:#8b95a3}
+.donut{width:150px;height:150px;flex:0 0 150px}
+.donut-total{font-size:22px;font-weight:700;fill:var(--ink)}
+.donut-sub{font-size:11px;fill:var(--mut)}
+.donut-wrap{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mut);margin-top:6px}
+.legend span{display:flex;align-items:center;gap:5px}
+.legend i{width:10px;height:10px;border-radius:2px;display:inline-block}
+.legend-list{list-style:none;margin:0;padding:0;flex:1 1 130px;font-size:13px}
+.legend-list li{display:flex;align-items:center;gap:7px;padding:3px 0}
+.legend-list i{width:10px;height:10px;border-radius:2px;flex:0 0 10px}
+.legend-list span{flex:1;color:#41505f}
+.legend-list b{font-variant-numeric:tabular-nums}
+.hbar-list{list-style:none;margin:0;padding:0;font-size:13px}
+.hbar-list li{display:flex;align-items:center;gap:8px;padding:3px 0}
+.hbar-label{flex:0 0 34%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#41505f}
+.hbar-track{flex:1;background:#eef1f5;border-radius:4px;height:12px;overflow:hidden}
+.hbar-track i{display:block;height:100%;border-radius:4px}
+.hbar-list b{flex:0 0 34px;text-align:right;font-variant-numeric:tabular-nums}
+.chart-empty{color:#98a2b3;font-size:13px;padding:26px 0;text-align:center}
+.spark svg{height:46px}
+.kpi{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px}
+.kpi div{flex:1 1 120px;background:linear-gradient(180deg,#fff,#f7f9fc);border:1px solid var(--line);
+     border-radius:10px;padding:12px 14px}
+.kpi b{display:block;font-size:26px;line-height:1.15;font-variant-numeric:tabular-nums}
+.kpi span{color:var(--mut);font-size:12.5px}
+.kpi .warn b{color:#c0392b}
+.kpi .good b{color:#1d8a4e}
+@media (max-width:640px){
+    main{padding:0 10px}
+    .donut-wrap{flex-direction:column;align-items:flex-start}
+    .hbar-label{flex-basis:45%}
+}
 """
 
 
@@ -197,11 +255,13 @@ def flag(value) -> bool:
 TABS = (
     ("/", "Обзор"),
     ("/tickets", "Обращения"),
+    ("/analytics", "Аналитика"),
     ("/people", "Пользователи"),
     ("/nostaff", "Без прав"),
     ("/students", "Студенты"),
     ("/staff", "Сотрудники"),
     ("/access", "Коды и заявки"),
+    ("/templates", "Шаблоны"),
     ("/groups", "Группы"),
     ("/schedules", "Расписания"),
     ("/broadcasts", "Рассылки"),
@@ -416,30 +476,189 @@ def _broadcasts_table(rows) -> str:
             f"<th>Доставлено</th><th>Когда</th></tr>{body}</table>")
 
 
+@router.get("/templates")
+async def templates_page(request: Request):
+    """Шаблоны ответов: что сотрудники отвечают чаще всего и почему."""
+    user = await require_user(request)
+    rows = await repo.list_templates(limit=100)
+    total = len(rows)
+    body_rows = ""
+    for row in rows:
+        title = as_str(row["title"])
+        confirm = f"Удалить шаблон «{title}»?"
+        body_rows += (
+            f"<tr><td><b>{esc(title)}</b><div class='small mut'>ID {esc(row['id'])}</div></td>"
+            f"<td class='small'>{esc((as_str(row['text']) or '')[:220])}</td>"
+            f"<td>{esc(STAFF_CATS.get(row['category'], row['category']))}</td>"
+            f"<td>{esc(row['used_count'])}</td>"
+            f"<td class='small mut'>{esc(fmt_when(row['created_at']))}</td>"
+            f"<td>{_action_form(request, f'/panel/templates/{esc(row['id'])}/delete', 'Удалить', confirm_text=confirm, cls='btn-bad')}"
+            f"</td></tr>"
+        )
+    body_rows = body_rows or "<tr><td class='mut'>Шаблонов пока нет</td></tr>"
+    table = ("<table><tr><th>Название</th><th>Текст</th><th>Раздел</th><th>Применён</th>"
+             f"<th>Добавлен</th><th></th></tr>{body_rows}</table>")
+    add = form(
+        request, "/panel/templates/add",
+        ('<div class="full"><label>Название - как это выглядит в кнопке</label>'
+         '<input name="title" placeholder="Справка готова"></div>')
+        + ('<div class="full"><label>Текст ответа</label>'
+           '<textarea name="text" placeholder="Здравствуйте! Справка готова, заберите её в кабинете 214."></textarea></div>')
+        + select("category", dict(STAFF_CATS), "all"),
+        "Добавить шаблон", "btn-ok",
+    )
+    body_all = f"""
+<div class="card"><h2>⚡ Шаблоны ответов: {total}</h2>
+<p class="small mut">Сотрудник в карточке обращения нажимает «⚡ Шаблоны» - выбирает подходящий
+и отправляет как есть или дописывает своё. Шаблон с разделом «🔁 Всё» показывается всегда,
+остальные - только в своём разделе. Колонка «Применён» показывает, какие ответы реально нужны.</p>
+{table}</div>
+<div class="card"><h2>Добавить шаблон</h2>{add}</div>"""
+    return page("Шаблоны ответов", body_all, user, "/templates")
+
+
+@router.post("/templates/add")
+async def templates_add(request: Request):
+    user = await require_form(request)
+    data = await request.form()
+    title = value(data, "title")
+    text = value(data, "text")
+    if not title or not text:
+        flash("!Нужны и название, и текст ответа.")
+        return redirect("/panel/templates")
+    template_id = await repo.add_template(title, text, value(data, "category") or "all", user)
+    log.info("панель: добавлен шаблон «%s» (сис-админ %s)", title, user)
+    await repo.log_action(user, "шаблон ответа добавлен", f"{title} (ID {template_id})")
+    flash(f"Шаблон «{title}» добавлен.")
+    return redirect("/panel/templates")
+
+
+@router.post("/templates/{template_id}/delete")
+async def templates_delete(request: Request, template_id: int):
+    user = await require_form(request)
+    template = await repo.get_template(template_id)
+    if not template:
+        flash("!Шаблон не найден.")
+        return redirect("/panel/templates")
+    await repo.delete_template(template_id)
+    log.info("панель: удалён шаблон %s (сис-админ %s)", template_id, user)
+    await repo.log_action(user, "шаблон ответа удалён", f"{template['title']} (ID {template_id})")
+    flash(f"Шаблон «{template['title']}» удалён.")
+    return redirect("/panel/templates")
+
+
+# ── аналитика ─────────────────────────────────────────────────────────────────
+DASH_PERIODS = (7, 30, 90)
+
+
+def minutes_text(value) -> str:
+    """Минуты в человеческий вид: «2 ч 15 мин», «45 мин», «—»."""
+    minutes = to_int(value, 0)
+    if minutes <= 0:
+        return "—"
+    if minutes < 60:
+        return f"{minutes} мин"
+    if minutes < 24 * 60:
+        return f"{minutes // 60} ч {minutes % 60} мин" if minutes % 60 else f"{minutes // 60} ч"
+    return f"{minutes // (24 * 60)} дн"
+
+
+@router.get("/analytics")
+async def analytics_page(request: Request, days: int = 30):
+    """Диаграммы без внешних библиотек: динамика, статусы, разделы, нагрузка."""
+    user = await require_user(request)
+    days = days if days in DASH_PERIODS else 30
+    per_day = await repo.tickets_by_day(days)
+    speed = await repo.response_speed(days)
+    load = await repo.staff_load(days)
+    by_status = await repo.tickets_by_status()
+    by_category = await repo.tickets_by_category()
+    groups = await repo.students_by_group()
+    status_rows = [{"status": row["status"], "label": STATUS.get(row["status"], row["status"]),
+                    "count": row["count"]} for row in by_status]
+    category_rows = [{"category": row["category"],
+                      "label": STAFF_CATS.get(row["category"], row["category"] or "без раздела"),
+                      "count": row["count"]} for row in by_category]
+    unanswered = [row for row in by_status if row["status"] in OPEN_STATUSES]
+    kpi = f"""
+<div class="kpi">
+  <div><b>{speed['total']}</b><span>обращений за {days} дн.</span></div>
+  <div class="good"><b>{speed['share']}%</b><span>получили ответ</span></div>
+  <div><b>{esc(minutes_text(speed['avg_minutes']))}</b><span>среднее время ответа</span></div>
+  <div class="warn"><b>{esc(minutes_text(speed['worst_minutes']))}</b><span>худший ответ</span></div>
+  <div class="warn"><b>{sum(row['count'] for row in unanswered)}</b><span>сейчас открыто</span></div>
+</div>"""
+    switcher = "".join(
+        f'<a class="btn{"-grey" if d != days else ""}" href="/panel/analytics?days={d}">{d} дн.</a>'
+        for d in DASH_PERIODS)
+    load_rows = "".join(
+        f"<tr><td><b>{esc(row['full_name'])}</b><div class='small mut'>ID {esc(row['user_id'])}</div></td>"
+        f"<td>{row['tickets']}</td><td>{row['open']}</td>"
+        f"<td>{esc(minutes_text(row['avg_minutes']))}</td>"
+        f"<td class='small mut'>{esc(fmt_when(row['last_reply'])) if row['last_reply'] else '—'}</td></tr>"
+        for row in load
+    ) or "<tr><td class='mut'>Сотрудников пока нет</td></tr>"
+    # мини-график имеет смысл только когда есть хотя бы два дня с данными
+    spark = charts.sparkline([row["count"] for row in per_day], "Всего обращений за период") \
+        if len(per_day) >= 2 else ""
+    body = f"""
+{kpi}
+<div class="card"><h2>Динамика обращений</h2>
+<div class="grid" style="margin-bottom:10px">{switcher}</div>
+<div class="charts">
+  {charts.bar_chart(per_day, 'count', 'day', f'Обращения по дням, {days} дн.', second_key='done')}
+  {spark}
+  {charts.donut(status_rows, 'count', 'label', 'Статусы обращений')}
+  {charts.donut(category_rows, 'count', 'label', 'Разделы обращений')}
+  {charts.bars(load, 'tickets', 'full_name', f'Обращения у сотрудников за {days} дн.', color='#8b5cf6')}
+  {charts.bars(groups, 'count', 'group', 'Студенты по группам', color='#06b6d4')}
+</div></div>
+<div class="card"><h2>Нагрузка на сотрудников</h2>
+<table><tr><th>Сотрудник</th><th>Обращений</th><th>Открытых</th><th>Средний ответ</th><th>Последний ответ</th></tr>
+{load_rows}</table>
+<p class="small mut">Среднее время ответа считается по первой ответной реплике сотрудника.
+Обращения без ответа в среднее не попадают, но видны в колонке «Открытых».</p></div>"""
+    return page("Аналитика", body, user, "/analytics")
+
+
 # ── обращения ─────────────────────────────────────────────────────────────────
 EVENT_LABELS = {"created": "обращение создано", "status": "статус", "ready": "документ готов",
                 "message_student": "сообщение студента", "message_staff": "ответ сотрудника"}
 
 
 @router.get("/tickets")
-async def tickets_list(request: Request, status: str = "", q: str = ""):
+async def tickets_list(request: Request, status: str = "", q: str = "", category: str = "",
+                       scope: str = ""):
+    """Очередь обращений с фильтрами: статус, раздел, «только ждут ответа»."""
     user = await require_user(request)
     rows = await repo.admin_tickets(None, 200)
-    if status:
+    if status == "open":
+        rows = [r for r in rows if as_str(r["status"]) in OPEN_STATUSES]
+    elif status:
         rows = [r for r in rows if as_str(r["status"]) == status]
+    if category:
+        rows = [r for r in rows if as_str(r["category"]) == category]
     if q:
         needle = q.lower()
         rows = [r for r in rows if needle in as_str(r["text_content"]).lower() or needle in as_str(r["student_id"])]
     counts = await repo.status_counts()
-    options = {"": "все статусы"} | {code: label for code, label in STATUS.items()}
+    latest = await repo.latest_message_roles([row["ticket_id"] for row in rows])
+    if scope == "waiting":
+        rows = [row for row in rows if latest.get(int(row["ticket_id"])) == "student"]
+    waiting = sum(1 for row in rows if latest.get(int(row["ticket_id"])) == "student")
+    options = {"": "все статусы", "open": "🔓 открытые"} | {code: label for code, label in STATUS.items()}
+    cat_options = {"": "все разделы", **{code: label for code, label in CATS.items()}}
     filters = f"""
 <form method="get" action="/panel/tickets" class="grid" style="margin-bottom:14px">
 <div>{select("status", options, status)}</div>
+<div>{select("category", cat_options, category)}</div>
 <div><label>Поиск по тексту или ID</label><input name="q" value="{esc(q)}"></div>
-<div><button>Найти</button></div></form>"""
+<div><button>Найти</button></div></form>
+<p class="small mut"><a class="btn{'-grey' if scope != 'waiting' else ''}" href="/panel/tickets?status={esc(status)}&category={esc(category)}&q={esc(q)}{'&scope=waiting' if scope != 'waiting' else ''}">🔔 Только ждут ответа: {waiting}</a></p>"""
     summary = " · ".join(f"{STATUS.get(c, c)}: {counts.get(c, 0)}" for c in STATUS)
     return page("Обращения", f'<div class="card"><p class="small mut">{esc(summary)}</p>{filters}'
-                 f"{_tickets_table(rows)}</div>", user, "/tickets")
+                 f"{_tickets_table(rows)}<p class=\"small mut\">Показано обращений: {len(rows)}</p></div>",
+                 user, "/tickets")
 
 
 @router.get("/tickets/{ticket_id}")
@@ -593,10 +812,10 @@ async def staff_list(request: Request, q: str = ""):
             as_str(row["user_id"]), as_str(row["full_name"]), as_str(row["position"]),
             as_str(row["department"]), as_str(row["office"])]).lower()]
     body = ""
+    role_options = {"": "— не назначена —", **{code: label for code, label in STAFF_ROLES.items()}}
     for row in rows:
         uid = as_str(row["user_id"])
         super_row = is_sysadmin_role(as_str(row["role_type"]))
-        role_options = {"": "— не назначена —", **{code: label for code, label in STAFF_ROLES.items()}}
         cat_options = dict(STAFF_CATS)
         load = activity.get(uid, {})
         tickets_90 = load.get("tickets", 0)
@@ -1116,6 +1335,7 @@ async def access_page(request: Request):
     body = f"""
 <div class="card"><h2>🗝 Коды сотрудников</h2>
 <form method="post" action="/panel/access/code" class="grid" style="margin-bottom:14px">
+{csrf(request)}
 <div><label>MAX ID (пусто — код для любого, у кого есть код)</label><input name="user_id" value=""></div>
 <div><label>ФИО для списка</label><input name="full_name" value=""></div>
 <div>{select("ttl_hours", {hours: label for hours, label in CODE_TTL_CHOICES}, config.STAFF_CODE_TTL)}</div>
@@ -1988,6 +2208,7 @@ async def logs_page(request: Request, lines: int = LOG_LINES, level: str = ""):
     body = f"""
 <div class="card"><h2>Проверки</h2>
 <form method="post" action="/panel/logs/test" class="grid">
+{csrf(request)}
 <div><label>Отправить тестовое сообщение сис-админу (MAX ID)</label><input name="to" value="{esc(user)}"></div>
 <div><button>Отправить</button></div>
 <div><button name="action" value="api" class="btn-grey">Проверить API MAX</button></div>

@@ -24,6 +24,7 @@ class FakeAPI:
 class FakeDB:
     def __init__(self):
         self.states = {}
+        self.settings = {}
 
     async def set_state(self, user_id, state, payload=None):
         self.states[str(user_id)] = {"state": state, "payload": payload or {}}
@@ -35,7 +36,14 @@ class FakeDB:
         return self.states.get(str(user_id))
 
     async def get_setting(self, key, default=None):
-        return default
+        return self.settings.get(str(key), default)
+
+    async def set_setting(self, key, value):
+        self.settings[str(key)] = str(value)
+
+    async def one(self, sql, params=()):
+        """Заглушка для подсказки ФИО из профиля: контакта в тестах нет."""
+        return None
 
 
 class FakeRepo:
@@ -64,6 +72,10 @@ class FakeRepo:
     async def get_schedule(self, group_code):
         url = self.schedules.get(group_code)
         return {"group_code": group_code, "pdf_url": url} if url else None
+
+    async def top_groups(self, limit=8):
+        """Подсказки групп при регистрации: берём из справочника."""
+        return [{"group_code": row["code"]} for row in self.groups if row["active"]][:limit]
 
 
 @pytest.fixture
@@ -127,12 +139,35 @@ async def test_regok_saves_normalized_group_and_preserves_colon(flow):
 
 
 async def test_empty_registry_accepts_normalized_group(flow):
-    api, repo, _ = flow
+    """Группа нормализуется, а перед сохранением человек её подтверждает."""
+    api, repo, db = flow
     repo.groups[:] = []
     await menus.st_reg_group(USER, " новый-7 ", {"name": "Иванов Иван"})
 
+    assert repo.saved == []          # пока не подтвердил
+    assert db.states[USER]["state"] == "reg_confirm"
+    assert "НОВЫЙ-7" in api.last(USER)[1]
+    assert "regyes" in api.payloads(USER)
+
+    await menus.cb_registration_confirm(USER, "")
     assert repo.saved == [(USER, "Иванов Иван", "НОВЫЙ-7")]
     assert {"academic", "accounting", "new:feedback", "view_schedules", "profile"} <= set(api.payloads(USER))
+
+
+async def test_registration_offers_known_groups(flow):
+    """Группу можно выбрать кнопкой - не нужно угадывать написание."""
+    api, repo, db = flow
+    await menus.st_reg_name(USER, "Иванов Иван", {})
+    payloads = api.payloads(USER)
+    assert "regpick:ИС-21" in payloads and "regpick:" in payloads
+
+
+async def test_registration_uses_name_from_profile(flow):
+    """Если подпись профиля похожа на ФИО - предлагаем её одной кнопкой."""
+    api, repo, db = flow
+    await db.one("SELECT 1", ())  # контактов нет - подсказки не будет
+    await menus.cb_who(USER, "student")
+    assert "Укажите ваши ФИО полностью" in api.last(USER)[1]
 
 
 async def test_profile_group_confirmation_does_not_save_until_regok(flow):

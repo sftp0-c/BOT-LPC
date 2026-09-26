@@ -186,7 +186,8 @@ async def test_init_db_adds_only_missing_objects(legacy):
     after = schema_snapshot(legacy)
     after_cols = {name: columns(legacy, name) for kind, name in after if kind == "table"}
     new_tables = {("table", name) for name in ("groups", "contacts", "ticket_events", "staff_invites",
-                                              "staff_requests", "login_attempts", "lessons", "admin_log")}
+                                              "staff_requests", "login_attempts", "lessons", "admin_log",
+                                              "reply_templates")}
     new_indexes = {("index", name) for name in ("idx_contacts_last_seen", "idx_ticket_events",
                                                "idx_login_attempts", "idx_lessons_group", "idx_admin_log")}
     added = {item for item in set(after) - set(before) if not item[1].startswith("sqlite_autoindex_")}

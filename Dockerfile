@@ -30,10 +30,13 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 # Модули верхнего уровня. Список полный: bot.py импортирует webpanel, а тот -
-# repository, timetable, handlers. Забытый здесь модуль = падение на импорте.
+# repository, timetable, charts, handlers. Забытый здесь модуль = падение на старте.
 COPY config.py database.py max_api.py repository.py updates.py utils.py \
-     timetable.py webpanel.py bot.py ./
+     timetable.py charts.py webpanel.py bot.py ./
 COPY handlers ./handlers
+# Проверяем импорты на этапе сборки: без неё забытый модуль всплыл бы только
+# при первом запуске контейнера - в 3 часа ночи.
+RUN python -c "import config, database, repository, updates, utils, timetable, charts, webpanel, bot; print('импорты в порядке')"
 # .dockerignore уже исключает тесты, но папка с данными может быть смонтирована
 # в образ при локальной сборке - создаём заранее, чтобы права были верными.
 RUN useradd --system --uid 10001 --home-dir /app app \

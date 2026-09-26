@@ -15,6 +15,8 @@ import hmac
 import logging
 import os
 import sqlite3
+import sys
+import time
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -29,7 +31,7 @@ from handlers import admin, broadcast, menus, tickets  # noqa: F401  — рег�
 from handlers.common import api, log, notify, pending_tasks, spawn
 from handlers.registry import CALLBACKS
 from updates import callback_id, callback_payload, is_dialog, message_text, profile_of, sender_id, update_key
-from utils import UserLocks, as_str
+from utils import UserLocks, as_str, short
 from webpanel import router as panel_router
 import webpanel
 
@@ -61,9 +63,10 @@ logging.getLogger("httpx").setLevel(logging.WARNING)  # не пишем в ло�
 _locks = UserLocks()  # один пользователь — один обработчик за раз; ключи чистятся, память не растёт
 SHUTDOWN_TIMEOUT = 60  # сколько ждём завершения фоновых задач при остановке (docker stop_grace_period = 70s)
 
-# Кнопки, которые продолжают диалог выдачи прав: нажатие подсказки не должно
-# стирать список сотрудников, ждущий категорию или должность.
-STATE_KEEPING_CALLBACKS = frozenset({"bcgo", "mph", "mkc", "sfbc"})
+# Кнопки, которые продолжают диалог выдачи прав, отправку ответа по шаблону
+# и регистрацию: нажатие не должно стирать то, что человек уже выбрал.
+STATE_KEEPING_CALLBACKS = frozenset({"bcgo", "mph", "mkc", "sfbc", "tplsend", "tplmore",
+                                     "regyes", "regpick"})
 
 
 async def on_callback(x: str, payload: str):
@@ -140,11 +143,37 @@ async def process(u: dict):
             await notify(x, "⚠️ База данных недоступна. Сообщите администратору.")
     except Exception:
         log.exception("ошибка обработки обновления")
+        await _alert_sysadmins(f"⚠️ Ошибка при обработке события от {x}: {exc_summary()}\n"
+                               f"Подробности в журнале.", short=x)
         if x:
             await notify(x, "⚠️ Что-то пошло не так. Попробуйте ещё раз или отправьте /start.")
     finally:
         if x:
             _locks.release(x)
+
+
+_error_alerts: dict[str, float] = {}          # что уже сообщали
+ALERT_COOLDOWN = 900                            # не чаще раза в 15 минут на текст ошибки
+
+
+def exc_summary(limit: int = 160) -> str:
+    """Короткое имя ошибки: «ValueError: нечего преобразовывать»."""
+    exc = sys.exc_info()[1]
+    if exc is None:
+        return "неизвестная ошибка"
+    text = str(exc).strip() or type(exc).__name__
+    return short(f"{type(exc).__name__}: {text}", limit)
+
+
+async def _alert_sysadmins(text: str, short: str = "") -> None:
+    """Сообщает сис-админам о сбое, но не спамит: одна и та же ошибка - раз в 15 минут."""
+    key = short or text[:80]
+    now = time.monotonic()
+    if now - _error_alerts.get(key, 0) < ALERT_COOLDOWN:
+        return
+    _error_alerts[key] = now
+    for admin_id in {str(value) for value in config.SYSADMIN_IDS} | await _db_sysadmins():
+        await notify(admin_id, text)
 
 
 async def poll():
@@ -159,8 +188,10 @@ async def poll():
                 spawn(process(u))
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # long polling не должен падать из-за одного ответа
             log.error("long polling: %s", exc)
+            await _alert_sysadmins(f"⚠️ Не удалось получить события MAX: {exc_summary()}\n"
+                                   f"Бот продолжает пробовать. Подробности в журнале.", short=str(exc)[:60])
             await asyncio.sleep(5)
 
 
@@ -181,13 +212,13 @@ async def backup_loop():
             log.info("автокопия базы: %s (%s, хранится %s)", os.path.basename(path),
                      webpanel_human_size(os.path.getsize(path)), kept)
             warned = 0
-        except Exception as exc:  # noqa: BLE001 — копирование не критично, но молчать нельзя
+        except Exception as exc:  # копирование не критично, но молчать нельзя
             log.error("автокопия базы не удалась: %s", exc)
             warned += 1
             if warned == 1:  # не спамим: одно сообщение о первой неудаче, потом только журнал
-                for admin_id in {str(value) for value in config.SYSADMIN_IDS} | await _db_sysadmins():
-                    await notify(admin_id, "⚠️ Не удалось сделать резервную копию базы. "
-                                           "Подробности в журнале; вкладка «База данных» в панели.")
+                await _alert_sysadmins("⚠️ Не удалось сделать резервную копию базы. "
+                                       "Подробности в журнале; вкладка «База данных» в панели.",
+                                       short=f"backup: {exc}")
         finally:
             await repo.log_action("bot", "автокопия базы", "ошибка" if warned else "создана копия")
 

@@ -30,13 +30,17 @@ async def test_start_offers_only_two_ways(api):
 async def test_registration_validates_and_normalizes(api):
     await say(STUDENT, "/start")
     await press(STUDENT, "who:student")
-    await say(STUDENT, "Иванов")  # одно слово — не ФИО
+    await say(STUDENT, "Иван")  # одно слово - не ФИО
     assert "полностью" in api.last(STUDENT)[1]
     await say(STUDENT, "Иванов Иван")
-    await say(STUDENT, "  ис-21 ")
+    await say(STUDENT, "  ИС-21 ")
+    # последний шаг: сверить данные перед сохранением
+    assert "Проверьте данные" in api.last(STUDENT)[1]
+    assert await db.one("SELECT 1 FROM users WHERE user_id=?", (STUDENT,)) is None
+    await press(STUDENT, "regyes")
     row = await db.one("SELECT * FROM users WHERE user_id=?", (STUDENT,))
     assert row["group_code"] == "ИС-21" and row["full_name"] == "Иванов Иван"
-    assert "sched" in api.payloads(STUDENT)  # показано меню студента
+    assert "sched" in api.payloads(STUDENT)  # расписание группы доступно сразу
 
 
 async def test_unregistered_user_is_sent_to_registration(api):

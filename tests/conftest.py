@@ -1,4 +1,6 @@
 from itertools import count
+import logging
+from logging.handlers import RotatingFileHandler
 
 import pytest
 
@@ -55,9 +57,40 @@ def csrf_of(client) -> str:
     return webpanel._csrf.get(client.cookies.get(webpanel.COOKIE, ""), "")
 
 
+@pytest.fixture
+def panel_client(monkeypatch, env):
+    """TestClient веб-панели: пароль задан, сессии чистые (вход - login_panel).
+
+    Общая фикстура для всех модулей с тестами панели. Без `with`: lifespan
+    не запускается, базу поднимает фикстура env.
+    """
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(config, "WEB_PANEL_PASSWORD", PANEL_PASSWORD)
+    monkeypatch.setattr(config, "WEB_PANEL_HOURS", 12)
+    webpanel._sessions.clear()
+    webpanel._flash = ""
+    return TestClient(bot.app)
+
+
 def post_form(client, path: str, data: dict | None = None):
     """POST с CSRF-токеном, как это делает браузер сис-админа."""
     return client.post(path, data={**(data or {}), "csrf": csrf_of(client)}, follow_redirects=False)
+
+
+def _retarget_log_file() -> None:
+    """Переводит файловый журнал на config.LOG_FILE.
+
+    Обработчик создаётся один раз при импорте bot.py и держит путь к файлу,
+    поэтому одной подмены config.LOG_FILE мало: панель читала бы tmp-файл,
+    а писали бы мы в настоящий logs/bot.log.
+    """
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        if isinstance(handler, RotatingFileHandler):
+            root.removeHandler(handler)
+            handler.close()
+    bot.setup_logging()
 
 
 def msg(user, text):
@@ -95,6 +128,11 @@ async def env(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "SYSADMIN_IDS", ["1"])
     # владелец в тестах появляется только там, где это проверяется явно
     monkeypatch.setattr(config, "ROOT_IDS", [])
+    # журнал тестов не должен попадать в настоящий logs/bot.log: иначе реальный
+    # журнал наполняется мусором из прогонов и засоряет вкладку панели
+    monkeypatch.setattr(config, "LOG_FILE", str(tmp_path / "test.log"))
+    monkeypatch.setattr(config, "BACKUP_DIR", str(tmp_path / "backups"))
+    _retarget_log_file()
     fake = FakeAPI()
     for module in (bot, common, admin, broadcast, menus, tickets):
         monkeypatch.setattr(module, "api", fake)
@@ -122,6 +160,7 @@ async def register(user, name="Иванов Иван Иванович", group="�
     await press(user, "who:student")
     await say(user, name)
     await say(user, group)
+    await press(user, "regyes")  # подтверждение данных, последний шаг регистрации
 
 
 async def add_staff(staff_id, name, category="all", broadcast=False, position="", office="-"):

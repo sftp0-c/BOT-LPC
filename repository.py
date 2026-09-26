@@ -1401,3 +1401,132 @@ async def stats_overview() -> dict:
     total = await db.one("SELECT COUNT(*) n FROM tickets")
     return {"students": students["n"], "staff": staff["n"], "week": week["n"], "total": total["n"],
             "people": await people_overview()}
+
+
+# ── аналитика для диаграмм в панели ───────────────────────────────────────────
+# Все запросы здесь считают в SQLite: панель показывает картинку по этим числам,
+# а не собирает строки в Python - иначе объём данных упирается в память.
+async def tickets_by_day(days: int = 30) -> list:
+    """Обращения по дням: [{day, count, done}] - столбики и доля завершённых."""
+    rows = await db.many(
+        "SELECT substr(created_at, 1, 10) day, COUNT(*) count, "
+        "SUM(CASE WHEN status IN ('completed','rejected') THEN 1 ELSE 0 END) done "
+        "FROM tickets WHERE created_at >= date('now', ?) "
+        "GROUP BY day ORDER BY day", (f"-{max(1, int(days))} days",),
+    )
+    return [{"day": as_str(row["day"]), "count": row["count"], "done": row["done"] or 0} for row in rows]
+
+
+async def tickets_by_status() -> list:
+    """Сколько обращений в каждом статусе: [{status, count}]."""
+    rows = await db.many("SELECT status, COUNT(*) count FROM tickets GROUP BY status ORDER BY count DESC")
+    return [{"status": as_str(row["status"]), "count": row["count"]} for row in rows]
+
+
+async def tickets_by_category() -> list:
+    """Сколько обращений по разделам: [{category, count}]."""
+    rows = await db.many(
+        "SELECT category, COUNT(*) count FROM tickets GROUP BY category ORDER BY count DESC")
+    return [{"category": as_str(row["category"]), "count": row["count"]} for row in rows]
+
+
+async def staff_load(days: int = 30) -> list:
+    """Нагрузка на сотрудников: сколько обращений, сколько открыто, среднее время ответа.
+
+    avg_minutes считается по первой ответной реплике сотрудника - это честная мера
+    скорости: время до «взял в работу» может быть другим, но ответ виден студенту.
+    """
+    rows = await db.many(
+        "SELECT a.user_id, COALESCE(a.full_name, a.user_id) full_name, "
+        "COUNT(t.ticket_id) tickets, "
+        "SUM(CASE WHEN t.status IN ('new','accepted','in_progress') THEN 1 ELSE 0 END) open_n, "
+        "ROUND(AVG(CASE WHEN r.first_reply IS NOT NULL THEN "
+        "  (julianday(r.first_reply) - julianday(t.created_at)) * 24 * 60 END)) avg_minutes, "
+        "MAX(r.first_reply) last_reply "
+        "FROM admins a "
+        "LEFT JOIN tickets t ON t.target_admin_id = a.user_id "
+        f"  AND t.created_at >= datetime('now', ?) "
+        "LEFT JOIN (SELECT ticket_id, MIN(created_at) first_reply FROM ticket_messages "
+        "           WHERE sender_role='staff' GROUP BY ticket_id) r ON r.ticket_id = t.ticket_id "
+        f"WHERE a.role_type {STAFF_ROLES_SQL} "
+        "GROUP BY a.user_id ORDER BY tickets DESC, full_name LIMIT 25",
+        (f"-{max(1, int(days))} days",),
+    )
+    return [{"user_id": as_str(row["user_id"]), "full_name": as_str(row["full_name"]),
+             "tickets": row["tickets"] or 0, "open": row["open_n"] or 0,
+             "avg_minutes": row["avg_minutes"], "last_reply": as_str(row["last_reply"])}
+            for row in rows]
+
+
+async def response_speed(days: int = 30) -> dict:
+    """Скорость ответа по обращениям, созданным за N дней: сколько ответили, среднее и худшее время."""
+    row = await db.one(
+        "SELECT COUNT(t.ticket_id) total, "
+        "SUM(CASE WHEN r.first_reply IS NOT NULL THEN 1 ELSE 0 END) answered, "
+        "ROUND(AVG(CASE WHEN r.first_reply IS NOT NULL THEN "
+        "  (julianday(r.first_reply) - julianday(t.created_at)) * 24 * 60 END)) avg_minutes, "
+        "ROUND(MAX(CASE WHEN r.first_reply IS NOT NULL THEN "
+        "  (julianday(r.first_reply) - julianday(t.created_at)) * 24 * 60 END)) worst_minutes "
+        "FROM tickets t "
+        "LEFT JOIN (SELECT ticket_id, MIN(created_at) first_reply FROM ticket_messages "
+        "           WHERE sender_role='staff' GROUP BY ticket_id) r ON r.ticket_id = t.ticket_id "
+        "WHERE t.created_at >= datetime('now', ?)",
+        (f"-{max(1, int(days))} days",),
+    )
+    total = row["total"] or 0
+    return {"total": total, "answered": row["answered"] or 0,
+            "avg_minutes": row["avg_minutes"], "worst_minutes": row["worst_minutes"],
+            "share": round(100 * (row["answered"] or 0) / total) if total else 0}
+
+
+async def students_by_group(limit: int = 12) -> list:
+    """Студенты по группам - понятная картинка «сколько у нас групп»."""
+    rows = await db.many(
+        "SELECT group_code, COUNT(*) count FROM users WHERE TRIM(group_code) <> '' "
+        "GROUP BY group_code ORDER BY count DESC, group_code LIMIT ?", (limit,),
+    )
+    return [{"group": as_str(row["group_code"]), "count": row["count"]} for row in rows]
+
+
+# ── шаблоны ответов ───────────────────────────────────────────────────────────
+async def list_templates(category: str = "", limit: int = 50) -> list:
+    """Шаблоны для раздела (пусто - все); сначала подходящие, потом общие.
+
+    Порядок: шаблон именно этого раздела, затем часто используемые.
+    """
+    where, params = ("WHERE category=? OR category='all'", (category,)) if category else ("", ())
+    return await db.many(
+        f"SELECT * FROM reply_templates {where} "
+        "ORDER BY (category='all') ASC, used_count DESC, created_at DESC, id DESC LIMIT ?",
+        (*params, max(1, int(limit))),
+    )
+
+
+async def get_template(template_id: int):
+    return await db.one("SELECT * FROM reply_templates WHERE id=?", (int(template_id),))
+
+
+async def add_template(title: str, text: str, category: str = "all", created_by: str = "") -> int:
+    """Добавляет шаблон ответа и возвращает его id."""
+    return await db.run(
+        "INSERT INTO reply_templates(title, text, category, created_by) VALUES(?,?,?,?)",
+        (as_str(title).strip()[:80], as_str(text).strip()[:2000], category or "all", as_str(created_by)),
+    )
+
+
+async def update_template_text(template_id: int, text: str) -> None:
+    await db.run("UPDATE reply_templates SET text=? WHERE id=?", (as_str(text).strip()[:2000], int(template_id)))
+
+
+async def count_template_use(template_id: int) -> None:
+    """Отмечает применение шаблона: так видно, какие реально нужны."""
+    await db.run("UPDATE reply_templates SET used_count=used_count+1 WHERE id=?", (int(template_id),))
+
+
+async def delete_template(template_id: int) -> None:
+    await db.run("DELETE FROM reply_templates WHERE id=?", (int(template_id),))
+
+
+async def templates_count() -> int:
+    row = await db.one("SELECT COUNT(*) n FROM reply_templates")
+    return row["n"]

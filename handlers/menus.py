@@ -156,7 +156,7 @@ async def _registration_saved(x: str, fio: str, group: str) -> None:
 
 
 def staff_menu(a):
-    rows = [[btn("📋 Мои обращения", "staff")], [btn("📊 Статистика", "staffstats")]]
+    rows = [[btn("📬 Мои обращения", "staff"), btn("📊 Статистика", "staffstats")]]
     if can_broadcast(a):
         rows.append([btn("📢 Рассылка", "broadcast")])
     if is_super(a):  # переход в панель сис-админа — кнопкой, для тех, кто вписан в .env
@@ -166,24 +166,78 @@ def staff_menu(a):
 
 async def sysadmin_menu(x: str):
     await db.clear_state(x)
-    await api.send(x, "🔐 Панель сис-админа", super_menu())
+    await api.send(x, "🔐 Панель сис-админа", await super_menu(x))
 
 
-def super_menu():
+MENU_VIEWS = {"admin": "Сис-админ", "staff": "Сотрудник", "student": "Студент"}
+
+
+async def menu_view(user_id: str) -> str:
+    """Какое меню показывать человеку: своё, сотрудника или студента.
+
+    Хранится в settings по ключу на пользователя, поэтому переключатель
+    переживает перезапуск и не смешивается у разных людей.
+    """
+    return await db.get_setting(f"menu_view:{user_id}", "admin")
+
+
+@callback("view")
+async def cb_menu_view(x, arg):
+    """Переключатель вида меню: «хочу работать как сотрудник / как студент»."""
+    view = as_str(arg)
+    if view not in MENU_VIEWS:
+        return await show_home(x)
+    await db.set_setting(f"menu_view:{x}", view)
+    if view == "admin":
+        return await sysadmin_menu(x)
+    return await show_home(x)
+
+
+async def view_switcher(x: str) -> list:
+    """Ряд кнопок «сейчас открыто другое меню»."""
+    current = await menu_view(x)
+    return [btn(f"{'● ' if code == current else ''}{MENU_VIEWS[code]}", f"view:{code}")
+            for code in MENU_VIEWS]
+
+
+async def super_menu(user_id: str) -> list:
+    """Главное меню сис-админа: три блока и «ещё», чтобы не было простыни кнопок."""
     return [
-        [btn("🔔 Что сделать сегодня", "today"), btn("📋 Все обращения", "staff")],
+        [btn("🔔 Что сделать сегодня", "today"), btn("📋 Обращения", "staff")],
         [btn("✍️ Создать обращение", "snew"), btn("👥 Расписания", "view_schedules")],
         [btn("👥 Пользователи", "people"), btn("👥 Сотрудники", "admins")],
-        [btn("🗝 Коды и заявки", "codes"), btn("📊 Статистика", "stats")],
-        [btn("📅 Расписания (PDF)", "schedules"), btn("👥 Группы", "groups")],
-        [btn("📢 Рассылка", "broadcast"), btn("⚙️ Настройки", "settings")],
-        [btn("🧪 Тест и журнал", "diag")],
+        [btn("🗝 Коды и заявки", "codes"), btn("👤 Кто без прав", "nostaff")],
+        [btn("⚙️ Ещё", "more"), btn("↩️ Кабинет сотрудника", "home")],
     ]
+
+
+@callback("more")
+async def cb_more(x, arg):
+    """Второй уровень меню: настройки, справочники и диагностика."""
+    if not is_super(await admin_of(x)):
+        return await show_home(x)
+    keyboard = [
+        [btn("📊 Статистика", "stats"), btn("📢 Рассылка", "broadcast")],
+        [btn("📅 Расписания (PDF)", "schedules"), btn("👥 Группы", "groups")],
+        [btn("⚙️ Настройки", "settings"), btn("🧪 Тест и журнал", "diag")],
+        await view_switcher(x),
+        [btn("🔐 Панель сис-админа", "sysadm")],
+    ]
+    await api.send(x, "⚙️ Ещё", [*keyboard, [btn("↩️ В меню", "home")]])
 
 
 async def show_home(x: str):
     a = await admin_of(x)
     if a:
+        view = await menu_view(x)
+        if view == "student":
+            return await api.send(
+                x, "🎓 Режим студента. Основное меню бота — ниже, админские кнопки — в «⚙️ Ещё».",
+                [*student_menu(), await view_switcher(x), [btn("↩️ В меню", "home")]])
+        if view == "staff":
+            return await api.send(
+                x, "👔 Режим сотрудника. Обращения и статистика — ниже.",
+                [*staff_menu(a), await view_switcher(x), [btn("↩️ В меню", "home")]])
         return await api.send(x, "🏫 Кабинет сотрудника", staff_menu(a))
     if not await repo.is_registered(x):
         return await start(x)
@@ -196,23 +250,47 @@ async def st_reg_name(x, text, p):
     if not _valid_fio(name):
         return await api.send(x, "Укажите ФИО полностью (минимум фамилия и имя), например: Иванов Иван Иванович.")
     await db.set_state(x, "reg_group", {"name": name})
-    await api.send(x, "Укажите код вашей группы, например: ИС-21.")
+    return await _ask_group(x, name)
 
 
 @state("reg_group")
 async def st_reg_group(x, text, p):
     group = norm_group(text)
-    if not valid_group(group):
-        return await api.send(x, "Код группы состоит из букв, цифр, дефисов и точек (без пробелов), до 30 символов.\nНапример: ИС-21. Попробуйте ещё раз.")
+    if not group or not valid_group(group):
+        return await _ask_group(x, _clean_fio((p or {}).get("name", "")))
     payload = p or {}
     fio = _clean_fio(payload.get("name", ""))
     if not _valid_fio(fio):
         return await start(x)
     if not await _group_allowed(group):
         return await _group_confirmation(x, group, fio)
+    # последний шаг - сверить данные: опечатка в ФИО потом ищется по всему боту
+    await db.set_state(x, "reg_confirm", {"name": fio, "group": group})
+    return await api.send(
+        x,
+        f"Проверьте данные:\n\n👤 {fio}\n🎓 {group}\n\nВсё верно?",
+        [[btn("✅ Всё верно, завершить", "regyes")],
+         [btn("✏️ ФИО", "regname:"), btn("🔤 Другая группа", "regpick:")], *BACK],
+    )
+
+
+async def _finish_registration(x: str, fio: str, group: str):
+    """Сохраняет студента после подтверждения. Единственное место записи в users."""
+    if not await _group_allowed(group):
+        return await _group_confirmation(x, group, fio)
     await _save_user(x, fio, group)
     await db.clear_state(x)
     return await _registration_saved(x, fio, group)
+
+
+@state("reg_confirm")
+async def st_reg_confirm(x, text, p):
+    """Человек всё равно написал текст вместо кнопки - принимаем как ответ."""
+    payload = p or {}
+    if _valid_fio(_clean_fio(text)):
+        return await _finish_registration(x, _clean_fio(text), as_str(payload.get("group", "")))
+    return await api.send(x, "Нажмите «✅ Всё верно» или пришлите исправленное ФИО.",
+                          [[btn("✅ Всё верно, завершить", "regyes")], *BACK])
 
 
 @state("registration_name")
@@ -272,10 +350,42 @@ async def start(x: str):
 
 
 # ── регистрация: студент, сотрудник по коду, заявка ──────────────────────────
+async def _suggested_name(x: str) -> str:
+    """ФИО из профиля MAX - чтобы человеку не набирать своё имя вручную.
+
+    Берём подпись профиля, но только если она похожа на ФИО (фамилия и имя),
+    иначе предлагать «Студент» бесполезно.
+    """
+    row = await db.one("SELECT display_name FROM contacts WHERE user_id=?", (x,))
+    name = _clean_fio(_row_value(row, "display_name") if row else "")
+    return name if _valid_fio(name) else ""
+
+
+@callback("regname")
+async def cb_registration_confirm_name(x, arg):
+    """Человек подтвердил ФИО, предложенное из профиля MAX.
+
+    Проверки «зарегистрирован ли» здесь нет и быть не должно: на этом шаге
+    человек как раз ещё не зарегистрирован. Защита - само состояние reg_group.
+    """
+    await db.set_state(x, "reg_group", {"name": _clean_fio(arg)})
+    await _ask_group(x, _clean_fio(arg))
+
+
 @callback("who")
 async def cb_who(x, arg):
     kind = as_str(arg)
     if kind == "student":
+        suggestion = await _suggested_name(x)
+        if suggestion:
+            await db.set_state(x, "reg_name", {"suggest": suggestion})
+            return await api.send(
+                x,
+                f"Проверьте ФИО: {suggestion} — так вас видят в боте.\n"
+                "Если всё верно, нажмите кнопку. Иначе введите своё написание.",
+                [[btn(f"✅ {suggestion}", f"regname:{suggestion}")],
+                 [btn("✏️ Введу сам", "regname:")], *BACK],
+            )
         await db.set_state(x, "reg_name")
         return await api.send(x, "Укажите ваши ФИО полностью, например: Иванов Иван Иванович.")
     if kind == "staff":
@@ -285,6 +395,37 @@ async def cb_who(x, arg):
     if kind == "guest":
         return await _guest_home(x)
     return await start(x)
+
+
+@callback("regpick")
+async def cb_registration_pick_group(x, arg):
+    """Группа выбрана кнопкой из списка - не нужно набирать вручную."""
+    session = await db.get_state(x) or {}
+    payload = session.get("payload") or {}
+    return await st_reg_group(x, as_str(arg), {"name": payload.get("name", payload.get("suggest", ""))})
+
+
+@callback("regyes")
+async def cb_registration_confirm(x, arg):
+    """Финальное подтверждение: одна опечатка в ФИО потом ищется по всему боту."""
+    session = await db.get_state(x) or {}
+    payload = session.get("payload") or {}
+    return await _finish_registration(x, as_str(payload.get("name", "")),
+                                      as_str(payload.get("group", "")))
+
+
+async def _ask_group(x: str, name: str = "") -> None:
+    """Просит группу и сразу предлагает выбрать из групп, которые уже заведены."""
+    rows = await repo.list_groups(active_only=True)
+    known: list[str] = []
+    for row in rows or []:
+        code = _group_from_row(row)  # строки бывают и с code, и с group_code
+        if code and code not in known:
+            known.append(code)
+    keyboard = [[btn(code, f"regpick:{code}")] for code in known[:8]]
+    keyboard.append([btn("🔤 Введу код вручную", "regpick:")])
+    await api.send(x, f"{name}, укажите код группы. Часто вводят с ошибкой — сверьтесь: ИС-21, а не ИС21.",
+                   [*keyboard, *BACK])
 
 
 async def _guest_home(x: str):

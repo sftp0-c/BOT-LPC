@@ -107,6 +107,15 @@ CREATE TABLE IF NOT EXISTS settings(
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS reply_templates(                          -- готовые ответы сотрудников
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    title      TEXT NOT NULL,                             -- короткое название: «Справка готова»
+    text       TEXT NOT NULL,                             -- сам ответ (шаблон можно поправить перед отправкой)
+    category   TEXT NOT NULL DEFAULT 'all',               -- раздел обращений: all - для всех
+    created_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    used_count INTEGER NOT NULL DEFAULT 0                -- сколько раз применили: показывает полезные
+);
 CREATE TABLE IF NOT EXISTS admin_log(
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     actor_id   TEXT NOT NULL,                            -- кто: сис-админ или бота

@@ -523,10 +523,11 @@ async def test_deleted_user_starts_registration_again(api):
     await say(STUDENT, "/start")
     assert "Кто вы" in api.last(STUDENT)[1]
     await press(STUDENT, "who:student")
-    await say(STUDENT, "Петров Пётр Петрович")
-    await say(STUDENT, "ис-21")
+    await say(STUDENT, "Соколова Мария")
+    await say(STUDENT, "ИС-21")
+    await press(STUDENT, "regyes")  # подтверждение данных
     row = await db.one("SELECT * FROM users WHERE user_id=?", (STUDENT,))
-    assert row["full_name"] == "Петров Пётр Петрович"
+    assert row["full_name"] == "Соколова Мария"
 
 
 # ── человеческое время ────────────────────────────────────────────────────────

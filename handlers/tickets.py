@@ -129,6 +129,8 @@ def ticket_kb(t, staff_side: bool, can_delete: bool = False):
     tail = [btn("↩️ К списку", "staff")]
     if can_delete:
         tail.append(btn("🗑 Удалить", f"tdel:{tid}"))
+    if staff_side:
+        tail.insert(0, btn("⚡ Шаблоны", f"tpl:{tid}"))
     return [*rows, tail]
 
 
@@ -245,6 +247,60 @@ async def ticket_rows_kb(rows, staff_side: bool = False):
         buttons.append(btn(f"№{r['ticket_id']} · {STATUS[r['status']]} · {CATS[r['category']]}{mark}",
                            f"t:{r['ticket_id']}"))
     return [[item] for item in buttons]
+
+
+# Фильтры очереди сотрудника: сгруппированы по смыслу, а не по алфавиту.
+STAFF_QUEUE_FILTERS = (("open", "🔓 Открытые"), ("new", "🆕 Без ответа"),
+                       ("ready", "📄 К выдаче"), ("completed", "✅ Завершённые"))
+
+
+async def send_staff_queue(x: str, view: str = "") -> None:
+    """Очередь сотрудника: счётчики, фильтры и список.
+
+    Фильтр передаётся в кнопке, а не хранится в состоянии: так он не слетает
+    при возврате из карточки и не зависит от того, какую кнопку нажали раньше.
+    """
+    a = await admin_of(x)
+    if not a:
+        return await api.send(x, "Сотрудник не найден.", BACK)
+    scope = None if is_super(a) else x
+    all_rows = await repo.admin_tickets(scope)
+    counts = await repo.status_counts(scope)
+    if view == "open":
+        rows = [row for row in all_rows if row["status"] in OPEN_STATUSES]
+    elif view in dict(STAFF_QUEUE_FILTERS):
+        rows = [row for row in all_rows if as_str(row["status"]) == view]
+    elif view in CATS:
+        rows = [row for row in all_rows if as_str(row["category"]) == view]
+    else:
+        rows = all_rows
+    lines = ["📬 Очередь обращений"]
+    lines.append(" · ".join(f"{STATUS[code]} — {counts.get(code, 0)}"
+                            for code in ("new", "accepted", "in_progress", "ready", "completed")))
+    if view:
+        lines.append(f"\nФильтр: {dict(STAFF_QUEUE_FILTERS).get(view) or CATS.get(view, view)} — {len(rows)}")
+    else:
+        lines.append("Фильтр не выбран — показаны все обращения")
+    status_row = [btn(("● " if code == view else "") + label, f"stafff:{code}")
+                  for code, label in STAFF_QUEUE_FILTERS]
+    cat_row = [btn(("● " if code == view else "") + label, f"stafff:{code}") for code, label in CATS.items()]
+    keyboard = [status_row[i:i + 2] for i in range(0, len(status_row), 2)]
+    keyboard += [cat_row[i:i + 2] for i in range(0, len(cat_row), 2)]
+    keyboard.append([btn(f"🔄 Обновить ({len(rows)})", f"staff:{view}"),
+                     btn("Сбросить фильтр", f"staff:{''}")])
+    if rows:
+        keyboard += await ticket_rows_kb(rows[:15], True)
+    else:
+        keyboard.append([btn("Под таким фильтром обращений нет", "noop")])
+    await api.send(x, "\n".join(lines), [*keyboard, *BACK])
+
+
+@callback("stafff")
+async def cb_staff_filter(x, arg):
+    """Фильтр очереди: открытые, по статусу или по разделу."""
+    if not await admin_of(x):
+        return
+    return await send_staff_queue(x, as_str(arg))
 
 
 @callback("snew")
@@ -364,13 +420,10 @@ async def cb_my_tickets(x, arg):
 
 @callback("staff")
 async def cb_staff_tickets(x, arg):
-    a = await admin_of(x)
-    if not a:
+    """Очередь сотрудника: из меню - без фильтра, с кнопки «Обновить» - с тем же."""
+    if not await admin_of(x):
         return
-    rows = await repo.admin_tickets(None if is_super(a) else x)
-    if not rows:
-        return await api.send(x, "Обращений нет.", BACK)
-    await api.send(x, "📋 Обращения (сначала открытые, максимум 20):", await ticket_rows_kb(rows, True) + BACK)
+    return await send_staff_queue(x, as_str(arg))
 
 
 @callback("t")
@@ -392,13 +445,92 @@ async def cb_reply(x, arg):
     await api.send(x, f"Введите сообщение по обращению №{t['ticket_id']} (или /cancel).")
 
 
+@callback("tpl")
+async def cb_templates(x, arg):
+    """Шаблоны ответов: подходящие под раздел обращения + общие.
+
+    Показываем и по кнопке в меню, и из карточки обращения (тогда сразу
+    подставляем номер обращения в состояние ответа).
+    """
+    t, staff_side = await load_ticket(x, to_int(arg))
+    if not t or not staff_side:
+        return await api.send(x, "Шаблоны доступны сотруднику в его обращении.", BACK)
+    rows = await repo.list_templates(as_str(t["category"]))
+    if not rows:
+        return await api.send(
+            x,
+            "⚡ Шаблонов для этого раздела пока нет. Их добавляет сис-админ в панели: "
+            "«⚡ Шаблоны ответов».",
+            [[btn("↩️ К обращению", f"t:{t['ticket_id']}")], *BACK],
+        )
+    keyboard = [[btn(short(row["title"], 40), f"tplu:{row['id']}:{t['ticket_id']}")] for row in rows[:12]]
+    await api.send(
+        x,
+        f"⚡ Шаблоны для раздела {CATS.get(t['category'], t['category'])}\n"
+        "Выберите - текст подставится в ответ, его можно поправить перед отправкой.",
+        [*keyboard, [btn("↩️ К обращению", f"t:{t['ticket_id']}")], *BACK],
+    )
+
+
+@callback("tplu")
+async def cb_template_use(x, arg):
+    """Подставляет шаблон в ответ: сотрудник может дописать своё и отправить."""
+    template_id, _, tid = as_str(arg).partition(":")
+    t, staff_side = await load_ticket(x, to_int(tid))
+    if not t or not staff_side:
+        return await api.send(x, "Обращение не найдено.", BACK)
+    template = await repo.get_template(to_int(template_id))
+    if not template:
+        return await api.send(x, "Шаблон удалён.", [[btn("↩️ К обращению", f"t:{tid}")]])
+    await repo.count_template_use(to_int(template_id))
+    await db.set_state(x, "reply", {"tid": t["ticket_id"], "draft": as_str(template["text"])[:3000]})
+    await api.send(
+        x,
+        f"⚡ Шаблон «{template['title']}» готов к отправке в обращение №{t['ticket_id']}:\n\n"
+        f"{short(template['text'], 1200)}\n\n"
+        "Отправить как есть, дописать своё или отменить?",
+        [[btn("📤 Отправить как есть", f"tplsend:{t['ticket_id']}"), btn("✏️ Дописать", f"tplmore:{t['ticket_id']}")],
+         [btn("✖️ Отмена", f"t:{t['ticket_id']}")]],
+    )
+
+
+@callback("tplsend")
+async def cb_template_send(x, arg):
+    """Отправляет шаблон как есть - самый частый случай."""
+    t, staff_side = await load_ticket(x, to_int(arg))
+    if not t or not staff_side:
+        return await api.send(x, "Обращение не найдено.", BACK)
+    session = await db.get_state(x) or {}
+    draft = as_str((session.get("payload") or {}).get("draft", ""))
+    if not draft:
+        return await api.send(x, "Шаблон уже отправлен или сброшен.", [[btn("↩️ К обращению", f"t:{arg}")]])
+    return await st_reply(x, "", {"tid": t["ticket_id"], "draft": draft})
+
+
+@callback("tplmore")
+async def cb_template_more(x, arg):
+    """Оставляет шаблон в буфере: сотрудник дописывает своё обычным сообщением."""
+    t, staff_side = await load_ticket(x, to_int(arg))
+    if not t or not staff_side:
+        return await api.send(x, "Обращение не найдено.", BACK)
+    await api.send(x, "Допишите текст — он уйдёт студенту после шаблона. Или /cancel.")
+
+
 @state("reply")
 async def st_reply(x, text, p):
     t, staff_side = await load_ticket(x, to_int(p.get("tid")))
     if not t or (not staff_side and t["status"] not in OPEN_STATUSES):
         await db.clear_state(x)
         return await api.send(x, "Обращение недоступно или закрыто.", BACK)
+    draft = as_str((p or {}).get("draft", ""))
     text = text[:3000]
+    if draft and text:
+        text = f"{draft}\n\n{text}"  # сотрудник дописал своё к шаблону
+    elif draft:
+        text = draft
+    if not text.strip():
+        await db.clear_state(x)
+        return await api.send(x, "Отправлять нечего.", [[btn("📂 Открыть", f"t:{t['ticket_id']}")]])
     await db.clear_state(x)
     tid = t["ticket_id"]
     if staff_side:
