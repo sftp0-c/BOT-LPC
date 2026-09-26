@@ -25,12 +25,17 @@ RUN set -eux; \
 
 WORKDIR /app
 
+# Зависимости ставятся до кода: правка бота не заставляет пересобирать pip.
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY config.py database.py max_api.py repository.py updates.py utils.py bot.py ./
+# Модули верхнего уровня. Список полный: bot.py импортирует webpanel, а тот -
+# repository, timetable, handlers. Забытый здесь модуль = падение на импорте.
+COPY config.py database.py max_api.py repository.py updates.py utils.py \
+     timetable.py webpanel.py bot.py ./
 COPY handlers ./handlers
-
+# .dockerignore уже исключает тесты, но папка с данными может быть смонтирована
+# в образ при локальной сборке - создаём заранее, чтобы права были верными.
 RUN useradd --system --uid 10001 --home-dir /app app \
     && mkdir -p /app/data \
     && chown -R app:app /app/data

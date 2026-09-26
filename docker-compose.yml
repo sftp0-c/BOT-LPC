@@ -3,24 +3,43 @@ services:
     build:
       context: .
       args:
+        # Корневые сертификаты НУЦ Минцифры нужны, чтобы достучаться до API MAX.
+        # Своя сеть/свой набор CA - соберите с INSTALL_RU_CA: "0".
         INSTALL_RU_CA: "1"
     image: bot-lpc:latest
     container_name: bot-lpc
     restart: unless-stopped
-    # lifespan ждёт незавершённые фоновые задачи до 60 с, поэтому запас на SIGTERM и завершение uvicorn
+    # lifespan бота ждёт до 60 с фоновых задач (например, рассылку) перед остановкой -
+    # поэтому пауза длиннее, чем у docker stop по умолчанию.
     stop_grace_period: 70s
     env_file: .env
     environment:
       HOST: "0.0.0.0"
       PORT: "8080"
+      # Всё изменяемое живёт в томе: база, бэкапы, кэш PDF расписаний, журнал.
       DATABASE_PATH: /app/data/database.db
+      BACKUP_DIR: /app/data/backups
       LOG_FILE: /app/data/bot.log
+      # Домена нет - работаем через long polling. MAX_WEBHOOK_URL пуст,
+      # бот сам стартует опрос событий (см. config.py и bot.py:lifespan).
     ports:
-      # Только localhost: HTTPS для webhook отдаёт обратный прокси (Caddy / nginx), см. README.
-      - "127.0.0.1:8080:8080"
+      # 0.0.0.0 - панель видна с других устройств в вашей домашней сети:
+      # http://<IP-компьютера>:8080/panel (вход: MAX ID + WEB_PANEL_PASSWORD).
+      # Нужно открыть порт в брандмауэре Windows. Наружу в интернет не выставляем.
+      - "0.0.0.0:8080:8080"
     volumes:
-      # Журнал живёт рядом с базой, чтобы переживать пересборку образа
       - bot_data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   bot_data:
