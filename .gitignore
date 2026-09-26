@@ -7,9 +7,11 @@
 data/
 logs/
 .pytest_cache/
+.ruff_cache/
 *.db
 *.db-shm
 *.db-wal
+*.zip
 
 # Python compiled files
 __pycache__/
