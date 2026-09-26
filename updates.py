@@ -10,13 +10,39 @@ def sender_id(u: dict) -> str:
     В message_callback поле message.sender — это сам бот (он отправил сообщение
     с кнопкой), настоящий пользователь лежит в callback.user.
     """
+    return as_str(user_of(u).get("user_id"))
+
+
+def user_of(u: dict) -> dict:
+    """Объект User того, кто действовал: оттуда берём имя, ник и время активности.
+
+    В message_callback message.sender — сам бот, нажавший пользователь лежит
+    в callback.user; в message_created отправитель — в message.sender; в
+    bot_started — в user. В MAX это объект User: user_id, first_name,
+    last_name, username (может быть null), is_bot, last_activity_time.
+    """
     kind = u.get("update_type")
     if kind == "message_callback":
-        return as_str(((u.get("callback") or {}).get("user") or {}).get("user_id"))
+        return (u.get("callback") or {}).get("user") or {}
     if kind == "message_created":
         sender = (u.get("message") or {}).get("sender") or {}
-        return "" if sender.get("is_bot") else as_str(sender.get("user_id"))
-    return as_str((u.get("user") or {}).get("user_id"))
+        return {} if sender.get("is_bot") else sender
+    return u.get("user") or {}
+
+
+def profile_of(u: dict) -> dict:
+    """Данные о пользователе из события: {'username', 'display_name'}.
+
+    username у MAX nullable (если имя не задано или профиль закрыт) — тогда
+    ссылки на профиль не будет, но ID и отображаемое имя знаем.
+    """
+    user = user_of(u)
+    first = as_str(user.get("first_name")).strip()
+    last = as_str(user.get("last_name")).strip()
+    name = " ".join(part for part in (first, last) if part)
+    if not name:  # у части пользователей заполнено только устаревшее поле name
+        name = as_str(user.get("name")).strip()
+    return {"username": as_str(user.get("username") or "").strip(), "display_name": name[:100]}
 
 
 def update_key(u: dict):

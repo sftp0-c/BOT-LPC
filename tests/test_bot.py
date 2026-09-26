@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 import bot
 import config
 import database as db
+import repository
 from conftest import add_staff, click, press, register, say
 from handlers.common import pending_tasks
 
@@ -20,8 +21,15 @@ async def test_callback_user_is_taken_from_callback_not_message_sender(api):
     assert "Иванов Иван Иванович" in api.last(STUDENT)[1]
 
 
+async def test_start_offers_only_two_ways(api):
+    """На регистрации ровно две кнопки: студент и сотрудник — «пока не знаю» убрали."""
+    await say(STUDENT, "/start")
+    assert set(api.payloads(STUDENT)) == {"who:student", "who:staff"}
+
+
 async def test_registration_validates_and_normalizes(api):
     await say(STUDENT, "/start")
+    await press(STUDENT, "who:student")
     await say(STUDENT, "Иванов")  # одно слово — не ФИО
     assert "полностью" in api.last(STUDENT)[1]
     await say(STUDENT, "Иванов Иван")
@@ -33,9 +41,23 @@ async def test_registration_validates_and_normalizes(api):
 
 async def test_unregistered_user_is_sent_to_registration(api):
     await press(STUDENT, "profile")
-    assert "ФИО" in api.last(STUDENT)[1]
+    assert "Кто вы" in api.last(STUDENT)[1]
+    await press(STUDENT, "who:student")
     await say(STUDENT, "привет")  # состояние reg_name → ФИО из одного слова
     assert "полностью" in api.last(STUDENT)[1]
+
+
+async def test_guest_can_see_schedules_without_registration(api):
+    await repository.upsert_group("ИС-21", "Информационные системы")
+    await repository.upsert_schedule("ИС-21", "https://college.example/is-21.pdf")
+    await say(STUDENT, "/start")
+    await press(STUDENT, "who:guest")
+    assert "view_schedules" in api.payloads(STUDENT)
+    assert await db.one("SELECT 1 FROM users WHERE user_id=?", (STUDENT,)) is None
+    await press(STUDENT, "view_schedules")
+    assert "sched:ИС-21" in api.payloads(STUDENT)
+    await press(STUDENT, "sched:ИС-21")
+    assert "is-21.pdf" in api.last(STUDENT)[1]
 
 
 async def test_id_command_and_hidden_admin_command(api):
@@ -295,7 +317,7 @@ async def test_non_text_message_and_group_chat_ignored(api):
 
 async def test_bot_started_and_callback_answer(api):
     await bot.process({"update_type": "bot_started", "user": {"user_id": 100}})
-    assert "ФИО" in api.last("100")[1]
+    assert "Кто вы" in api.last("100")[1]
     await bot.process(click("100", "home"))
     assert api.answers and api.answers[-1].startswith("cb-")
 

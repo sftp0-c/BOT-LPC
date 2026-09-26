@@ -50,15 +50,20 @@ class FakeRepo:
             "INSERT INTO ticket_messages(ticket_id, sender_id, sender_role, text) VALUES(?,?,?,?)",
             (ticket_id, sender_id, role, text),
         )
+        await repository.log_ticket_event(
+            ticket_id, sender_id, "message_student" if role == "student" else "message_staff", text
+        )
         if new_status:
-            await self.set_ticket_status(ticket_id, new_status)
+            await self.set_ticket_status(ticket_id, new_status, actor_id=sender_id)
 
-    async def set_ticket_status(self, ticket_id, status):
+    async def set_ticket_status(self, ticket_id, status, actor_id=""):
         await db.run("UPDATE tickets SET status=? WHERE ticket_id=?", (status, ticket_id))
+        if actor_id:
+            await repository.log_ticket_event(ticket_id, actor_id, "status", status)
 
-    async def set_ticket_ready(self, ticket_id, ready_until, pickup_place="", doc_url=""):
+    async def set_ticket_ready(self, ticket_id, ready_until, pickup_place="", doc_url="", actor_id=""):
         self.ready_calls.append((ticket_id, ready_until, pickup_place, doc_url))
-        await self.set_ticket_status(ticket_id, "ready")
+        await self.set_ticket_status(ticket_id, "ready", actor_id=actor_id)
         self.extra[int(ticket_id)] = {"ready_until": ready_until,
                                       "pickup_place": pickup_place, "doc_url": doc_url}
 
@@ -227,7 +232,7 @@ async def test_ready_quick_choice_sets_status_and_notifies(api, fake_repo):
     assert "18:00" in when
     notice = [m for m in api.to(STUDENT) if "Заявка готова" in m[1]][-1]
     assert f"№{tid}" in notice[1] and when in notice[1]
-    assert "Петрова Анна" in notice[1] and "Директор" in notice[1] and "director" in notice[1]
+    assert "Петрова Анна" in notice[1] and "Директор" in notice[1] and "Должность" in notice[1]
     assert "каб. 204" in notice[1]
     assert "Где забрать" in notice[1]
     assert f"st:{tid}:ready" not in api.payloads(STAFF)  # готовой заявке кнопка готовности не нужна

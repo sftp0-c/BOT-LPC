@@ -5,9 +5,11 @@ import pytest
 import bot
 import config
 import database as db
+import webpanel
 from handlers import admin, broadcast, common, menus, tickets
 
 BOT_ID = 999
+PANEL_PASSWORD = "test-panel-pass"
 
 _click_seq = count(1)
 
@@ -43,6 +45,21 @@ class FakeAPI:
         return [b["payload"] for row in kb for b in row if b["type"] == "callback"]
 
 
+def login_panel(client, user_id: str = "1", password: str = PANEL_PASSWORD) -> bool:
+    return client.post("/panel/login", data={"user_id": user_id, "password": password},
+                       follow_redirects=False).status_code == 303
+
+
+def csrf_of(client) -> str:
+    """CSRF-токен формы: он отдельный от cookie сессии."""
+    return webpanel._csrf.get(client.cookies.get(webpanel.COOKIE, ""), "")
+
+
+def post_form(client, path: str, data: dict | None = None):
+    """POST с CSRF-токеном, как это делает браузер сис-админа."""
+    return client.post(path, data={**(data or {}), "csrf": csrf_of(client)}, follow_redirects=False)
+
+
 def msg(user, text):
     return {
         "update_type": "message_created",
@@ -76,6 +93,8 @@ def click(user, payload):
 async def env(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DATABASE_PATH", str(tmp_path / "test.db"))
     monkeypatch.setattr(config, "SYSADMIN_IDS", ["1"])
+    # владелец в тестах появляется только там, где это проверяется явно
+    monkeypatch.setattr(config, "ROOT_IDS", [])
     fake = FakeAPI()
     for module in (bot, common, admin, broadcast, menus, tickets):
         monkeypatch.setattr(module, "api", fake)
@@ -98,16 +117,20 @@ async def press(user, payload):
 
 
 async def register(user, name="Иванов Иван Иванович", group="ис-21"):
+    """Регистрация студента так, как это делает человек: выбор роли, ФИО, группа."""
     await say(user, "/start")
+    await press(user, "who:student")
     await say(user, name)
     await say(user, group)
 
 
-async def add_staff(staff_id, name, category="all", broadcast=False):
+async def add_staff(staff_id, name, category="all", broadcast=False, position="", office="-"):
     """Добавляет сотрудника так, как это делает superadmin (ID=1) через меню."""
     await press("1", "sfadd")
     await say("1", str(staff_id))
     await say("1", name)
+    await say("1", position if position else "-")
+    await say("1", office)
     await press("1", f"sfc:{staff_id}:{category}")
     if broadcast:
         await press("1", f"sfb:{staff_id}")

@@ -1,5 +1,8 @@
 @echo off
 setlocal enableextensions enabledelayedexpansion
+rem UTF-8 mode: Russian texts in the code, logs and console must not depend on the
+rem system locale (cp1251 breaks output and can mangle characters on startup).
+set "PYTHONUTF8=1"
 title BOT-LPC
 cd /d "%~dp0"
 
@@ -120,7 +123,7 @@ if defined BAD (
 echo .env looks OK.
 
 rem ---- dependencies (verify they really import) ----
-set "DEPS=fastapi, uvicorn, httpx, aiosqlite, dotenv, multipart"
+set "DEPS=fastapi, uvicorn, httpx, aiosqlite, dotenv, multipart, pdfplumber"
 "%VPY%" -c "import %DEPS%" >nul 2>nul
 if errorlevel 1 (
     echo.

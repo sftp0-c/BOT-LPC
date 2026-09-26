@@ -1,11 +1,17 @@
 """Главное меню и точки входа (/start, home)."""
+from datetime import datetime
+
+import config
 import database as db
 import repository as repo
-from handlers.admin import command as admin_command
-from handlers.common import DEFAULT_WELCOME, BACK, admin_of, api, can_broadcast, is_super, need_super
+import timetable as tt
+from handlers import schedules
+from handlers.admin import audit, command as admin_command, sysadmin_ids
+from handlers.common import DEFAULT_WELCOME, BACK, admin_of, api, can_broadcast, is_super, need_super, notify
 from handlers.registry import STATES, callback, state
 from max_api import btn, link_btn
-from utils import norm_group, valid_group
+from timetable import WEEKDAYS_FULL
+from utils import as_str, norm_code, norm_group, short, to_int, valid_group
 
 
 # ── входящие сообщения и команды ──────────────────────────────────────────────
@@ -165,9 +171,11 @@ async def sysadmin_menu(x: str):
 
 def super_menu():
     return [
-        [btn("📋 Все обращения", "staff"), btn("📊 Статистика", "stats")],
-        [btn("👥 Сотрудники", "admins"), btn("📅 Расписания", "schedules")],
-        [btn("👥 Группы", "groups")],
+        [btn("🔔 Что сделать сегодня", "today"), btn("📋 Все обращения", "staff")],
+        [btn("✍️ Создать обращение", "snew"), btn("👥 Расписания", "view_schedules")],
+        [btn("👥 Пользователи", "people"), btn("👥 Сотрудники", "admins")],
+        [btn("🗝 Коды и заявки", "codes"), btn("📊 Статистика", "stats")],
+        [btn("📅 Расписания (PDF)", "schedules"), btn("👥 Группы", "groups")],
         [btn("📢 Рассылка", "broadcast"), btn("⚙️ Настройки", "settings")],
         [btn("🧪 Тест и журнал", "diag")],
     ]
@@ -256,8 +264,198 @@ async def start(x: str):
     await db.clear_state(x)
     if await admin_of(x) or await repo.is_registered(x):
         return await show_home(x)
-    await db.set_state(x, "reg_name")
-    await api.send(x, "Здравствуйте! Это бот колледжа.\nУкажите ваши ФИО полностью, например: Иванов Иван Иванович.")
+    await api.send(
+        x,
+        "Здравствуйте! Это бот колледжа.\nКто вы?",
+        [[btn("🎓 Я студент", "who:student"), btn("👔 Я сотрудник", "who:staff")]],
+    )
+
+
+# ── регистрация: студент, сотрудник по коду, заявка ──────────────────────────
+@callback("who")
+async def cb_who(x, arg):
+    kind = as_str(arg)
+    if kind == "student":
+        await db.set_state(x, "reg_name")
+        return await api.send(x, "Укажите ваши ФИО полностью, например: Иванов Иван Иванович.")
+    if kind == "staff":
+        if await admin_of(x):
+            return await show_home(x)
+        return await _ask_staff_code(x)
+    if kind == "guest":
+        return await _guest_home(x)
+    return await start(x)
+
+
+async def _guest_home(x: str):
+    """Вход без регистрации: расписание и заявка на роль сотрудника."""
+    await db.clear_state(x)
+    await api.send(
+        x,
+        "👤 Ничего страшного — можно пользоваться ботом и без регистрации:\n"
+        "📚 посмотреть расписание группы по её коду\n"
+        "📥 подать заявку на роль сотрудника\n"
+        "Позже сможете зарегистрироваться как студент.",
+        [
+            [btn("📚 Все расписания", "view_schedules")],
+            [btn("🎓 Я всё-таки студент", "who:student"), btn("👔 Я сотрудник", "who:staff")],
+        ],
+    )
+
+
+async def _ask_staff_code(x: str):
+    await db.set_state(x, "staff_code")
+    await api.send(
+        x,
+        f"🗝 Введите код, который выдал сотрудник или сис-админ ({config.STAFF_CODE_ATTEMPTS} попытки в час).",
+        [[btn("📥 Нет кода — подать заявку", "staffreq")], *BACK],
+    )
+
+
+async def _code_locked(x: str, tries: int):
+    """Лимит попыток исчерпан: подсказываем заявку и предупреждаем сис-админов."""
+    await db.clear_state(x)
+    await audit(x, f"{x}: превышен лимит попыток ввода кода сотрудника ({tries}).")
+    await api.send(
+        x,
+        f"🚫 Лимит попыток исчерпан ({tries}). Подождите час и попробуйте снова.\n"
+        "Если код не помогает — подайте заявку, её рассмотрит сис-админ.",
+        [[btn("📥 Подать заявку", "staffreq")], *BACK],
+    )
+
+
+@state("staff_code")
+async def st_staff_code(x, text, p):
+    if await admin_of(x):
+        await db.clear_state(x)
+        return await show_home(x)
+    code = norm_code(text)
+    if not code:
+        return await api.send(x, "Код состоит из букв и цифр. Введите его ещё раз или /cancel.")
+    await repo.note_attempt(x)
+    tries = await repo.attempts_count(x)
+    ok, reason = await repo.use_invite(code, x)
+    if ok:
+        await repo.clear_attempts(x)
+        await db.set_state(x, "staff_join_name", {"code": code})
+        return await api.send(x, "✅ Код принят.\nВведите ФИО — так вас увидят студенты.")
+    if tries >= config.STAFF_CODE_ATTEMPTS:
+        return await _code_locked(x, tries)
+    return await api.send(x, f"❌ {reason}\nПопыток в этом часе: {tries}/{config.STAFF_CODE_ATTEMPTS}.")
+
+
+@state("staff_join_name")
+async def st_staff_join_name(x, text, p):
+    name = _clean_fio(text)
+    if not _valid_fio(name):
+        return await api.send(x, "Укажите ФИО полностью (минимум фамилия и имя).")
+    await db.set_state(x, "staff_join_position", {"name": name})
+    return await api.send(
+        x,
+        f"Должность сотрудника {name} — напишите свободным текстом, например «Преподаватель математики».\n"
+        "Этот текст увидят студенты. Отправьте «-», если должность назначит сис-админ.",
+    )
+
+
+@state("staff_join_position")
+async def st_staff_join_position(x, text, p):
+    position = _clean_fio(text)[:100]
+    if not position:
+        return await api.send(x, "Введите должность текстом или «-», если её назначит сис-админ.")
+    name = (p or {}).get("name", "")
+    await db.set_state(x, "staff_join_office", {"name": name, "position": "" if position == "-" else position})
+    return await api.send(x, f"Кабинет сотрудника {name} (например, 214) или «-», если кабинета нет.")
+
+
+@state("staff_join_office")
+async def st_staff_join_office(x, text, p):
+    if await admin_of(x):
+        await db.clear_state(x)
+        return await show_home(x)
+    office = _clean_fio(text)[:100]
+    payload = p or {}
+    name = payload.get("name", "")
+    if not name:
+        await db.clear_state(x)
+        return await start(x)
+    await repo.add_staff(x, name, position=payload.get("position", ""), office="" if office == "-" else office)
+    await db.clear_state(x)
+    await notify(
+        x,
+        "🏫 Вы зарегистрированы как сотрудник. Если должность указана неверно — "
+        "попросите сис-админа исправить её в карточке сотрудника.",
+    )
+    return await show_home(x)
+
+
+@callback("staffreq")
+async def cb_staff_request(x, arg):
+    """Заявка на роль сотрудника — для тех, у кого нет кода."""
+    if await admin_of(x):
+        return await show_home(x)
+    await db.set_state(x, "req_name")
+    return await api.send(x, "📥 Заявка на роль сотрудника.\nВведите ФИО — так вас увидят студенты.")
+
+
+@state("req_name")
+async def st_req_name(x, text, p):
+    name = _clean_fio(text)
+    if not _valid_fio(name):
+        return await api.send(x, "Укажите ФИО полностью (минимум фамилия и имя).")
+    await db.set_state(x, "req_position", {"name": name})
+    return await api.send(
+        x,
+        "Должность: напишите свободным текстом, например «Секретарь учебной части».\n"
+        "Или «-», если затрудняетесь — уточним при рассмотрении заявки.",
+    )
+
+
+@state("req_position")
+async def st_req_position(x, text, p):
+    position = _clean_fio(text)[:100]
+    if not position:
+        return await api.send(x, "Введите должность текстом или «-».")
+    name = (p or {}).get("name", "")
+    await db.set_state(x, "req_office", {"name": name, "position": "" if position == "-" else position})
+    return await api.send(x, "Кабинет (например, 214) или «-», если кабинета нет.")
+
+
+@state("req_office")
+async def st_req_office(x, text, p):
+    office = _clean_fio(text)[:100]
+    payload = p or {}
+    await db.set_state(x, "req_note", {"name": payload.get("name", ""),
+                                       "position": payload.get("position", ""),
+                                       "office": "" if office == "-" else office})
+    return await api.send(x, "Комментарий для сис-админа (например, кто вас назначил) или «-».")
+
+
+@state("req_note")
+async def st_req_note(x, text, p):
+    if await admin_of(x):
+        await db.clear_state(x)
+        return await show_home(x)
+    note = _clean_fio(text)[:300]
+    payload = p or {}
+    name = payload.get("name", "")
+    if not name:
+        await db.clear_state(x)
+        return await start(x)
+    await repo.create_staff_request(x, name, payload.get("position", ""), payload.get("office", ""),
+                                    "" if note == "-" else note)
+    await db.clear_state(x)
+    for uid in sysadmin_ids():
+        await notify(
+            uid,
+            f"📥 Новая заявка на роль сотрудника: {name} (ID {x}).",
+            [[btn("✅ Открыть заявку", f"req:{x}")]],
+        )
+    return await api.send(
+        x,
+        "📥 Заявка отправлена сис-админам — обычно отвечают в рабочее время.\n"
+        "Пока можно смотреть расписание.",
+        [[btn("📚 Все расписания", "view_schedules")], *BACK],
+    )
 
 
 @callback("academic")
@@ -299,11 +497,27 @@ async def cb_back(x, arg):
 
 # ── профиль студента ──────────────────────────────────────────────────────────
 async def need_student(x: str):
-    """Строка users; если пользователя нет — запускаем регистрацию и возвращаем None."""
+    """Строка users; если человек не зарегистрирован — предлагает зарегистрироваться."""
     user = await repo.get_user(x)
     if not user:
         await start(x)
     return user
+
+
+async def need_author(x: str):
+    """Кто пишет обращение: студент из users или сис-админ.
+
+    Сис-админу обращения тоже нужны — например, чтобы обратиться к коллеге или
+    проверить цепочку целиком, поэтому он допускается наравне со студентом.
+    """
+    user = await repo.get_user(x)
+    if user:
+        return user
+    a = await admin_of(x)
+    if a and is_super(a):
+        return {"full_name": f"{a['full_name']} · сис-админ", "group_code": "сис-админ"}
+    await start(x)
+    return None
 
 
 @callback("profile")
@@ -432,8 +646,6 @@ async def cb_done(x, arg):
 # ── расписание ────────────────────────────────────────────────────────────────
 @callback("view_schedules")
 async def cb_view_schedules(x, arg):
-    if not await need_student(x):
-        return
     rows = await _active_group_rows()
     schedule_lister = getattr(repo, "schedule_groups", None)
     schedule_rows = await schedule_lister() if schedule_lister is not None else []
@@ -454,22 +666,97 @@ async def cb_view_schedules(x, arg):
 @callback("sched")
 async def cb_schedule(x, arg):
     arg = str(arg or "")
-    user = await need_student(x)
-    if not user:
-        return
     selected = arg[6:] if arg.startswith("sched:") else arg
+    user = await repo.get_user(x)
+    if not user and not selected:
+        await need_student(x)
+        return
     group = _group_code(selected.split(":", 1)[0]) if selected else _group_code(_row_value(user, "group_code"))
+    return await send_schedule(x, group, back_to_list=bool(arg))
+
+
+async def send_schedule(x: str, group: str, back_to_list: bool = False, view: str = "week") -> None:
+    """Показывает расписание группы: разобранные занятия, иначе ссылку на PDF.
+
+    view: week — вся неделя, day — один день, next — ближайшие занятия.
+    """
+    group = _group_code(group)
     row = await repo.get_schedule(group)
     if not row:
         return await api.send(x, f"Расписание группы {group} пока не добавлено.", BACK)
     url = _row_value(row, "pdf_url")
+    result = await schedules.parse_group(group)
     label = await _schedule_subscription_label(x, group)
-    keyboard = [[link_btn("Открыть расписание", url)], [btn(label, f"schedsub:{group}")]]
-    if arg:
-        keyboard.append([btn("⬅️ К списку", "view_schedules")])
+    keyboard: list = []
+    tail = [btn(label, f"schedsub:{group}")]
+    if back_to_list:
+        tail.append(btn("⬅️ К списку", "view_schedules"))
     else:
-        keyboard.extend(BACK)
-    await api.send(x, f"📅 Расписание группы {group}:\n{url}", keyboard)
+        tail.extend(BACK[0])
+
+    if not result.has_lessons:
+        # разбор не получился — отдаём ссылку, как раньше, и честно говорим об этом
+        hint = f"\n(разобрать не удалось: {short(result.reason, 80)})" if result.reason else ""
+        return await api.send(
+            x, f"📅 Расписание группы {group} — PDF{hint}\n{url}",
+            [[link_btn("Открыть расписание", url)], tail],
+        )
+
+    schedule = result.schedule
+    if view == "day":
+        today = schedule.day(datetime.now().weekday())
+        text = tt.format_day(today) if today and not today.is_empty else f"📅 На {WEEKDAYS_FULL[datetime.now().weekday()]} пар нет"
+    elif view == "next":
+        text = tt.format_upcoming(schedule) or "⏰ Ближайших занятий не найдено"
+    else:
+        text = tt.format_schedule(schedule)
+    today_weekday = datetime.now().weekday()
+    keyboard = [
+        [btn("📆 Сегодня", f"schedday:{group}:{today_weekday}"),
+         btn("⏰ Ближайшие", f"schednext:{group}")],
+        [btn("📚 Вся неделя", f"sched:{group}")],
+    ]
+    await api.send(x, text, [*keyboard, tail])
+
+
+@callback("schedday")
+async def cb_schedule_day(x, arg):
+    raw = str(arg or "")
+    if raw.startswith("schedday:"):
+        raw = raw[9:]
+    group, _, weekday = raw.partition(":")
+    result = await schedules.parse_group(_group_code(group))
+    if not result.has_lessons:
+        return await send_schedule(x, group)
+    day = result.schedule.day(to_int(weekday, datetime.now().weekday()))
+    text = tt.format_day(day) if day and not day.is_empty else "📅 На этот день пар нет"
+    label = await _schedule_subscription_label(x, group)
+    return await api.send(x, text, [
+        [btn("📚 Вся неделя", f"sched:{group}"), btn("⏰ Ближайшие", f"schednext:{group}")],
+        [btn(label, f"schedsub:{group}"), btn("⬅️ К списку", "view_schedules")],
+    ])
+
+
+@callback("schednext")
+async def cb_schedule_next(x, arg):
+    raw = str(arg or "")
+    if raw.startswith("schednext:"):
+        raw = raw[10:]
+    return await send_schedule(x, _group_code(raw.split(":", 1)[0]), view="next")
+
+
+@callback("schedreload")
+async def cb_schedule_reload(x, arg):
+    """Перечитывает PDF заново — когда наcollege выложили новый файл."""
+    raw = str(arg or "")
+    if raw.startswith("schedreload:"):
+        raw = raw[11:]
+    group = _group_code(raw.split(":", 1)[0])
+    if not await repo.get_schedule(group):
+        return await api.send(x, f"Расписание группы {group} пока не добавлено.", BACK)
+    result = await schedules.parse_group(group, force=True)
+    text = tt.format_schedule(result.schedule) if result.has_lessons else f"Обновить не вышло: {result.reason}"
+    return await api.send(x, text, [[btn("📚 Вся неделя", f"sched:{group}"), *BACK[0]]])
 
 
 @callback("schedsub")

@@ -34,7 +34,7 @@ async def admin_of(user_id: str):
 
 
 def is_super(a) -> bool:
-    return bool(a) and a["role_type"] in ("sysadmin", "superadmin")  # superadmin — старое имя роли
+    return bool(a) and a["role_type"] in ("owner", "sysadmin", "superadmin")  # superadmin — старое имя роли
 
 
 def can_broadcast(a) -> bool:

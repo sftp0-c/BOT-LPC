@@ -177,7 +177,7 @@ async def test_init_db_creates_groups_and_topic_on_empty_db(env, tmp_path, monke
 
 
 async def test_init_db_adds_only_missing_objects(legacy):
-    """Появляется только groups; прежние таблицы не пересоздаются и не теряют ничего."""
+    """Появляются только новые объекты; прежние таблицы не пересоздаются и не теряют ничего."""
     before = schema_snapshot(legacy)
     before_cols = {name: columns(legacy, name) for kind, name in before if kind == "table"}
 
@@ -185,17 +185,37 @@ async def test_init_db_adds_only_missing_objects(legacy):
 
     after = schema_snapshot(legacy)
     after_cols = {name: columns(legacy, name) for kind, name in after if kind == "table"}
-    assert set(after) - set(before) == {("table", "groups"), ("index", "sqlite_autoindex_groups_1")}
+    new_tables = {("table", name) for name in ("groups", "contacts", "ticket_events", "staff_invites",
+                                              "staff_requests", "login_attempts", "lessons", "admin_log")}
+    new_indexes = {("index", name) for name in ("idx_contacts_last_seen", "idx_ticket_events",
+                                               "idx_login_attempts", "idx_lessons_group", "idx_admin_log")}
+    added = {item for item in set(after) - set(before) if not item[1].startswith("sqlite_autoindex_")}
+    assert added == new_tables | new_indexes
     assert set(before) <= set(after)
     for name, cols in before_cols.items():
         # прежние колонки не изменились, добавиться могла только новая
         assert {k: v for k, v in after_cols[name].items() if k in cols} == cols, name
         expected = {
-            "admins": {"role", "office"},
+            "admins": {"role", "office", "position", "department"},
             "tickets": {"topic", "ready_until", "doc_url", "pickup_place"},
             "broadcasts": {"sender_name", "sender_role"},
+            "user_states": {"created_at"},
+            "schedules": {"parsed_at", "parsed_hash", "found_groups", "parse_error"},
         }.get(name, set())
         assert set(after_cols[name]) - set(cols) == expected, name
+
+
+async def test_init_db_creates_new_tables_and_indexes(legacy):
+    await db.init_db()
+    created = schema_snapshot(legacy)
+    names = {name for kind, name in created if kind == "table"}
+    assert {"groups", "contacts", "ticket_events", "staff_invites", "staff_requests", "login_attempts"} <= names
+    indexes = {name for kind, name in created if kind == "index"}
+    assert {"idx_contacts_last_seen", "idx_ticket_events", "idx_login_attempts"} <= indexes
+    assert {"username", "messages", "last_seen", "first_seen"} <= set(columns(legacy, "contacts"))
+    assert {"event", "detail"} <= set(columns(legacy, "ticket_events"))
+    assert {"code", "expires_at", "used_by"} <= set(columns(legacy, "staff_invites"))
+    assert {"position", "office", "status"} <= set(columns(legacy, "staff_requests"))
 
 
 # ── обновление существующих таблиц ────────────────────────────────────────────

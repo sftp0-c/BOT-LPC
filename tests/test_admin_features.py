@@ -12,10 +12,12 @@ SYS, SYS2, STAFF, STUDENT = "1", "2", "200", "300"
 ROLES = ("director", "deputy_uvr", "deputy_upr", "deputy_unr", "social_pedagogue")
 
 
-def admin_row(aid, name, role="", office="", role_type="staff", category="all", broadcast=0):
+def admin_row(aid, name, role="", office="", role_type="staff", category="all", broadcast=0,
+              position="", department=""):
     return {
         "id": aid, "user_id": aid, "full_name": name,
         "role": role, "role_type": role_type, "office": office,
+        "position": position, "department": department,
         "ticket_category": category, "can_broadcast": broadcast,
     }
 
@@ -34,14 +36,33 @@ class FakeRepo:
     async def get_admin(self, user_id):
         return self.admins.get(str(user_id))
 
-    async def set_admin_profile(self, admin_id, role="", office=""):
+    async def set_admin_profile(self, admin_id, role="", office="", position="", department=""):
         self.calls.append(("set_admin_profile", str(admin_id), role, office))
+        self.calls.append(("set_position", str(admin_id), position))
+        self.calls.append(("set_department", str(admin_id), department))
         a = self.admins.get(str(admin_id))
         if a:
             if role:
                 a["role"] = role
             if office:
                 a["office"] = office
+            if position:
+                a["position"] = position
+            if department:
+                a["department"] = department
+
+    async def clear_admin_fields(self, admin_id, *names):
+        self.calls.append(("clear_admin_fields", str(admin_id)) + tuple(names))
+        a = self.admins.get(str(admin_id))
+        if a:
+            for name in names:
+                a[name] = ""
+
+    async def list_staff(self):
+        return [a for a in self.admins.values() if a["role_type"] == "staff"]
+
+    async def staff_activity(self, days=30):
+        return {}
 
     async def list_groups(self, active_only=False):
         rows = [{"code": g["code"], "active": g["active"]} for g in self.registry]
@@ -120,25 +141,65 @@ def pdf_probe(monkeypatch, handler):
     return requests
 
 
-# ── карточка сотрудника: должность и кабинет ──────────────────────────────────
+# ── карточка сотрудника: должность, отдел и кабинет ───────────────────────────
 async def test_staff_card_shows_role_office_and_buttons(api, repo):
     await tap("sf", arg=STAFF)
     text = api.last(SYS)[1]
     assert "Петрова Анна" in text and f"MAX ID: {STAFF}" in text
     assert "Должность: не назначена" in text and "Кабинет: —" in text
-    assert {"sfr:%s" % STAFF, "sfo:%s" % STAFF} <= set(api.payloads(SYS))
+    assert {"sfr:%s" % STAFF, "sfo:%s" % STAFF, "sfdep:%s" % STAFF, "sft:%s" % STAFF} <= set(api.payloads(SYS))
 
 
-async def test_sfr_offers_all_five_roles_with_srset_payloads(api, repo):
+async def test_sfr_asks_for_free_text_position(api, repo):
     await tap("sfr", arg=STAFF)
-    assert api.payloads(SYS) == [f"srset:{STAFF}:{role}" for role in ROLES]
+    assert await state_of() == ("staff_position", {"admin_id": STAFF})
+    text = api.last(SYS)[1]
+    assert "Введите должность" in text and "Преподаватель информатики" in text
+
+
+async def test_sfr_saves_free_text_position_and_reopens_card(api, repo):
+    await tap("sfr", arg=STAFF)
+    await say_state(SYS, "  Преподаватель информатики ")
+    assert ("set_position", STAFF, "Преподаватель информатики") in repo.calls
+    assert await state_of() == (None, None)
+    assert "Должность: Преподаватель информатики" in api.last(SYS)[1]
+
+
+async def test_sfdep_saves_department_and_groups_list_by_it(api, repo):
+    await tap("sfdep", arg=STAFF)
+    assert await state_of() == ("staff_department", {"admin_id": STAFF})
+    await say_state(SYS, "Учебная часть")
+    assert ("set_department", STAFF, "Учебная часть") in repo.calls
+    assert "Отдел: Учебная часть" in api.last(SYS)[1]
+    await tap("admins")
+    assert any("Учебная часть" in str(b.get("text", ""))
+               for b in [btn for row in api.last(SYS)[2] for btn in row])
+
+
+async def test_position_wins_over_role_preset_in_card(api, repo):
+    repo.admins[STAFF]["position"] = "Главный бухгалтер"
+    await tap("sf", arg=STAFF)
+    assert "Должность: Главный бухгалтер" in api.last(SYS)[1]
+
+
+async def test_sft_offers_all_five_roles_with_srset_payloads(api, repo):
+    await tap("sft", arg=STAFF)
+    payloads = api.payloads(SYS)
+    assert all(f"srset:{STAFF}:{role}" in payloads for role in ROLES)
+    assert f"srset:{STAFF}:-" in payloads
 
 
 async def test_srset_updates_profile_and_reopens_card(api, repo):
     await tap("srset", arg=f"{STAFF}:deputy_uvr")
     assert ("set_admin_profile", STAFF, "deputy_uvr", "") in repo.calls
-    assert "Заместитель директора по УВР" in api.last(SYS)[1]
-    assert {"sfr:%s" % STAFF, "sfd:%s" % STAFF} <= set(api.payloads(SYS))
+    assert "Должность: 👥 Заместитель директора по УВР" in api.last(SYS)[1]
+    assert {"sfr:%s" % STAFF, "sfdel:%s" % STAFF} <= set(api.payloads(SYS))
+
+
+async def test_srset_with_dash_clears_role(api, repo):
+    await tap("srset", arg=f"{STAFF}:-")
+    assert ("clear_admin_fields", STAFF, "role") in repo.calls
+    assert "Должность: не назначена" in api.last(SYS)[1]
 
 
 async def test_srset_ignores_unknown_role(api, repo):
@@ -168,8 +229,8 @@ async def test_office_is_saved_through_the_message_flow(api, repo):
 
 
 async def test_profile_buttons_work_through_the_full_update_flow(api, repo):
-    await bot.process(click(SYS, f"sfr:{STAFF}"))
-    assert api.payloads(SYS) == [f"srset:{STAFF}:{role}" for role in ROLES]
+    await bot.process(click(SYS, f"sft:{STAFF}"))
+    assert f"srset:{STAFF}:director" in api.payloads(SYS)
     await bot.process(click(SYS, f"srset:{STAFF}:director"))
     assert ("set_admin_profile", STAFF, "director", "") in repo.calls
     assert "Директор" in api.last(SYS)[1]

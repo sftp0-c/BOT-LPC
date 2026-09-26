@@ -13,20 +13,25 @@
 import asyncio
 import hmac
 import logging
+import os
+import sqlite3
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 import config
 import database as db
+import repository as repo
 from handlers import admin, broadcast, menus, tickets  # noqa: F401  — регистрация обработчиков при импорте
 from handlers.common import api, log, notify, pending_tasks, spawn
-from handlers.registry import CALLBACKS, STATES
-from updates import callback_id, callback_payload, is_dialog, message_text, sender_id, update_key
-from utils import UserLocks
+from handlers.registry import CALLBACKS
+from updates import callback_id, callback_payload, is_dialog, message_text, profile_of, sender_id, update_key
+from utils import UserLocks, as_str
 from webpanel import router as panel_router
+import webpanel
 
 
 def setup_logging() -> None:
@@ -56,15 +61,36 @@ logging.getLogger("httpx").setLevel(logging.WARNING)  # не пишем в ло�
 _locks = UserLocks()  # один пользователь — один обработчик за раз; ключи чистятся, память не растёт
 SHUTDOWN_TIMEOUT = 60  # сколько ждём завершения фоновых задач при остановке (docker stop_grace_period = 70s)
 
+# Кнопки, которые продолжают диалог выдачи прав: нажатие подсказки не должно
+# стирать список сотрудников, ждущий категорию или должность.
+STATE_KEEPING_CALLBACKS = frozenset({"bcgo", "mph", "mkc", "sfbc"})
+
 
 async def on_callback(x: str, payload: str):
     name, _, arg = payload.partition(":")
     handler = CALLBACKS.get(name)
     if not handler:
         return log.warning("неизвестный callback %r от %s", payload, x)
-    if name != "bcgo":  # нажатие любой кнопки прерывает незавершённый ввод
+    if name not in STATE_KEEPING_CALLBACKS:
+        # нажатие любой кнопки прерывает незавершённый ввод
         await db.clear_state(x)
     return await handler(x, arg)
+
+
+async def remember_contact(u: dict, x: str, kind: str) -> None:
+    """Запоминает пользователя в реестре: ник и имя из профиля MAX, текст последнего сообщения.
+
+    Так панель видит всех, кто писал боту, даже если человек так и не зарегистрировался.
+    Сбой записи не должен мешать ответить: поэтому исключение только логируется.
+    """
+    if kind not in ("message_created", "message_callback", "bot_started"):
+        return
+    text = message_text(u) if kind == "message_created" else ""
+    profile = profile_of(u)
+    try:
+        await repo.touch_contact(x, profile["username"], profile["display_name"], text)
+    except Exception as exc:
+        log.warning("не удалось обновить контакт %s: %s", x, exc)
 
 
 async def process(u: dict):
@@ -83,6 +109,7 @@ async def process(u: dict):
         if not x:
             return
         async with _locks.get(x):
+            await remember_contact(u, x, kind)
             if kind == "bot_started":
                 await menus.start(x)
             elif kind == "message_created":
@@ -100,6 +127,17 @@ async def process(u: dict):
                     except Exception as exc:
                         log.debug("answer не удался: %s", exc)
                 await on_callback(x, callback_payload(u))
+    except sqlite3.OperationalError as exc:
+        # Чаще всего это удалённая вручную таблица: отвечаем прямо, а не «попробуйте ещё раз»
+        log.error("база неполна: %s", exc)
+        if "no such table" in str(exc) or "no such column" in str(exc):
+            missing = await db.missing_objects()
+            log.error("в базе не хватает: %s", ", ".join(missing) or exc)
+            if x:
+                await notify(x, "⚠️ В базе бота не хватает данных. Сообщите администратору: "
+                                "в панели есть кнопка «Восстановить схему».")
+        elif x:
+            await notify(x, "⚠️ База данных недоступна. Сообщите администратору.")
     except Exception:
         log.exception("ошибка обработки обновления")
         if x:
@@ -126,10 +164,55 @@ async def poll():
             await asyncio.sleep(5)
 
 
+async def backup_loop():
+    """Резервные копии базы по расписанию: снимок работающей базы, старые удаляются.
+
+    Нужны, чтобы потеря данных (удалённая таблица, сбой диска) не зависела от того,
+    вспомнил ли сис-админ нажать кнопку. Ошибка копирования не должна ронять бота:
+    сообщаем в журнал и сис-админам, ждём следующего круга.
+    """
+    period = max(1, config.BACKUP_EVERY_HOURS) * 3600
+    warned = 0
+    while True:
+        await asyncio.sleep(period)
+        try:
+            path = await db.backup_to()
+            kept = len(db.list_backups())
+            log.info("автокопия базы: %s (%s, хранится %s)", os.path.basename(path),
+                     webpanel_human_size(os.path.getsize(path)), kept)
+            warned = 0
+        except Exception as exc:  # noqa: BLE001 — копирование не критично, но молчать нельзя
+            log.error("автокопия базы не удалась: %s", exc)
+            warned += 1
+            if warned == 1:  # не спамим: одно сообщение о первой неудаче, потом только журнал
+                for admin_id in {str(value) for value in config.SYSADMIN_IDS} | await _db_sysadmins():
+                    await notify(admin_id, "⚠️ Не удалось сделать резервную копию базы. "
+                                           "Подробности в журнале; вкладка «База данных» в панели.")
+        finally:
+            await repo.log_action("bot", "автокопия базы", "ошибка" if warned else "создана копия")
+
+
+async def _db_sysadmins() -> set:
+    try:
+        return {as_str(row["user_id"]) for row in await db.many(
+            "SELECT user_id FROM admins WHERE role_type IN ('sysadmin','superadmin')")}
+    except Exception:  # noqa: BLE001 — уведомление о копии не стоит падения из-за базы
+        return set()
+
+
+def webpanel_human_size(value) -> str:
+    size = float(value)
+    for unit in ("Б", "КБ", "МБ", "ГБ"):
+        if size < 1024 or unit == "ГБ":
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} ГБ"
+
+
 # ───────────────────────── FastAPI ─────────────────────────
 
 
-async def shutdown(poller):
+async def shutdown(poller, maintenance=None):
     """Остановка фоновых задач и HTTP-клиента. Выполняется всегда: и при штатном выходе, и при сбое старта."""
     try:
         if poller:
@@ -155,10 +238,15 @@ async def shutdown(poller):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     poller = None
+    maintenance = None
     try:
         for warning in config.validate():
             log.warning(warning)
         await db.init_db()
+        if config.BACKUP_EVERY_HOURS:
+            maintenance = spawn(backup_loop())
+            log.info("Автокопия базы: раз в %s ч, хранится %s копий",
+                     config.BACKUP_EVERY_HOURS, config.BACKUP_KEEP)
         if config.WEBHOOK_URL:
             try:  # удаляем старую подписку с этим URL, чтобы при рестартах не было двойной доставки
                 for sub in await api.subscriptions():
@@ -180,6 +268,8 @@ async def lifespan(app: FastAPI):
             log.info("Запущен long polling")
         yield
     finally:  # try/finally обязателен: при сбое старта клиент тоже должен закрыться
+        if maintenance:
+            maintenance.cancel()
         await shutdown(poller)
 
 
@@ -187,10 +277,42 @@ app = FastAPI(title="College MAX bot", lifespan=lifespan)
 app.include_router(panel_router)
 
 
+@app.exception_handler(sqlite3.OperationalError)
+async def broken_schema(request: Request, exc: sqlite3.OperationalError):
+    """Удалённая таблица или потерянная колонка: вместо 500 со стектрейсом — понятная страница.
+
+    Причина обычно одна: в базе нет объекта, который есть в схеме в коде
+    (например, таблицу удалили вручную). Схему восстанавливает кнопка на
+    странице и вкладка «База данных» панели.
+    """
+    text = str(exc)
+    if "no such table" not in text and "no such column" not in text:
+        log.exception("ошибка SQLite при обработке %s", request.url.path)
+        return JSONResponse({"error": "database_error", "detail": text}, status_code=500)
+    missing = await db.missing_objects() if os.path.exists(config.DATABASE_PATH) else []
+    detail = ", ".join(missing) or text
+    log.error("панель: в базе не хватает объектов: %s", detail)
+    if request.url.path.startswith("/panel/api/") or request.url.path.startswith("/api/"):
+        return JSONResponse({"error": "broken_schema", "missing": missing}, status_code=503)
+    return webpanel.schema_broken_page(request, detail, missing)
+
+
+
 @app.get("/health")
 async def health():
+    """Состояние сервиса: база читается и её схема соответствует коду.
+
+    missing_schema пустой — схема в порядке. Проверка дешёвая: список таблиц и
+    несколько PRAGMA table_info, без обхода данных.
+    """
     await db.one("SELECT 1")
-    return {"ok": True, "platform": "MAX", "mode": "webhook" if config.WEBHOOK_URL else "polling"}
+    missing = await db.missing_objects()
+    return {
+        "ok": not missing,
+        "platform": "MAX",
+        "mode": "webhook" if config.WEBHOOK_URL else "polling",
+        "missing_schema": missing,
+    }
 
 
 @app.post("/webhook")
