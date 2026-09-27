@@ -125,6 +125,16 @@ CREATE TABLE IF NOT EXISTS reply_templates(                          -- гото
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     used_count INTEGER NOT NULL DEFAULT 0                -- сколько раз применили: показывает полезные
 );
+CREATE TABLE IF NOT EXISTS faq(
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    question   TEXT NOT NULL,                             -- сам вопрос: его видят и в меню, и в ответе
+    answer     TEXT NOT NULL DEFAULT '',                  -- ответ, который бот отдаёт (с сайта колледжа)
+    keywords   TEXT NOT NULL DEFAULT '',                  -- ключевые слова через запятую: по ним ищет бот
+    active     INTEGER NOT NULL DEFAULT 1,                -- 0 - вопрос скрыт из меню и из поиска
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_faq_active ON faq(active);
 CREATE TABLE IF NOT EXISTS admin_log(
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     actor_id   TEXT NOT NULL,                            -- кто: сис-админ или бота
@@ -196,6 +206,11 @@ COLUMN_UPGRADES: dict[str, dict[str, str]] = {
         "position": "TEXT NOT NULL DEFAULT ''",
         "department": "TEXT NOT NULL DEFAULT ''",
         "see_all_tickets": "INTEGER NOT NULL DEFAULT 0",
+        "vacation_until": "TEXT NOT NULL DEFAULT ''",   # до какой даты сотрудник в отпуске
+    },
+    "users": {
+        "consent_at": "TEXT NOT NULL DEFAULT ''",        # когда согласие дано
+        "consent_version": "TEXT NOT NULL DEFAULT ''",   # какая редакция текста
     },
     "tickets": {
         "topic": "TEXT NOT NULL DEFAULT ''",

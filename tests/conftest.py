@@ -8,7 +8,7 @@ import bot
 import config
 import database as db
 import webpanel
-from handlers import admin, broadcast, common, menus, schedules, tickets
+from handlers import admin, broadcast, common, demo, faq, menus, schedules, tickets
 
 BOT_ID = 999
 PANEL_PASSWORD = "test-panel-pass"
@@ -135,7 +135,7 @@ async def env(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "BACKUP_DIR", str(tmp_path / "backups"))
     _retarget_log_file()
     fake = FakeAPI()
-    for module in (bot, common, admin, broadcast, menus, tickets, schedules):
+    for module in (bot, common, admin, broadcast, menus, tickets, schedules, demo, faq):
         monkeypatch.setattr(module, "api", fake)
     bot._locks.clear()
     await db.init_db()
@@ -161,7 +161,8 @@ async def register(user, name="Иванов Иван Иванович", group="�
     await press(user, "who:student")
     await say(user, name)
     await say(user, group)
-    await press(user, "regyes")  # подтверждение данных, последний шаг регистрации
+    await press(user, "regyes")      # подтверждение данных, последний шаг регистрации
+    await press(user, "consentyes")  # согласие на обработку данных
 
 
 async def add_staff(staff_id, name, category="all", broadcast=False, position="", office="-"):

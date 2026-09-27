@@ -106,6 +106,7 @@ async def test_registration_accepts_suggested_name(api):
     assert "укажите код группы" in api.last(STUDENT)[1]
     await press(STUDENT, "regpick:ИС-21")
     await press(STUDENT, "regyes")
+    await press(STUDENT, "consentyes")
     row = await db.one("SELECT * FROM users WHERE user_id=?", (STUDENT,))
     assert row["full_name"] == "Иванов Иван Иванович" and row["group_code"] == "ИС-21"
 
@@ -136,6 +137,7 @@ async def test_registration_group_pick_saves_after_confirm(api):
     assert "Проверьте данные" in api.last(STUDENT)[1]
     assert await db.one("SELECT 1 FROM users WHERE user_id=?", (STUDENT,)) is None
     await press(STUDENT, "regyes")
+    await press(STUDENT, "consentyes")
     assert (await db.one("SELECT group_code FROM users WHERE user_id=?", (STUDENT,)))["group_code"] == "ИС-21"
 
 
@@ -155,6 +157,7 @@ async def test_registration_text_instead_of_button_works(api):
     await say(STUDENT, "Петрова Анна")
     await say(STUDENT, "ИС-21")
     await say(STUDENT, "Петрова Анна Петровна")  # исправил ФИО текстом
+    await press(STUDENT, "consentyes")
     row = await db.one("SELECT * FROM users WHERE user_id=?", (STUDENT,))
     assert row["full_name"] == "Петрова Анна Петровна" and row["group_code"] == "ИС-21"
 

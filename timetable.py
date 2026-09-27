@@ -110,6 +110,9 @@ class DaySchedule:
 class GroupSchedule:
     group: str                     # канонический код группы: «24-21(2С)»
     days: dict[int, DaySchedule] = field(default_factory=dict)
+    # понедельник недели, на которую составлен этот PDF. Без него шапка
+    # «Неделя с …» считалась от сегодняшнего дня и на стыке недель врала.
+    week: date | None = None
 
     @property
     def lessons_count(self) -> int:
@@ -291,6 +294,30 @@ def weekday_of_page(header_text: str) -> int | None:
     return best[1] if best else None
 
 
+def date_of_page(header_text: str) -> date | None:
+    """Дата из заголовка страницы «День - Понедельник, 28.09.2026»."""
+    match = re.search(r"(\d{1,2})\.(\d{1,2})\.(\d{2,4})", str(header_text or "")[:200])
+    if not match:
+        return None
+    day, month, year = (int(part) for part in match.groups())
+    if year < 100:
+        year += 2000
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def week_of_pages(pages: list[dict]) -> date | None:
+    """Понедельник недели PDF: берём самую раннюю дату из заголовков."""
+    dates = [found for page in pages or []
+             if (found := date_of_page(page.get("text", "")))]
+    if not dates:
+        return None
+    monday = min(dates)
+    return monday - timedelta(days=monday.weekday())
+
+
 def build_schedule(pages: list[dict], group: str, times: dict | None = None) -> GroupSchedule:
     """Собирает расписание группы из страниц: pages = [{'text': str, 'tables': [[row, ...]]}].
 
@@ -299,7 +326,7 @@ def build_schedule(pages: list[dict], group: str, times: dict | None = None) -> 
     «мусорные» таблицы вроде шапок и подвалов. times — звонки (см. LESSON_TIMES).
     """
     wanted = norm(group)
-    result = GroupSchedule(group=group)
+    result = GroupSchedule(group=group, week=week_of_pages(pages))
     for page in pages or []:
         weekday = weekday_of_page(page.get("text", ""))
         tables = [table for table in (page.get("tables") or []) if table]
@@ -401,27 +428,39 @@ def day_title(weekday: int, day_date: date | None = None) -> str:
     return f"{name} {day_date:%d.%m}"
 
 
-def format_day(day: DaySchedule, day_date: date | None = None) -> str:
-    lines = [f"📅 {day_title(day.weekday, day_date)}"]
+def format_day(day: DaySchedule, day_date: date | None = None, today: bool = False) -> str:
+    lines = [f"📅 {day_title(day.weekday, day_date)}" + ("  \N{BULLET} сегодня" if today else "")]
     lines += ["  " + lesson.line() for lesson in day.lessons]
     return "\n".join(lines)
+
+
+def today_monday() -> date:
+    """Понедельник текущей недели - точка отсчёта для «свежести» файла."""
+    moment = date.today()
+    return moment - timedelta(days=moment.weekday())
 
 
 def format_schedule(schedule: GroupSchedule, week: date | None = None, only: list[int] | None = None) -> str:
     """Расписание на неделю (или по дням only) в виде текста для MAX."""
     if not schedule.days:
         return ""
-    monday = week or (date.today() - timedelta(days=date.today().weekday()))
+    # Неделя берётся из самого PDF: колледж выкладывает файл на конкретную
+    # неделю, и шапка обязана совпадать с ним, а не с текущим днём.
+    monday = week or schedule.week or (date.today() - timedelta(days=date.today().weekday()))
     days = [schedule.days[key] for key in sorted(schedule.days) if only is None or key in only]
     lines = [f"📚 Расписание группы {schedule.group}"]
     if only is None:
         lines.append(f"Неделя с {monday:%d.%m.%Y}")
+        stale = today_monday() - monday
+        if stale.days >= 7:
+            lines.append(f"⚠️ Файл от {monday:%d.%m.%Y} — свежее расписание колледж "
+                         f"ещё не выложил ({stale.days} дн. назад).")
     for day in days:
         if day.is_empty:
             continue
         day_date = monday + timedelta(days=day.weekday)
         lines.append("")
-        lines.append(format_day(day, day_date))
+        lines.append(format_day(day, day_date, today=day_date == date.today()))
     lines.append("")
     lines.append(f"Пары: {short(', '.join(_bells_line(number, start, end) for number, (start, end) in enumerate(LESSON_TIMES, start=1)), 150)}")
     return "\n".join(lines)

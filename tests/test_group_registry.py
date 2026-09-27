@@ -117,6 +117,7 @@ async def test_registration_accepts_sloppy_group_writing(college_groups, api):
     await say(STUDENT, "Иванов Иван Иванович")
     await say(STUDENT, "24 23 п")          # «24-23 (П)» разными буквами
     await press(STUDENT, "regyes")
+    await press(STUDENT, "consentyes")
     row = await db.one("SELECT * FROM users WHERE user_id=?", (STUDENT,))
     assert row["group_code"] == "24-23П"
 
@@ -132,6 +133,7 @@ async def test_registration_asks_on_typo(college_groups, api):
     assert not await db.one("SELECT 1 FROM users WHERE user_id=?", (STUDENT,))
     await press(STUDENT, "regpick:24-23П")
     await press(STUDENT, "regyes")
+    await press(STUDENT, "consentyes")
     row = await db.one("SELECT group_code FROM users WHERE user_id=?", (STUDENT,))
     assert row["group_code"] == "24-23П"
 
@@ -142,6 +144,7 @@ async def test_registration_creates_brand_new_group_and_warns_admins(api):
     await say(STUDENT, "Иванов Иван Иванович")
     await say(STUDENT, "99-01")
     await press(STUDENT, "regyes")
+    await press(STUDENT, "consentyes")
 
     group = await db.one("SELECT * FROM groups WHERE group_code=?", ("99-01",))
     assert group is not None
@@ -156,6 +159,7 @@ async def test_registration_group_pick_from_buttons(college_groups, api):
     assert "regpick:24-23П" in api.payloads(STUDENT)
     await press(STUDENT, "regpick:24-23П")
     await press(STUDENT, "regyes")
+    await press(STUDENT, "consentyes")
     row = await db.one("SELECT group_code FROM users WHERE user_id=?", (STUDENT,))
     assert row["group_code"] == "24-23П"
 

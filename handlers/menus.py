@@ -5,7 +5,7 @@ import config
 import database as db
 import repository as repo
 import timetable as tt
-from handlers import schedules
+from handlers import demo, schedules
 from handlers.admin import audit, command as admin_command, sysadmin_ids
 from handlers.common import BACK, DEFAULT_WELCOME, admin_of, api, can_broadcast, is_super, log, need_super, notify
 from bot_commands import command_payload
@@ -19,6 +19,10 @@ from utils import (OPEN_STATUSES, STATUS, as_str, fmt_time, group_code, group_di
 # ── входящие сообщения и команды ──────────────────────────────────────────────
 async def on_message(x: str, text: str):
     cmd = text.split()[0].lower().split("@")[0] if text.startswith("/") else ""
+    if cmd and await demo.command(x, cmd):
+        return                            # /demo и /demo_off
+    if await demo.guard_message(x, text):
+        return                            # в демо сценарии не запускаются
     if cmd == "/start":
         return await start(x)
     if cmd == "/id":
@@ -31,6 +35,8 @@ async def on_message(x: str, text: str):
     if cmd:
         payload = command_payload(cmd)
         if payload and payload.split(":")[0] in CALLBACKS:
+            if await demo.guard_callback(x, payload.split(":")[0]):
+                return                    # /new_request в демо обращение не создаёт
             if payload == "sysadm" and not is_super(await admin_of(x)):
                 return  # закрытая команда: молча, как и кнопка сис-админа
             if payload == "staff" and not (await admin_of(x)):
@@ -71,6 +77,21 @@ def student_menu():
          btn("👤 Профиль", "profile")],
         [btn("⚠️ Ошибка в боте", "bugreport")],
     ]
+
+
+CONSENT_VERSION = "1.0"
+CONSENT_TEXT = (
+    "Для работы бота колледж хранит ваши данные: ФИО, код группы, ваш MAX ID и "
+    "переписку по обращениям. Они нужны, чтобы отвечать вам и сотрудникам, и не "
+    "передаются третьим лицам.\n\n"
+    "Согласие можно отозвать в любой момент: сообщите в учебную часть, и данные "
+    "будут удалены."
+)
+
+
+async def consent_text() -> str:
+    """Текст согласия: сис-админ может подставить свою редакцию."""
+    return (await db.get_setting("consent_text", "")) or CONSENT_TEXT
 
 
 def _clean_fio(value) -> str:
@@ -141,6 +162,27 @@ async def _group_allowed(group) -> bool:
     return any(_group_from_row(row) == code for row in rows)
 
 
+async def _consent_ok(x: str, fio: str, group: str) -> bool:
+    """Показывает ли согласие на обработку данных. False - надо ответить.
+
+    Согласие спрашивается только при первой регистрации: у того, кто уже есть
+    в базе, данные обрабатываются давно, и переспрашивать на каждой правке
+    группы бессмысленно.
+    """
+    checker = getattr(repo, "consent_of", None)
+    if checker is not None:
+        if (await checker(x)).get("at"):
+            return True
+    if await repo.get_user(x):
+        return True
+    await db.set_state(x, "consent", {"fio": fio, "group": group})
+    await api.send(
+        x, f"📄 Согласие на обработку данных\n\n{await consent_text()}",
+        [[btn("✅ Согласен, зарегистрировать", "consentyes")],
+         [btn("❌ Не согласен", "consentno")]])
+    return False
+
+
 async def _save_user(user_id, fio, group) -> None:
     fio = _clean_fio(fio)
     group = _group_code(group)
@@ -170,9 +212,36 @@ async def _save_or_confirm(x: str, fio: str, group: str, after_save) -> None:
     if not await _group_allowed(group):
         await _group_confirmation(x, group, fio)
         return
+    if not await _consent_ok(x, fio, group):
+        return
     await _save_user(x, fio, group)
     await db.clear_state(x)
     await after_save()
+
+
+@callback("consentyes")
+async def cb_consent_yes(x, arg):
+    """Согласие дано: сохраняем регистрацию с датой и редакцией текста."""
+    st = await db.get_state(x)
+    payload = st["payload"] if st and st["state"] == "consent" else {}
+    fio, group = payload.get("fio", ""), payload.get("group", "")
+    if not group:
+        return await api.send(x, "Регистрация не начата — напишите /start.", BACK)
+    await _save_user(x, fio, group)
+    # согласие помечаем после записи профиля: upsert пересоздаёт строку
+    # и иначе стёр бы только что проставленную дату
+    await repo.give_consent(x, CONSENT_VERSION)
+    await db.clear_state(x)
+    return await _registration_saved(x, fio, group)
+
+
+@callback("consentno")
+async def cb_consent_no(x, arg):
+    """Отказ без согласия - осознанный, а не ошибка."""
+    await db.clear_state(x)
+    await api.send(x, "Понял, без согласия регистрацию продолжить нельзя.\n\n"
+                      "Данные о вас не сохранены. Вопросы по работе бота - в учебной части.",
+                      [[btn("🏠 В меню", "home")]])
 
 
 async def _registration_saved(x: str, fio: str, group: str) -> None:
@@ -264,7 +333,8 @@ async def super_menu(user_id: str) -> list:
         [btn("✍️ Создать обращение", "snew"), btn("👥 Расписания", "view_schedules")],
         [btn("👥 Пользователи", "people"), btn("👥 Сотрудники", "admins")],
         [btn("🗝 Коды и заявки", "codes"), btn("👤 Кто без прав", "nostaff")],
-        [btn("⚙️ Ещё", "more"), btn("↩️ Кабинет сотрудника", "home")],
+        [btn("⚙️ Ещё", "more"), btn("🎬 Демо-стенд", "demo")],
+        [btn("↩️ Кабинет сотрудника", "home")],
     ]
 
 
@@ -364,6 +434,8 @@ async def _finish_registration(x: str, fio: str, group: str):
     group = code or group
     if not await _group_allowed(group):
         return await _group_confirmation(x, group, fio)
+    if not await _consent_ok(x, fio, group):
+        return
     await _save_user(x, fio, group)
     await db.clear_state(x)
     return await _registration_saved(x, fio, group)
@@ -430,6 +502,7 @@ async def cb_help(x, arg):
 
 @callback("home")
 async def cb_home(x, arg):
+    await demo.leave(x, "кнопка «🏠 Меню»")
     await show_home(x)
 
 
@@ -1014,6 +1087,8 @@ async def cb_regok(x, payload):
         return
     group, fio = _group_code(parts[1]), _clean_fio(parts[2])
     if not valid_group(group) or not _valid_fio(fio):
+        return
+    if not await _consent_ok(x, fio, group):
         return
     await _save_user(x, fio, group)
     await db.clear_state(x)

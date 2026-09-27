@@ -11,6 +11,7 @@ import database as db
 import repository as repo
 import timetable as tt
 from handlers import schedules
+from handlers import demo
 from handlers.common import BACK, DEFAULT_WELCOME, admin_of, api, is_super, log, need_super, notify, spawn
 from handlers.registry import callback, state
 from max_api import btn
@@ -1679,10 +1680,12 @@ async def send_settings(x: str):
     welcome = await db.get_setting("welcome_text", DEFAULT_WELCOME)
     await api.send(
         x,
-        f"⚙️ Настройки\n\nПриём обращений: {'включён' if enabled else 'выключен'}\nПриветствие студентов:\n{welcome}",
+        f"⚙️ Настройки\n\nПриём обращений: {'включён' if enabled else 'выключен'}\n"
+        f"Демо-стенд: {await demo.demo_status()}\nПриветствие студентов:\n{welcome}",
         [
             [btn("Приём обращений: " + ("выключить" if enabled else "включить"), "set:tickets")],
             [btn("✏️ Изменить приветствие", "set:welcome")],
+            [btn("🎬 Демо-стенд", "demo")],
             *BACK,
         ],
     )

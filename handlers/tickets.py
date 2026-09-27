@@ -7,6 +7,7 @@ import os
 import database as db
 import repository as repo
 from handlers.admin import STAFF_ROLES, audit
+from handlers import demo
 from handlers.common import BACK, admin_of, api, is_super, log, notify
 from handlers.menus import need_author
 from handlers.registry import callback, state
@@ -381,6 +382,8 @@ async def cb_staff_filter(x, arg):
 
 @callback("snew")
 async def cb_new_ticket_start(x, arg):
+    if await demo.deny(x, "создание обращения"):
+        return
     """Создание обращения из меню сис-админа: сначала раздел, дальше — как у студента."""
     if not is_super(await admin_of(x)):
         return
@@ -546,8 +549,22 @@ async def cb_pick_staff(x, arg):
     a = await admin_of(admin_id)
     if not a or is_super(a) or a["ticket_category"] not in (cat, "all"):
         return await api.send(x, "Этот сотрудник больше не принимает такие обращения. Выберите другого.", BACK)
-    await db.set_state(x, "ticket", {"admin": admin_id, "cat": cat, "topic": await _pending_topic(x, cat, code)})
-    await api.send(x, f"Кому: {a['full_name']}\nНапишите обращение одним сообщением (или /cancel для отмены).")
+    payload = {"admin": admin_id, "cat": cat, "topic": await _pending_topic(x, cat, code)}
+    replacement = await repo.vacation_replacement(a)
+    away = bool(replacement) and await repo.on_vacation(admin_id)
+    if away:
+        # молча менять адресата нельзя: человек должен знать, кто ответит
+        payload["admin"] = replacement["user_id"]
+        payload["vacation"] = 1
+        payload["was"] = admin_id
+    await db.set_state(x, "ticket", payload)
+    if away:
+        # молча менять адресата нельзя: человек должен знать, кто ответит
+        head = f"Кому: {replacement['full_name']} (за {a['full_name']})"
+        foot = "\n\n" + await repo.vacation_note(a)
+    else:
+        head, foot = f"Кому: {a['full_name']}", ""
+    await api.send(x, f"{head}{foot}\nНапишите обращение одним сообщением (или /cancel для отмены).")
 
 
 @state("ticket")
@@ -573,6 +590,8 @@ async def st_ticket(x, text, p):
 
 
 async def _send_draft(x: str, payload) -> None:
+    if await demo.deny(x, "создание обращения"):
+        return
     """Создаёт обращение из черновика и уведомляет сотрудника."""
     user = await need_author(x)
     if not user:
@@ -592,6 +611,8 @@ async def _send_draft(x: str, payload) -> None:
         ticket_kb(t, True),
     )
     lines = [f"✅ Обращение №{tid} отправлено."]
+    if as_str(payload.get("vacation")) == "1" and as_str(payload.get("was")):
+        lines.append("Ответит заместитель: сотрудник сейчас в отпуске.")
     if topic:
         lines.append(f"Тема: {topic}")
     lines += ["", short(text, 700)]
@@ -647,6 +668,8 @@ async def st_attach_file(x, text, p):
 
 
 async def on_attachment(x: str, files: list) -> bool:
+    if await demo.deny(x, "отправка файла в обращение"):
+        return True
     """Файл пришёл в личный диалог. True - событие обработано, больше не отвечать."""
     item = (files or [{}])[0]
     st = await db.get_state(x)
@@ -692,6 +715,8 @@ async def attached_names(ticket_id: int) -> list[str]:
 
 @callback("ticketsend")
 async def cb_ticket_send(x, arg):
+    if await demo.deny(x, "отправка обращения"):
+        return
     """Отправка черновика: последний шанс передумать."""
     st = await db.get_state(x)
     if not st or st["state"] != "ticket":
@@ -993,6 +1018,8 @@ async def _notify_office_required(x: str, t):
 
 @callback("st")
 async def cb_status(x, arg):
+    if await demo.deny(x, "смена статуса обращения"):
+        return
     tid, _, requested_status = arg.partition(":")
     t, staff_side = await load_ticket(x, to_int(tid))
     if not t or not staff_side or requested_status not in STATUS:

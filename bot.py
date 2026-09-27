@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse
 import config
 import database as db
 import repository as repo
-from handlers import admin, broadcast, menus, tickets  # noqa: F401  — регистрация обработчиков при импорте
+from handlers import admin, broadcast, demo, menus, tickets  # noqa: F401  — регистрация обработчиков при импорте
 from handlers.common import api, log, notify, pending_tasks, spawn
 from handlers.registry import CALLBACKS
 from schedule_watch import start_watcher, stop_watcher  # слежение за PDF с расписанием
@@ -68,7 +68,7 @@ SHUTDOWN_TIMEOUT = 60  # сколько ждём завершения фонов
 # Кнопки, которые продолжают диалог выдачи прав, отправку ответа по шаблону
 # и регистрацию: нажатие не должно стирать то, что человек уже выбрал.
 STATE_KEEPING_CALLBACKS = frozenset({"bcgo", "mph", "mkc", "sfbc", "tplsend", "tplmore",
-                                     "regyes", "regpick",
+                                     "regyes", "regpick", "consentyes",
                                      "ticketsend", "draftclr"})
 
 
@@ -77,6 +77,8 @@ async def on_callback(x: str, payload: str):
     handler = CALLBACKS.get(name)
     if not handler:
         return log.warning("неизвестный callback %r от %s", payload, x)
+    if await demo.guard_callback(x, name):
+        return                          # демо-стенд: опасная кнопка не выполняется
     if name not in STATE_KEEPING_CALLBACKS:
         # нажатие любой кнопки прерывает незавершённый ввод
         await db.clear_state(x)

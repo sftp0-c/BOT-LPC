@@ -38,6 +38,7 @@ async def test_registration_validates_and_normalizes(api):
     assert "Проверьте данные" in api.last(STUDENT)[1]
     assert await db.one("SELECT 1 FROM users WHERE user_id=?", (STUDENT,)) is None
     await press(STUDENT, "regyes")
+    await press(STUDENT, "consentyes")
     row = await db.one("SELECT * FROM users WHERE user_id=?", (STUDENT,))
     assert row["group_code"] == "ИС-21" and row["full_name"] == "Иванов Иван"
     assert "sched" in api.payloads(STUDENT)  # расписание группы доступно сразу

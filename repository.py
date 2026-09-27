@@ -3,7 +3,7 @@
 bot.py не пишет SQL сам — все обращения к базе идут через функции этого модуля,
 чтобы тексты запросов не дублировались и их было легко менять/тестировать точечно.
 """
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 import config
@@ -31,6 +31,21 @@ TOPIC_SOURCES = db.TOPIC_SOURCES
 # статистике его быть не должно, поэтому фильтруем одной строкой.
 ADMIN_ROLES_SQL = "'owner','sysadmin','superadmin'"
 STAFF_ROLES_SQL = f"NOT IN ({ADMIN_ROLES_SQL})"
+
+
+def _row_value(row, key: str, default=""):
+    """Значение колонки у строки sqlite3.Row, словаря или None.
+
+    Сотрудника в отпуск передают и словарём (из выборки), и объектом
+    с __getitem__, поэтому читаем одинаково.
+    """
+    if row is None:
+        return default
+    try:
+        value = row[key]
+    except (KeyError, IndexError, TypeError):
+        return default
+    return default if value is None else value
 
 
 def _row_dict(row):
@@ -139,6 +154,92 @@ async def staff_by_role(role: str) -> list:
         "ORDER BY full_name",
         (as_str(role),),
     )
+
+
+def _parse_day(value) -> date | None:
+    """Дата из строки панели или бота: «2026-10-01», «01.10.2026», «1 октября»."""
+    raw = as_str(value).strip()
+    if not raw:
+        return None
+    for pattern in ("%Y-%m-%d", "%d.%m.%Y", "%d.%m.%y"):
+        try:
+            return datetime.strptime(raw, pattern).date()
+        except ValueError:
+            continue
+    return None
+
+
+async def set_vacation(user_id: str, until: str = "", note: str = "") -> str:
+    """Отметить отпуск сотрудника. Пустая дата - сотрудник на месте.
+
+    Возвращает дату, на которую отпуск записан, чтобы вызывающий показал
+    её человеку текстом, а не молча поменял данные.
+    """
+    day = _parse_day(until)
+    if as_str(until).strip() and not day:
+        return ""
+    value = day.isoformat() if day else ""
+    await db.run("UPDATE admins SET vacation_until=? WHERE user_id=?",
+                 (value, as_str(user_id)))
+    return value
+
+
+async def on_vacation(user_id: str) -> bool:
+    """Сотрудник в отпуске прямо сейчас."""
+    row = await db.one("SELECT vacation_until FROM admins WHERE user_id=?", (as_str(user_id),))
+    if not row or not as_str(row["vacation_until"]):
+        return False
+    day = _parse_day(row["vacation_until"])
+    return bool(day) and date.today() <= day          # отпуск начался или ещё не кончился
+
+
+async def staff_on_vacation() -> list[dict]:
+    """Кто сейчас в отпуске: для панели и подсказок."""
+    rows = await db.many(
+        "SELECT user_id, full_name, role, position, ticket_category, vacation_until "
+        "FROM admins WHERE COALESCE(vacation_until, '')<>'' ORDER BY vacation_until")
+    return [dict(row) for row in rows if await on_vacation(row["user_id"])]
+
+
+async def vacation_replacement(staff) -> dict | None:
+    """Кто принимает обращения отсутствующего сотрудника.
+
+    Сначала - человек с той же должностью, потом - сосед по категории
+    обращений. Если таких нет, возвращаем None: лучше честно сказать
+    «заместитель не назначен», чем отправлять обращение не тому.
+    """
+    if not staff:
+        return None
+    role = as_str(_row_value(staff, "role", ""))
+    category = as_str(_row_value(staff, "ticket_category", ""))
+    for sql, param in (("SELECT * FROM admins WHERE role=? AND user_id<>? "
+                        "AND role_type NOT IN ('sysadmin','owner','superadmin') "
+                        "ORDER BY full_name", role),
+                       ("SELECT * FROM admins WHERE ticket_category=? AND user_id<>? "
+                        "AND role_type NOT IN ('sysadmin','owner','superadmin') "
+                        "ORDER BY full_name", category)):
+        if not param:
+            continue
+        rows = await db.many(sql, (param, as_str(_row_value(staff, "user_id", ""))))
+        for row in rows:
+            if not await on_vacation(row["user_id"]):
+                return dict(row)
+    return None
+
+
+async def vacation_note(staff) -> str:
+    """Человеческое объяснение вместо тишины: кто в отпуске и когда вернётся."""
+    if not staff or not await on_vacation(_row_value(staff, "user_id", "")):
+        return ""
+    until = as_str(_row_value(staff, "vacation_until", ""))
+    day = _parse_day(until)
+    tail = f" до {day:%d.%m.%Y}" if day else ""
+    replacement = await vacation_replacement(staff)
+    if replacement:
+        return (f"{as_str(_row_value(staff, 'full_name', 'Сотрудник'))} сейчас в отпуске{tail}. "
+                f"Обращение получит {as_str(replacement['full_name'])}.")
+    return (f"{as_str(_row_value(staff, 'full_name', 'Сотрудник'))} сейчас в отпуске{tail}. "
+            f"Заместитель не назначен - обращение подождёт до его возвращения.")
 
 
 async def staff_for_category(category: str, limit: int = 25) -> list:
@@ -1283,6 +1384,32 @@ async def bulk_update(ticket_ids: list, action: str, value: str = "",
     return done, f"Обращений обработано: {done} ({labels.get(action, action)})"
 
 
+async def give_consent(user_id: str, version: str) -> str:
+    """Фиксирует согласие на обработку данных: дату и редакцию текста.
+
+    Хранится рядом с пользователем, а не «в настройках»: потом по записи можно
+    доказать, что согласие было получено и на каких условиях.
+    """
+    await db.run("UPDATE users SET consent_at=datetime('now'), consent_version=? WHERE user_id=?",
+                 (as_str(version), as_str(user_id)))
+    return datetime.now().strftime("%d.%m.%Y")
+
+
+async def consent_of(user_id: str) -> dict:
+    """Когда и на каких условиях человек дал согласие."""
+    row = await db.one("SELECT consent_at, consent_version FROM users WHERE user_id=?", (as_str(user_id),))
+    return {"at": as_str(row["consent_at"]) if row else "",
+            "version": as_str(row["consent_version"]) if row else ""}
+
+
+async def users_without_consent(limit: int = 100) -> list:
+    """Зарегистрировались, но согласия не дали - список для сис-админа."""
+    rows = await db.many(
+        "SELECT user_id, full_name, group_code, created_at FROM users "
+        "WHERE consent_at='' ORDER BY created_at LIMIT ?", (int(limit),))
+    return [dict(row) for row in rows]
+
+
 async def set_staff_see_all(user_id: str, value: bool) -> bool:
     """Доступ сотрудника к чужим обращениям: очередь отдела или только свои."""
     await db.run("UPDATE admins SET see_all_tickets=? WHERE user_id=?",
@@ -1699,12 +1826,47 @@ async def list_users(limit: int = 200, group_code: str = "") -> list:
     where, params = ("WHERE u.group_code=?", (_code(group_code),)) if _code(group_code) else ("", ())
     return await db.many(
         "SELECT u.user_id, u.full_name, u.group_code, u.created_at, "
+        "COALESCE(u.consent_at, '') consent_at, "
         "COALESCE(c.username, '') username, COALESCE(c.last_seen, '') last_seen, "
         "(SELECT COUNT(*) FROM tickets t WHERE t.student_id=u.user_id) tickets "
         f"FROM users u LEFT JOIN contacts c ON c.user_id=u.user_id{where} "
         "ORDER BY u.full_name LIMIT ?",
         params + (limit,),
     )
+
+
+async def data_gaps() -> list[dict]:
+    """Незаполненные данные, из-за которых бот работает хуже.
+
+    Считаем одно запрос на раздел: панели нужны конкретные числа, чтобы
+    показать, что стоит дозаполнить, а не «возможно, что-то не так».
+    """
+    staff = await db.one(
+        "SELECT COUNT(*) n FROM admins WHERE role NOT IN ('superadmin', 'sysadmin') "
+        "AND (COALESCE(position, '')='' OR COALESCE(role, '')='')")
+    students = await db.one("SELECT COUNT(*) n FROM users WHERE COALESCE(group_code, '')=''")
+    consent = await db.one("SELECT COUNT(*) n FROM users WHERE COALESCE(consent_at, '')=''")
+    schedules = await db.one(
+        "SELECT COUNT(*) n FROM groups g WHERE g.active=1 AND NOT EXISTS "
+        "(SELECT 1 FROM lessons l WHERE l.group_code=g.group_code)")
+    name = await db.one("SELECT COUNT(*) n FROM users WHERE COALESCE(full_name, '')=''")
+    return [
+        {"key": "staff", "count": int(staff["n"]), "title": "Сотрудники без должности или роли",
+         "hint": "Подменю «Обратная связь» и адресные обращения не работают без ролей",
+         "link": "/panel/staff"},
+        {"key": "group", "count": int(students["n"]), "title": "Студенты без группы",
+         "hint": "Без группы не показать расписание и справки",
+         "link": "/panel/students"},
+        {"key": "name", "count": int(name["n"]), "title": "Студенты без ФИО",
+         "hint": "Обращения будут приходить с пустым именем",
+         "link": "/panel/students"},
+        {"key": "consent", "count": int(consent["n"]), "title": "Нет согласия на обработку данных",
+         "hint": "Регистрация до 28.09.2026 шла без согласия — стоит получить",
+         "link": "/panel/students?consent=0"},
+        {"key": "schedule", "count": int(schedules["n"]), "title": "Активные группы без расписания",
+         "hint": "Студенты не увидят пары, пока PDF не импортирован",
+         "link": "/panel/schedules"},
+    ]
 
 
 async def all_settings() -> list:

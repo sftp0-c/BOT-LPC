@@ -28,7 +28,7 @@ import repository as repo
 import timetable as tt
 import charts
 import schedule_import
-from handlers import schedules
+from handlers import demo, schedules
 from handlers.admin import STAFF_ROLES, approve_request, notify_schedule_subscribers, probe_pdf_url, reject_request
 from handlers.broadcast import run_broadcast
 from handlers.common import api as max_api
@@ -592,6 +592,13 @@ async def overview(request: Request):
     status_rows = "".join(
         f"<tr><td>{esc(label)}</td><td>{esc(counts.get(code, 0))}</td></tr>" for code, label in STATUS.items()
     )
+    gaps = [row for row in await repo.data_gaps() if row["count"]]
+    gaps_block = "".join(
+        f"<tr><td><a href='{esc(row['link'])}'>{esc(row['title'])}</a>"
+        f"<div class='small mut'>{esc(row['hint'])}</div></td>"
+        f"<td style='text-align:right'><b>{esc(row['count'])}</b></td></tr>"
+        for row in gaps
+    ) or "<tr><td class='mut'>Все данные заполнены</td></tr>"
     ticket_rows = _tickets_table(tickets)
     bc_rows = _broadcasts_table(last_bc)
     body = f"""
@@ -603,6 +610,9 @@ async def overview(request: Request):
 <tr><th>Зависших диалогов</th><td>{today['stuck_states']}</td><th>Обращений за сутки</th><td>{today['tickets_day']}</td></tr>
 <tr><th>Среднее время ответа</th><td>{esc(today['avg_reply'] or '—')}</td><th>Обращений за 7 дней</th><td>{st['week']}</td></tr>
 </table></div>
+<div class="card"><h2>Пробелы в данных</h2>
+<p class="small mut">Пока эти строки не заполнены, части бота работают неполно.</p>
+{gaps_block}</div>
 <div class="card"><h2>Последние обращения</h2>{ticket_rows}</div>
 <div class="grid" style="align-items:stretch">
   <div class="card" style="flex:2"><h2>Студенты по группам</h2>
@@ -750,6 +760,28 @@ async def tickets_csv(request: Request, status: str = "", category: str = ""):
     )
 
 
+@router.post("/staff/{user_id}/vacation")
+async def staff_vacation(request: Request, user_id: str):
+    """Отметка отпуска: обращения уходят заместителю, сотрудник их не видит."""
+    actor = await require_form(request)
+    data = await request.form()
+    if not await repo.get_admin(user_id):
+        flash("!Сотрудник не найден.")
+        return redirect("/panel/staff")
+    raw = as_str(data.get("until", "")).strip()
+    if raw and raw != "none":
+        saved = await repo.set_vacation(user_id, raw)
+        if not saved:
+            flash("!Дата не понята. Формат: ГГГГ-ММ-ДД.")
+            return redirect(f"/panel/staff/{user_id}")
+    else:
+        saved = await repo.set_vacation(user_id, "")
+    await repo.log_action(actor, "отпуск сотрудника",
+                          f"{user_id}: {'до ' + saved if saved else 'вернулся'}")
+    flash(f"{user_id}: {'отпуск до ' + saved if saved else 'сотрудник на месте'}.")
+    return redirect(f"/panel/staff/{user_id}")
+
+
 @router.get("/staff/{user_id}")
 async def staff_card(request: Request, user_id: str):
     """Всё о сотруднике на одном экране: карточка, нагрузка, последние обращения."""
@@ -780,6 +812,22 @@ async def staff_card(request: Request, user_id: str):
         for row in recent
     ) or "<tr><td class='mut'>Обращений не было</td></tr>"
     super_row = is_sysadmin_role(as_str(admin["role_type"]))
+    away = await repo.on_vacation(uid)
+    replacement = None if not away else await repo.vacation_replacement(admin)
+    until = as_str(admin["vacation_until"] if "vacation_until" in admin.keys() else "")
+    vacation_block = (
+        f"🏖 в отпуске до {esc(until)}"
+        + (f", обращения принимает {esc(as_str(replacement['full_name']))}" if replacement
+           else ", заместитель не назначен")
+        if away else "на месте")
+    vacation_form = f"""
+<form method="post" action="/panel/staff/{esc(uid)}/vacation">{csrf(request)}
+<div class="grid" style="margin-top:10px">
+<div><label>Отпуск до</label><input type="date" name="until" value="{esc(until)}"></div>
+<div><button class="{'btn-grey' if away else 'btn'}">{'Вернулся' if away else 'Отметить отпуск'}</button></div>
+</div>
+<p class="small mut">Пока сотрудник в отпуске, новые обращения к нему уходят заместителю
+с той же должностью, а студенту честно говорят, кто ответит.</p></form>"""
     body = f"""
 {cards}
 <div class="card"><h2>{esc(admin['full_name'])}</h2>
@@ -792,11 +840,12 @@ async def staff_card(request: Request, user_id: str):
 <tr><th>Обращения</th><td>{esc(STAFF_CATS.get(admin['ticket_category'], as_str(admin['ticket_category'])))}</td></tr>
 <tr><th>Рассылка</th><td>{"разрешена" if flag(admin["can_broadcast"]) else "запрещена"}</td></tr>
 <tr><th>Профиль MAX</th><td>{profile_cell((await repo.user_card(uid) or {}).get("username", ""))}</td></tr>
+<tr><th>Отпуск</th><td>{vacation_block}</td></tr>
 </table>
 <div style="margin-top:12px">
 <a class="btn" href="/panel/staff?q={esc(uid)}">Все сотрудники</a>
 <a class="btn-grey btn" href="/panel/analytics">К аналитике</a>
-</div></div>
+</div>{vacation_form}</div>
 <div class="card"><h2>Последние обращения</h2>
 <table><tr><th>№</th><th>Статус</th><th>Раздел</th><th>Тема</th><th>Создано</th></tr>{recent_rows}</table></div>
 <p class="small mut">Скорость ответа по боту в целом: {esc(minutes_text(speed['avg_minutes']))} в среднем,
@@ -1332,23 +1381,34 @@ async def ticket_status(request: Request, ticket_id: int):
 
 # ── студенты ──────────────────────────────────────────────────────────────────
 @router.get("/students")
-async def students(request: Request, group: str = ""):
+async def students(request: Request, group: str = "", consent: str = ""):
     user = await require_user(request)
-    rows = await repo.list_users(200, group)
+    only_no_consent = consent == "0"
+    if only_no_consent:
+        rows = [dict(row) for row in await repo.users_without_consent(200)]
+        if group:
+            rows = [row for row in rows if norm_group(row["group_code"]) == norm_group(group)]
+    else:
+        # sqlite3.Row не умеет .get - приводим строки к словарям
+        rows = [dict(row) for row in await repo.list_users(200, group)]
     groups = await repo.top_groups(300)
     options = {"": "все группы"} | {row["group_code"]: row["group_code"] for row in groups}
     head = ('<form method="get" action="/panel/students" class="grid" style="margin-bottom:14px">'
             f'<div>{select("group", options, norm_group(group))}</div>'
+            f'<div>{select("consent", {"": "все", "0": "только без согласия"}, consent)}</div>'
             "<div><button>Показать</button></div></form>")
     body = "".join(
-        f"<tr><td>{esc(row['full_name'])}</td><td>{esc(row['user_id'])}</td><td>{esc(row['group_code'])}</td>"
-        f"<td>{esc(row['tickets'])}</td><td class='small mut'>{esc(row['created_at'])}</td>"
+        f"<tr><td>{esc(row['full_name']) or '<span class=\'mut\'>без ФИО</span>'}</td>"
+        f"<td>{esc(row['user_id'])}</td><td>{esc(row['group_code']) or '<span class=\'mut\'>—</span>'}</td>"
+        f"<td>{esc(row.get('tickets', 0))}</td>"
+        f"<td>{'✅' if row.get('consent_at') else '<span class=\'mut\'>нет</span>'}</td>"
+        f"<td class='small mut'>{esc(row['created_at'])}</td>"
         f"<td><a class='btn-grey' href='/panel/people/{esc(row['user_id'])}'>Открыть</a> "
         f"{_action_form(request, f'/panel/people/{esc(row['user_id'])}/delete', '🗑', confirm_text=f'Удалить {row['full_name']} ({row['user_id']})? Обращения останутся.')}</td></tr>"
         for row in rows
     ) or "<tr><td class='mut'>Студентов не найдено</td></tr>"
-    table = (f"<table><tr><th>ФИО</th><th>MAX ID</th><th>Группа</th><th>Обращений</th><th>В базе с</th><th></th></tr>"
-             f"{body}</table>")
+    table = (f"<table><tr><th>ФИО</th><th>MAX ID</th><th>Группа</th><th>Обращений</th>"
+             f"<th>Согласие</th><th>В базе с</th><th></th></tr>{body}</table>")
     return page("Студенты", f'<div class="card">{head}{table}<p class="small mut">Показаны первые 200.</p></div>',
                 user, "/students")
 
@@ -1373,8 +1433,17 @@ async def staff_list(request: Request, q: str = ""):
         cat_options = dict(STAFF_CATS)
         load = activity.get(uid, {})
         tickets_90 = load.get("tickets", 0)
+        away = await repo.on_vacation(uid)
+        vacation_mark = ""
+        if away:
+            until = as_str(row["vacation_until"])
+            replacement = await repo.vacation_replacement(row)
+            vacation_mark = (f" <span class='mut small'>🏖 в отпуске до {esc(until)}"
+                             + (f", ведёт {esc(as_str(replacement['full_name']))}" if replacement
+                                else ", заместитель не назначен")
+                             + "</span>")
         head_row = f"""
-<tr><td><b>{esc(row['full_name'])}</b><div class="small mut">ID {esc(uid)}</div></td>
+<tr><td><b>{esc(row['full_name'])}</b>{vacation_mark}<div class="small mut">ID {esc(uid)}</div></td>
 <td>{"сис-админ" if super_row else "сотрудник"}</td>
 <td>{esc(as_str(row['position']) or STAFF_ROLES.get(row['role'], '—'))}<div class="small mut">{esc(row['role'])}</div></td>
 <td>{esc(as_str(row['department']) or '—')}</td>
@@ -2701,6 +2770,8 @@ async def settings_page(request: Request):
     user = await require_user(request)
     rows = await repo.all_settings()
     welcome = await db.get_setting("welcome_text", "")
+    consent_text = await db.get_setting("consent_text", "")
+    demo_on = await demo.is_demo()
     tickets_enabled = await db.get_setting("tickets_enabled", "1") == "1"
     actions = await repo.admin_log(15)
     counts = await repo.admin_log_counts(30)
@@ -2721,6 +2792,21 @@ async def settings_page(request: Request):
 <input type="hidden" name="enabled" value="{"0" if tickets_enabled else "1"}">
 <button class="{"btn-bad" if tickets_enabled else "btn-ok"}">{"Выключить" if tickets_enabled else "Включить"}</button>
 <span class="small mut">сейчас: {"включён" if tickets_enabled else "выключен"}</span></form></div>
+<div class="card"><h2>Согласие на обработку данных</h2>
+<p class="small mut">Этот текст студент видит при регистрации. Пустое поле - бот покажет
+свою заготовку. Согласие хранится с датой и редакцией текста.</p>
+<form method="post" action="/panel/settings/consent">{csrf(request)}
+<textarea name="value" maxlength="1000" style="min-height:110px">{esc(consent_text)}</textarea>
+<div class="grid" style="margin-top:10px"><button>Сохранить</button></div></form></div>
+<div class="card"><h2>Демо-стенд</h2>
+<form method="post" action="/panel/settings/demo">{csrf(request)}
+<input type="hidden" name="enabled" value="{"0" if demo_on else "1"}">
+<button class="{"btn-bad" if demo_on else "btn-ok"}">{"Выключить" if demo_on else "Включить"}</button>
+<span class="small mut">сейчас: {"включён" if demo_on else "выключен"}</span></form>
+<p class="small mut">В демо-режиме бот показывает все экраны, но не создаёт обращения,
+не меняет статусы, не отправляет рассылки и не выдаёт права. В базу пишется только
+отметка «демо» в журнале действий. Выход — кнопка «↩️ Выйти из демо» в боте,
+кнопка «🏠 Меню» или команда <code>/demo_off</code>.</p></div>
 <div class="card"><h2>Приветствие студентов</h2>
 <form method="post" action="/panel/settings/welcome">{csrf(request)}
 <textarea name="value" maxlength="500">{esc(welcome)}</textarea>
@@ -2759,6 +2845,25 @@ async def settings_tickets(request: Request):
     data = await request.form()
     await db.set_setting("tickets_enabled", "0" if value(data, "enabled") == "1" else "1")
     flash("Настройка сохранена.")
+    return redirect("/panel/settings")
+
+
+@router.post("/settings/consent")
+async def settings_consent(request: Request):
+    await require_form(request)
+    data = await request.form()
+    await db.set_setting("consent_text", as_str(data.get("value", "")).strip()[:1000])
+    flash("Текст согласия сохранён.")
+    return redirect("/panel/settings")
+
+
+@router.post("/settings/demo")
+async def settings_demo(request: Request):
+    """Переключатель демо-стенда: смотреть можно, менять данные - нет."""
+    user = await require_form(request)
+    data = await request.form()
+    on = await demo.set_demo(value(data, "enabled") == "1", actor=user)
+    flash("Демо-стенд " + ("включён." if on else "выключен."))
     return redirect("/panel/settings")
 
 
