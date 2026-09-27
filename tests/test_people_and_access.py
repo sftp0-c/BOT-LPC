@@ -542,7 +542,10 @@ def test_fmt_when_uses_relative_words_and_keeps_unparsable_as_is():
     assert fmt_when("bad value") == "bad value"
     assert fmt_when("") == ""
 
-    now = datetime.now().astimezone()
+    # Опорное время берём от полудня: иначе «час назад» около полуночи
+    # оказывается вчерашним днём и тест падает ровно в полночь.
+    now = datetime.now().astimezone().replace(hour=12, minute=30, second=0, microsecond=0)
+
     def ago(delta):
         return (now - delta).astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 

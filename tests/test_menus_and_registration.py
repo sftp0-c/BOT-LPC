@@ -85,7 +85,7 @@ async def test_view_is_per_user(api):
     await press(SYS, "view:student")
     await press(STAFF, "home")
     assert "Режим студента" not in api.last(STAFF)[1]
-    assert "Кабинет сотрудника" in api.last(STAFF)[1]
+    assert "Режим сотрудника" in api.last(STAFF)[1]   # сотрудник видит своё меню, не студенческое
 
 
 # ── регистрация ───────────────────────────────────────────────────────────────

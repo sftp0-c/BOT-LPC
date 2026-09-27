@@ -35,7 +35,13 @@ async def on_message(x: str, text: str):
                 return  # закрытая команда: молча, как и кнопка сис-админа
             if payload == "staff" and not (await admin_of(x)):
                 return await show_home(x)
-            return await CALLBACKS[payload.split(":")[0]](x, payload.partition(":")[2])
+            # аргумент команды: и после двоеточия (/view:student), и после
+            # пробела (/view student) - как в обычных консольных командах
+            arg = payload.partition(":")[2]
+            if not arg:
+                word, _, rest = text.strip().partition(" ")
+                arg = rest.strip() or (word.partition(":")[2] if ":" in word else "")
+            return await CALLBACKS[payload.split(":")[0]](x, arg)
     if cmd == "/supersecret_admin":  # старая скрытая команда — то же, что кнопка «🔐 Сис-админ»
         if is_super(await admin_of(x)):
             await db.clear_state(x)
@@ -187,11 +193,20 @@ def staff_menu(a):
 
 
 async def sysadmin_menu(x: str):
+    """Кабинет сис-админа. Переключатель режимов есть всегда - из него и
+    возвращаются, поэтому он должен быть тут, а не только в меню студента."""
     await db.clear_state(x)
-    await api.send(x, "🔐 Панель сис-админа", await super_menu(x))
+    await api.send(x, "🔐 Панель сис-админа\n"
+                 + MENU_VIEW_HINT["admin"],
+                 [*await super_menu(x), await view_switcher(x)])
 
 
-MENU_VIEWS = {"admin": "Сис-админ", "staff": "Сотрудник", "student": "Студент"}
+MENU_VIEWS = {"admin": "⚙️ Сис-админ", "staff": "🏫 Сотрудник", "student": "🎓 Студент"}
+MENU_VIEW_HINT = {
+    "admin": "Режим сис-админа: видно всё, включая настройки.",
+    "staff": "Режим сотрудника: очередь обращений и статистика — как у них.",
+    "student": "Режим студента: меню, расписание и обращения — как у них.",
+}
 
 
 async def menu_view(user_id: str) -> str:
@@ -205,10 +220,24 @@ async def menu_view(user_id: str) -> str:
 
 @callback("view")
 async def cb_menu_view(x, arg):
-    """Переключатель вида меню: «хочу работать как сотрудник / как студент»."""
-    view = as_str(arg)
+    """Переключатель вида меню: «хочу работать как сотрудник / как студент».
+
+    Без аргумента показывает сам переключатель с пояснением, что даёт каждый
+    режим: без пояснения его легко забыть включить и потом удивляться чужому меню.
+    """
+    view = as_str(arg).strip().lower()
+    if view in ("", "\u25a0"):
+        current = await menu_view(x)
+        rows = [btn(f"{'\N{WHITE HEAVY CHECK MARK} ' if code == current else ''}{MENU_VIEWS[code]}",
+                    f"view:{code}") for code in MENU_VIEWS]
+        lines = ["🎭 Режим просмотра — бот показывает меню так, как его видит выбранная роль:", ""]
+        lines += [f"— {MENU_VIEWS[code]} — {MENU_VIEW_HINT[code]}" for code in MENU_VIEWS]
+        return await api.send(x, "\n".join(lines),
+                              [rows, [btn("↩ В меню", "home")]])
     if view not in MENU_VIEWS:
         return await show_home(x)
+    if view == "admin" and not is_super(await admin_of(x)):
+        return await show_home(x)              # не даём сотруднику попасть в системное меню
     await db.set_setting(f"menu_view:{x}", view)
     if view == "admin":
         return await sysadmin_menu(x)
@@ -216,10 +245,16 @@ async def cb_menu_view(x, arg):
 
 
 async def view_switcher(x: str) -> list:
-    """Ряд кнопок «сейчас открыто другое меню»."""
+    """Переключатель режима: сис-админ / сотрудник / студент.
+
+    Отдельный ряд с подписью текущего режима, чтобы его нельзя было спутать
+    с рабочим меню.
+    """
     current = await menu_view(x)
-    return [btn(f"{'● ' if code == current else ''}{MENU_VIEWS[code]}", f"view:{code}")
-            for code in MENU_VIEWS]
+    codes = MENU_VIEWS if is_super(await admin_of(x)) else ("admin", "staff", "student")
+    row = [btn(f"✅ {MENU_VIEWS[code]}" if code == current else MENU_VIEWS[code], f"view:{code}")
+           for code in codes]
+    return row
 
 
 async def super_menu(user_id: str) -> list:
@@ -254,13 +289,21 @@ async def show_home(x: str):
         view = await menu_view(x)
         if view == "student":
             return await api.send(
-                x, "🎓 Режим студента. Основное меню бота — ниже, админские кнопки — в «⚙️ Ещё».",
+                x, f"🎓 {MENU_VIEW_HINT['student']}\n"
+                   + ("" if await repo.get_user(x)
+                      else "Профиля студента у вас нет, поэтому расписание и обращения "
+                           "покажутся общими списками.\n"),
                 [*student_menu(), await view_switcher(x), [btn("↩️ В меню", "home")]])
         if view == "staff":
             return await api.send(
-                x, "👔 Режим сотрудника. Обращения и статистика — ниже.",
+                x, f"🏫 {MENU_VIEW_HINT['staff']}",
                 [*staff_menu(a), await view_switcher(x), [btn("↩️ В меню", "home")]])
-        return await api.send(x, "🏫 Кабинет сотрудника", staff_menu(a))
+        if is_super(a):
+            return await sysadmin_menu(x)      # режим «сис-админ» - свой кабинет
+        # обычный сотрудник: кабинет сотрудника, без системных кнопок
+        return await api.send(x, f"🏫 {MENU_VIEW_HINT['staff']}",
+                              [*staff_menu(a), await view_switcher(x),
+                 [btn("↩️ В меню", "home")]])
     if not await repo.is_registered(x):
         return await start(x)
     return await api.send(x, await db.get_setting("welcome_text", DEFAULT_WELCOME),
@@ -769,6 +812,11 @@ async def need_author(x: str):
 @callback("profile")
 async def cb_profile(x, arg):
     user = await need_student(x)
+    if not user and await admin_of(x):
+        return await api.send(
+            x, "👤 Профиля студента у вас нет.\n\nЧтобы посмотреть меню глазами студента, "
+               "этого достаточно; а своё расписание по группе добавьте в панели.",
+            [[btn("📚 Все расписания", "view_schedules")], [btn("↩️ В меню", "home")]])
     if user:
         full_name = _row_value(user, "full_name")
         group = _row_value(user, "group_code")
@@ -1030,7 +1078,12 @@ async def cb_done(x, arg):
 async def cb_view_schedules(x, arg):
     codes = await _schedule_group_codes()
     if not codes:
-        return await cb_schedule(x, arg)
+        # раньше здесь был переход на cb_schedule, а тот - обратно сюда:
+        # при пустом справочнике бот уходил в бесконечный цикл
+        return await api.send(
+            x, "📚 Расписаний пока нет в системе.\n\n"
+               "Их завозит сис-админ кнопкой «⬇️ Импорт с сайта» в меню «Расписания».",
+            [[btn("↩️ В меню", "home")]])
     raw = str(arg or "")
     page = max(0, to_int(raw.replace("view_schedules:", "", 1)))
     pages = max(1, -(-len(codes) // GROUPS_PAGE))
@@ -1076,6 +1129,9 @@ async def cb_schedule(x, arg):
     selected = arg[6:] if arg.startswith("sched:") else arg
     user = await repo.get_user(x)
     if not user and not selected:
+        if await admin_of(x):
+            # сис-админ в режиме студента: показываем список, а не регистрацию
+            return await cb_view_schedules(x, "")
         await need_student(x)
         return
     group = _group_code(selected.split(":", 1)[0]) if selected else _group_code(_row_value(user, "group_code"))

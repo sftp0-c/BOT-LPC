@@ -19,6 +19,7 @@ BOT_COMMANDS: list[tuple[str, str, str]] = [
     ("queue", "Очередь обращений", "staff"),
     ("stats", "Статистика", "staffstats"),
     ("help", "Что умеет бот и помощь", "help"),
+    ("view", "Режим: сис-админ / сотрудник / студент", "view"),
 ]
 
 # только сис-админам: MAX показывает меню всем, поэтому команды закрыты проверкой
@@ -51,6 +52,7 @@ def command_payload(text: str) -> str | None:
     if not word:
         return None
     word = word.split("@")[0].lstrip("/").lower()
+    word = word.split(":")[0].split()[0]      # /view:student -> view, аргумент разбирает вызывающий
     for name, _desc, payload in BOT_COMMANDS + ADMIN_COMMANDS:
         if command_name(name) == word:
             return payload
