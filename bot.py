@@ -266,6 +266,24 @@ async def shutdown(poller, maintenance=None):
             log.warning("не удалось закрыть API-клиент: %s", exc)
 
 
+async def register_bot_menu() -> None:
+    """Регистрирует команды бота: из них MAX собирает нижнее меню чата.
+
+    Бот в MAX не умеет отправлять нижние кнопки (документация: боты присылают
+    только inline-кнопки), поэтому «меню снизу» - это список команд, который
+    показывается по кнопке меню чата. Обновляем при старте и по кнопке в панели.
+    """
+    from bot_commands import bot_command_list
+
+    commands = bot_command_list()
+    try:
+        await api.set_commands(commands)
+        log.info("нижнее меню зарегистрировано: %s команд (%s)",
+                 len(commands), ", ".join(f"/{c['name']}" for c in commands))
+    except Exception as exc:  # noqa: BLE001 - без меню бот работает, просто неудобнее
+        log.warning("не удалось зарегистрировать команды меню: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     poller = None
@@ -297,6 +315,7 @@ async def lifespan(app: FastAPI):
                 log.warning("не удалось проверить подписки: %s", exc)
             poller = spawn(poll())
             log.info("Запущен long polling")
+        await register_bot_menu()
         yield
     finally:  # try/finally обязателен: при сбое старта клиент тоже должен закрыться
         if maintenance:

@@ -20,17 +20,14 @@ class FakeAPI:
     """Подмена MaxAPI: запоминает исходящие сообщения."""
 
     def __init__(self):
-        self.bottoms = []
         self.sent = []
         self.answers = []
         self.blocked = set()
 
-    async def send(self, user_id, text, keyboard=None, bottom=None):
+    async def send(self, user_id, text, keyboard=None):
         if str(user_id) in self.blocked:
             raise RuntimeError("user blocked the bot")
         self.sent.append((str(user_id), text, keyboard))
-        if bottom is not None:
-            self.bottoms.append((str(user_id), bottom))
         return {}
 
     async def answer(self, callback_id, notification=None):
@@ -49,13 +46,6 @@ class FakeAPI:
         kb = self.last(uid)[2] or []
         return [b["payload"] for row in kb for b in row if b["type"] == "callback"]
 
-    def bottom(self, uid):
-        """Нижняя клавиатура последнего сообщения: None - не было, [] - снята."""
-        items = [buttons for user, buttons in self.bottoms if user == str(uid)]
-        return items[-1] if items else None
-
-    def bottom_payloads(self, uid):
-        return [b.get("payload") for b in (self.bottom(uid) or [])]
 
 
 def login_panel(client, user_id: str = "1", password: str = PANEL_PASSWORD) -> bool:

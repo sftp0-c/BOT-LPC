@@ -12,7 +12,7 @@ class FakeAPI:
     def __init__(self):
         self.sent = []
 
-    async def send(self, user_id, text, keyboard=None, bottom=None):
+    async def send(self, user_id, text, keyboard=None):
         self.sent.append((str(user_id), text, keyboard))
 
     def last(self, user_id):

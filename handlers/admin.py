@@ -1466,6 +1466,7 @@ async def cb_schedules(x, arg):
     await api.send(x, text, [*kb,
                             [btn("➕ Добавить / изменить", "scadd"),
                              btn("⬇️ Импорт с сайта", "scimport")],
+                            [btn("📱 Обновить нижнее меню", "scmenu")],
                             *BACK])
 
 
@@ -1548,6 +1549,22 @@ async def cb_schedule_delete(x, group):
     await api.send(x, f"🗑 Расписание группы {code} удалено.")
     await audit(x, f"Сис-админ {x} удалил расписание группы {code}.")
     await cb_schedules(x, "")
+
+
+@callback("scmenu")
+async def cb_refresh_menu(x, arg):
+    """Перерегистрировать нижнее меню (команды MAX) - после правки списка."""
+    if not await need_super(x):
+        return
+    from bot import register_bot_menu
+    from bot_commands import bot_command_list
+
+    await register_bot_menu()
+    names = ", ".join(f"/{c['name']}" for c in bot_command_list())
+    await repo.log_action(x, "нижнее меню обновлено", short(names, 200))
+    await api.send(x, "📱 Нижнее меню обновлено.\n"
+                      f"Команды: {names}\n\n"
+                      "В MAX они появляются по кнопке меню рядом с именем бота.")
 
 
 @callback("scimport")

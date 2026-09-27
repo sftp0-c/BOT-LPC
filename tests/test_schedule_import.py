@@ -69,6 +69,9 @@ def fake_page(monkeypatch):
     return install
 
 
+SYS = "1"
+
+
 @pytest.fixture
 async def sysadmin():
     """Сис-админ в базе: кнопки сис-админа проверяем по-настоящему."""
@@ -301,3 +304,31 @@ def test_panel_import_survives_network_error(panel_client, monkeypatch):
     assert login_panel(panel_client)
     post_form(panel_client, "/panel/schedules/import", {"source": "https://college.example/"})
     assert "Не удалось импортировать" in panel_client.get("/panel/schedules").text
+
+
+# ── нижнее меню MAX (команды) ────────────────────────────────────────────────
+async def test_schedules_menu_has_menu_refresh_button(env, sysadmin, api):
+    await press(SYS, "schedules")
+    assert "scmenu" in api.payloads(SYS)
+
+
+async def test_refresh_menu_button_registers_commands(env, sysadmin, api, monkeypatch):
+    import bot
+    import bot_commands
+
+    calls = []
+
+    async def fake_set_commands(commands):
+        calls.append(commands)
+        return {}
+
+    monkeypatch.setattr(bot.api, "set_commands", fake_set_commands, raising=False)
+    await press(SYS, "scmenu")
+    assert len(calls) == 1
+    assert [c["name"] for c in calls[0]] == [c["name"] for c in bot_commands.bot_command_list()]
+    assert "/schedule" in "\n".join(body for _, body, _ in api.to(SYS))
+
+
+async def test_refresh_menu_denied_for_student(env, api):
+    await press("300", "scmenu")
+    assert not any("Нижнее меню" in body for _, body, _ in api.to("300"))
