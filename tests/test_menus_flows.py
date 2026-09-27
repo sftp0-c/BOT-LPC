@@ -130,7 +130,7 @@ def flow(monkeypatch):
 
 
 async def test_student_menu_contract(api):
-    """Меню студента - ровно шесть кнопок, и каждое подменю открывается по своей.
+    """Меню студента - девять кнопок, и каждое подменю открывается по своей.
 
     Проверяем через бота, а не через student_menu(): важно, что человек реально
     доходит до подменю нажатием, а не то, что функция вернула список.
@@ -142,8 +142,10 @@ async def test_student_menu_contract(api):
 
     api.sent.clear()
     await press(USER, "home")
-    # ровно шесть: три подменю и три частых дела. Старых кнопок в меню нет.
-    assert api.payloads(USER) == ["sub:cert", "sub:acc", "sub:fb", "sched", "tickets", "profile", "bugreport"]
+    # три подменю, три частых дела, частые вопросы с контактами и жалоба.
+    # Старых кнопок в меню нет.
+    assert api.payloads(USER) == ["sub:cert", "sub:acc", "sub:fb", "sched", "tickets", "profile",
+                                  "faq", "college", "bugreport"]
 
     await press(USER, "sub:cert")
     assert set(api.payloads(USER)) == {"ask:certificates:place", "ask:certificates:period",

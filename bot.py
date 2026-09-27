@@ -302,6 +302,12 @@ async def lifespan(app: FastAPI):
         for warning in config.validate():
             log.warning(warning)
         await db.init_db()
+        # черновик частых вопросов с сайта колледжа: seed_defaults не трогает
+        # правки сис-админа, поэтому вызывается на каждом старте
+        from handlers import faq as faq_module
+        added = await faq_module.seed_defaults()
+        if added:
+            log.info("Частые вопросы: добавлено новых - %s", added)
         if config.BACKUP_EVERY_HOURS:
             maintenance = spawn(backup_loop())
             log.info("Автокопия базы: раз в %s ч, хранится %s копий",

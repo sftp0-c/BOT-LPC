@@ -23,12 +23,13 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from starlette.background import BackgroundTask
 
 import config
+import college
 import database as db
 import repository as repo
 import timetable as tt
 import charts
 import schedule_import
-from handlers import demo, schedules
+from handlers import demo, faq, schedules
 from handlers.admin import STAFF_ROLES, approve_request, notify_schedule_subscribers, probe_pdf_url, reject_request
 from handlers.broadcast import run_broadcast
 from handlers.common import api as max_api
@@ -374,6 +375,7 @@ TABS = (
     ("/analytics", "Аналитика"),
     ("/people", "Пользователи"),
     ("/nostaff", "Без прав"),
+    ("/college", "Колледж"),
     ("/students", "Студенты"),
     ("/staff", "Сотрудники"),
     ("/access", "Коды и заявки"),
@@ -388,7 +390,7 @@ TABS = (
 
 NAV_ICONS = {
     "/": "📊", "/tickets": "📬", "/analytics": "📈", "/people": "👥", "/nostaff": "👤",
-    "/students": "🎓", "/staff": "👔", "/access": "🗝", "/templates": "⚡", "/groups": "🗂",
+    "/students": "🎓", "/staff": "👔", "/access": "🗝", "/templates": "⚡", "/groups": "🗂", "/college": "🏫",
     "/schedules": "📅", "/broadcasts": "📢", "/database": "🗄", "/settings": "⚙️", "/logs": "🧪",
 }
 
@@ -1380,6 +1382,119 @@ async def ticket_status(request: Request, ticket_id: int):
 
 
 # ── студенты ──────────────────────────────────────────────────────────────────
+# ── колледж: контакты и частые вопросы ───────────────────────────────────────
+@router.get("/college")
+async def college_page(request: Request):
+    """Справочник колледжа: что бот рассказывает студенту о себе и о колледже."""
+    user = await require_user(request)
+    # обычный цикл, а не генератор: await внутри genexp даёт асинхронный генератор
+    rows, faq_rows = [], []
+    for key, val in (await college.contacts()).items():
+        mark = "изменено" if await college.is_overridden(key) else "с сайта"
+        rows.append(f"<tr><th style='width:260px'>{esc(key.replace('_', ' '))}</th>"
+                    f"<td><input name='{esc(college.setting_key(key))}' value='{esc(val)}'></td>"
+                    f"<td class='small mut'>{mark}</td></tr>")
+    enabled = await faq.ask_enabled()
+    for row in await faq.active_items():
+        toggle = _action_form(request, "/panel/faq/" + str(to_int(row["id"])) + "/toggle", "🔁",
+                              confirm_text="Включить или выключить этот вопрос?")
+        faq_rows.append(
+            f"<tr><td><b>{esc(row['question'])}</b>"
+            f"<div class='small mut'>{esc(row['keywords'])}</div></td>"
+            f"<td>{esc(row['answer'])}</td><td>{'✅' if row['active'] else '—'}</td>"
+            f"<td>{toggle}</td></tr>")
+    rows_html = "".join(rows)
+    faq_html = "".join(faq_rows) or (
+        "<tr><td colspan='4' class='mut'>Вопросов пока нет — нажмите «Залить вопросы с сайта».</td></tr>")
+    body = f"""<div class="card"><h2>Контакты колледжа</h2>
+<p class="small mut">Значения взяты с официального сайта {esc(college.SITE)}. Пустое поле
+возвращает к данным сайта. То, что изменено, отмечено в третьей колонке.</p>
+<form method="post" action="/panel/college">{csrf(request)}<table>{rows_html}</table>
+<div class="grid" style="margin-top:10px"><button class="btn-ok">Сохранить справочник</button></div>
+</form></div>
+<div class="card"><h2>Частые вопросы</h2>
+<p class="small mut">Бот ищет ответ по ключевым словам. Если не нашёл — не выдумывает,
+а предлагает написать сотруднику.</p>
+<form method="post" action="/panel/faq/toggle">{csrf(request)}
+<input type="hidden" name="enabled" value="{"0" if enabled else "1"}">
+<button class="{"btn-bad" if enabled else "btn-ok"}">{"Выключить" if enabled else "Включить"}</button>
+<span class="small mut">сейчас: {"включены" if enabled else "выключены"}</span></form>
+<form method="post" action="/panel/faq/seed">{csrf(request)}<button class="btn-grey" style="margin-top:8px">
+Залить вопросы с сайта</button></form>
+<table style="margin-top:12px"><tr><th>Вопрос и ключевые слова</th><th>Ответ</th><th>Вкл.</th><th></th></tr>
+{faq_html}</table>
+<p class="small mut">Черновик — {len(college.DEFAULT_FAQ)} вопросов с сайта колледжа.
+Кнопка «Залить» добавляет только новые и не трогает правки сис-админа.</p></div>"""
+    return page("Колледж", body, user, "/college")
+    body = f"""<div class="card"><h2>Контакты колледжа</h2>
+<p class="small mut">Значения взяты с официального сайта {esc(college.SITE)}. Пустое поле
+возвращает к данным сайта. То, что изменено, отмечено в третьей колонке.</p>
+<form method="post" action="/panel/college">{csrf(request)}<table>{rows}</table>
+<div class="grid" style="margin-top:10px"><button class="btn-ok">Сохранить справочник</button></div>
+</form></div>
+<div class="card"><h2>Частые вопросы</h2>
+<p class="small mut">Бот ищет ответ по ключевым словам. Если не нашёл — не выдумывает,
+а предлагает написать сотруднику.</p>
+<form method="post" action="/panel/faq/toggle">{csrf(request)}
+<input type="hidden" name="enabled" value="{"0" if enabled else "1"}">
+<button class="{"btn-bad" if enabled else "btn-ok"}">{"Выключить" if enabled else "Включить"}</button>
+<span class="small mut">сейчас: {"включены" if enabled else "выключены"}</span></form>
+<form method="post" action="/panel/faq/seed">{csrf(request)}<button class="btn-grey" style="margin-top:8px">
+Залить вопросы с сайта</button></form>
+<table style="margin-top:12px"><tr><th>Вопрос и ключевые слова</th><th>Ответ</th><th>Вкл.</th><th></th></tr>
+{faq_rows}</table>
+<p class="small mut">Черновик — {len(college.DEFAULT_FAQ)} вопросов с сайта колледжа.
+Кнопка «Залить» добавляет только новые и не трогает правки сис-админа.</p></div>"""
+    return page("Колледж", body, user, "/college")
+
+
+@router.post("/college")
+async def college_save(request: Request):
+    actor = await require_form(request)
+    data = await request.form()
+    saved = 0
+    for key in college.FIELDS:
+        name = college.setting_key(key)
+        if hasattr(data, "getlist") and name in data:
+            await college.override(key, as_str(data.get(name, "")).strip()[:college.MAX_VALUE])
+            saved += 1
+    await repo.log_action(actor, "справочник колледжа", f"полей сохранено: {saved}")
+    flash(f"Справочник сохранён: {saved} полей.")
+    return redirect("/panel/college")
+
+
+@router.post("/faq/toggle")
+async def faq_toggle(request: Request):
+    await require_form(request)
+    data = await request.form()
+    await faq.set_ask_enabled(as_str(data.get("enabled", "")) == "1")
+    flash("Ответы на частые вопросы " + ("выключены." if as_str(data.get("enabled", "")) == "1" else "включены."))
+    return redirect("/panel/college")
+
+
+@router.post("/faq/seed")
+async def faq_seed(request: Request):
+    actor = await require_form(request)
+    added = await faq.seed_defaults()
+    await repo.log_action(actor, "частые вопросы с сайта", f"добавлено: {added}")
+    flash(f"Добавлено вопросов: {added}. Правки сис-админа не тронуты.")
+    return redirect("/panel/college")
+
+
+@router.post("/faq/{faq_id}/toggle")
+async def faq_item_toggle(request: Request, faq_id: int):
+    """Включить или выключить отдельный вопрос, не удаляя его."""
+    actor = await require_form(request)
+    row = await db.one("SELECT active FROM faq WHERE id=?", (int(faq_id),))
+    if not row:
+        flash("!Такого вопроса нет.")
+        return redirect("/panel/college")
+    await db.run("UPDATE faq SET active=CASE active WHEN 1 THEN 0 ELSE 1 END WHERE id=?", (int(faq_id),))
+    await repo.log_action(actor, "частый вопрос", f"№{faq_id}")
+    flash(f"Вопрос №{faq_id} {'выключен' if to_int(row['active']) else 'включен'}.")
+    return redirect("/panel/college")
+
+
 @router.get("/students")
 async def students(request: Request, group: str = "", consent: str = ""):
     user = await require_user(request)

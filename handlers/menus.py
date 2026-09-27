@@ -2,10 +2,11 @@
 from datetime import datetime
 
 import config
+import college
 import database as db
 import repository as repo
 import timetable as tt
-from handlers import demo, schedules
+from handlers import demo, faq, schedules
 from handlers.admin import audit, command as admin_command, sysadmin_ids
 from handlers.common import BACK, DEFAULT_WELCOME, admin_of, api, can_broadcast, is_super, log, need_super, notify
 from bot_commands import command_payload
@@ -60,7 +61,13 @@ async def on_message(x: str, text: str):
         return await STATES[st["state"]](x, text, st["payload"])
     if not (await admin_of(x) or await repo.is_registered(x)):
         return await start(x)
-    await api.send(x, "Используйте кнопки меню. Команды: /start, /cancel, /id")
+    # Студент написал вопрос обычным текстом: сначала пробуем ответить сами.
+    # Не нашли - не выдумываем, а показываем меню и кнопку частых вопросов.
+    if await faq.ask_enabled() and (await faq.find_answer(x, text))[0]:
+        return await faq.answer_text(x, text)
+    await api.send(x, "Используйте кнопки меню. Команды: /start, /cancel, /id\n"
+                      "Вопрос можно задать голосом текстом - ответы ищутся в частых вопросах.",
+                   [[btn("❓ Частые вопросы", "faq")]])
     return await show_home(x)
 
 
@@ -75,6 +82,7 @@ def student_menu():
          btn("💬 Обратная связь", "sub:fb")],
         [btn("📅 Моё расписание", "sched"), btn("📋 Мои обращения", "tickets"),
          btn("👤 Профиль", "profile")],
+        [btn("❓ Частые вопросы", "faq"), btn("🏫 Контакты колледжа", "college")],
         [btn("⚠️ Ошибка в боте", "bugreport")],
     ]
 
@@ -893,12 +901,26 @@ async def cb_profile(x, arg):
     if user:
         full_name = _row_value(user, "full_name")
         group = _row_value(user, "group_code")
+        contact = await college.get("телефон_приёмная") or "—"
         await api.send(
             x,
-            f"👤 Профиль\nФИО: {full_name}\nГруппа: {group}",
+            f"👤 Профиль\nФИО: {full_name}\nГруппа: {group}\n"
+            f"Учебная часть: {contact}",
             [[btn("🗂 Всё моё", "myall"),
-              btn("✏️ Изменить ФИО", "pf:name"), btn("✏️ Изменить группу", "pf:group")], *BACK],
+              btn("✏️ Изменить ФИО", "pf:name"), btn("✏️ Изменить группу", "pf:group")],
+             [btn("🏫 Контакты колледжа", "college"), btn("❓ Частые вопросы", "faq")],
+             *BACK],
         )
+
+
+@callback("college")
+async def cb_college(x, arg):
+    """Справочник колледжа: адрес, телефоны, кабинеты, часы приёма."""
+    await api.send(
+        x, await college.text(),
+        [[btn("❓ Частые вопросы", "faq")],
+         [btn("✍️ Написать в учебную часть", "new:certificates"), btn("🏠 Меню", "home")]],
+    )
 
 
 # ── «всё моё»: сводка по одному нажатию ──────────────────────────────────────
