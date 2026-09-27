@@ -34,7 +34,7 @@ from schedule_watch import start_watcher, stop_watcher  # слежение за 
 from updates import (callback_id, callback_payload, is_dialog, message_attachments, message_text,
                     profile_of, sender_id, update_key)
 from utils import UserLocks, as_str, short
-from webpanel import router as panel_router
+from webpanel import open_router as panel_open_router, router as panel_router
 import webpanel
 
 
@@ -305,6 +305,14 @@ async def lifespan(app: FastAPI):
         # черновик частых вопросов с сайта колледжа: seed_defaults не трогает
         # правки сис-админа, поэтому вызывается на каждом старте
         from handlers import faq as faq_module
+        try:
+            me = await api.me()
+            name = str(me.get("username") or "").strip()
+            if name:
+                await db.set_setting("bot_username", name)
+                log.info("Бот в MAX: @%s (ID %s)", name, me.get("user_id"))
+        except Exception as exc:
+            log.warning("не удалось узнать имя бота в MAX: %s", exc)
         added = await faq_module.seed_defaults()
         if added:
             log.info("Частые вопросы: добавлено новых - %s", added)
@@ -343,6 +351,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="College MAX bot", lifespan=lifespan)
 app.include_router(panel_router)
+app.include_router(panel_open_router)      # /join/<код>: открыто без входа в панель
+app.include_router(panel_open_router)      # /join/<код> - без входа в панель
 
 
 @app.exception_handler(sqlite3.OperationalError)

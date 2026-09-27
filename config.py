@@ -64,6 +64,12 @@ LOG_FILE = _get("LOG_FILE", "logs/bot.log")
 # Сколько часов живёт код сотрудника и сколько попыток ввода разрешено за час.
 STAFF_CODE_TTL = to_int(_get("STAFF_CODE_TTL_HOURS", "24"), 24)
 STAFF_CODE_ATTEMPTS = to_int(_get("STAFF_CODE_ATTEMPTS", "5"), 5)
+# Шаблон ссылки на профиль бота в MAX. {username} подставляется тем, что бот узнал о себе
+# при старте (GET /me). Используется в приглашении по ссылке: «Открыть бота в MAX».
+MAX_PROFILE_LINK = _get("MAX_PROFILE_LINK", "https://max.ru/{username}")
+# Публичный адрес панели для ссылок-приглашений: http://192.168.0.102:8080.
+# Пусто - ссылки получаются относительными (открываются внутри сети, где панель видна).
+PUBLIC_URL = _get("PUBLIC_URL", "")
 # Необязательный путь к PEM-файлу с доверенными сертификатами (если нужен свой набор CA).
 CA_BUNDLE = _get("MAX_CA_BUNDLE")
 LOG_LEVEL = _get("LOG_LEVEL", "INFO").upper()

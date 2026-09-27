@@ -48,6 +48,7 @@ from utils import (
     group_code,
     is_sysadmin_role,
     log_level_of,
+    norm_code,
     norm_group,
     profile_url,
     short,
@@ -59,6 +60,8 @@ from utils import (
 
 log = logging.getLogger("panel")
 router = APIRouter(prefix="/panel", tags=["panel"])
+# приглашения открыты всем, поэтому отдельный роутер без префикса /panel
+open_router = APIRouter(tags=["join"])
 
 COLLEGE_SCHEDULE_PAGE = "https://collegelan.ru/studentam/raspisanie-zanyatiy.php"
 COOKIE = "lpc_panel"          # имя cookie-сессии
@@ -393,6 +396,49 @@ NAV_ICONS = {
     "/students": "🎓", "/staff": "👔", "/access": "🗝", "/templates": "⚡", "/groups": "🗂", "/college": "🏫",
     "/schedules": "📅", "/broadcasts": "📢", "/database": "🗄", "/settings": "⚙️", "/logs": "🧪",
 }
+
+
+# страница приглашения: открытая, без входа в панель, читается с телефона
+JOIN_STYLE = """
+:root{--ink:#16202c;--mut:#67748a;--acc:#2563eb;--line:#e2e8f0}
+*{box-sizing:border-box}
+body{margin:0;background:#f1f4f9;color:var(--ink);
+     font:16px/1.5 -apple-system,Segoe UI,Roboto,Arial,sans-serif}
+main{max-width:520px;margin:0 auto;padding:28px 18px 40px;background:#fff;min-height:100vh}
+h1{font-size:22px;margin:0 0 14px}
+.lead{color:var(--mut);margin:0 0 12px}
+.code{font:600 30px/1.2 ui-monospace,Consolas,monospace;letter-spacing:4px;
+      text-align:center;padding:18px;margin:0 0 16px;border:2px dashed var(--acc);
+      border-radius:12px;color:var(--acc);background:#eff4ff}
+code{font-family:ui-monospace,Consolas,monospace;background:#eef2f7;padding:2px 6px;border-radius:6px}
+.btn{display:block;text-align:center;background:var(--acc);color:#fff;text-decoration:none;
+     padding:14px 18px;border-radius:10px;font-weight:600;margin:18px 0}
+.small{color:var(--mut);font-size:13px}
+"""
+# Ссылка на бота в MAX: у бота есть числовой ID, и MAX открывает диалог по ссылке
+# вида max.ru/bot<id>. Если адрес не задан - кнопка не показывается.
+OPEN_BOT_BUTTON = ""
+
+
+def join_link(code: str) -> str:
+    """Адрес страницы-приглашения: открыта без входа в панель, код одноразовый."""
+    base = as_str(config.PUBLIC_URL or "").strip().rstrip("/")
+    if not base:
+        return f"/join/{norm_code(code)}"          # внутри сети: относительный адрес
+    return f"{base}/join/{norm_code(code)}"
+
+
+async def bot_profile_link() -> str:
+    """Ссылка на профиль бота в MAX по шаблону MAX_PROFILE_LINK.
+
+    Имя бота бот узнаёт о себе при старте и кладёт в настройку bot_username,
+    поэтому ссылку не приходится вписывать руками. Пусто - кнопки не будет.
+    """
+    template = as_str(config.MAX_PROFILE_LINK).strip()
+    name = as_str(await db.get_setting("bot_username", "")).strip().lstrip("@")
+    if not template or not name:
+        return ""
+    return template.replace("{username}", name)
 
 
 def page(title: str, body: str, user: str = "", tab: str = "") -> str:
@@ -2038,8 +2084,11 @@ async def access_page(request: Request):
             revoke = (f'<form method="post" action="/panel/access/code/delete" class="inline">{csrf(request)}'
                       f'<input type="hidden" name="code" value="{esc(row["code"])}">'
                       f'<button class="btn-grey">Отозвать</button></form>')
+            invite = (f'<div class="small mut">{esc(join_link(row["code"]))}</div>')
+        else:
+            invite = ""
         code_rows.append(
-            f"<tr><td><b>{esc(row['code'])}</b></td><td>{esc(who)}</td>"
+            f"<tr><td><b>{esc(row['code'])}</b>{invite}</td><td>{esc(who)}</td>"
             f"<td>{esc(INVITE_STATE_LABEL.get(state, state))}</td>"
             f"<td class='small mut'>{esc(row['expires_at'] or 'бессрочный')}</td>"
             f"<td class='small mut'>{esc(row['used_by_name'] or row['used_by'] or '—')}</td><td>{revoke}</td></tr>"
@@ -2088,6 +2137,58 @@ async def access_page(request: Request):
 <table><tr><th>Человек</th><th>Попыток</th><th>Последняя</th></tr>{attempt_rows}</table>
 <p class="small mut">Больше {esc(config.STAFF_CODE_ATTEMPTS)} попыток в час — ввод блокируется до истечения часа.</p></div>"""
     return page("Коды и заявки", body, user, "/access")
+
+
+@open_router.get("/join/{code}")
+async def join_page(request: Request, code: str):
+    """Страница приглашения по ссылке: код виден, вход в бота - одним нажатием.
+
+    Открыта без входа в панель: ссылку получают будущие сотрудники, у которых
+    ещё нет прав. Код одноразовый и со сроком, поэтому страница ничего не даёт
+    постороннему, кроме самого кода.
+    """
+    normalized = norm_code(code)
+    state = await repo.invite_state(normalized)
+    if state == "unknown":
+        return await _join_page_html(
+            "Код не найден",
+            "Такого кода нет. Возможно, в ссылке опечатка или код уже удалён. "
+            "Попросите сис-админа выдать новый.",
+            "", "")
+    expires = await db.one("SELECT expires_at, full_name, user_id FROM staff_invites WHERE code=?",
+                           (normalized,))
+    until = as_str(expires["expires_at"]) if expires else ""
+    hint = ""
+    if state == "used":
+        hint = "Этот код уже использовали. Попросите сис-админа выдать новый."
+    elif state == "expired":
+        hint = "Срок действия кода истёк. Попросите сис-админа выдать новый."
+    deadline = f"Код действует до {fmt_when(until)}." if until and state not in ("used", "expired") else ""
+    who = as_str(expires["user_id"]) if expires else ""
+    body = f"""<div class="code">{esc(normalized)}</div>
+<p>Откройте бот в MAX и отправьте команду <code>/join {esc(normalized)}</code> —
+код сработает один раз и только для вас.</p>
+<p class="small mut">{esc(deadline)} {esc(hint)}</p>"""
+    if who:
+        body += f'<p class="small mut">Код выдан для MAX ID {esc(who)}.</p>'
+    return await _join_page_html("Приглашение в бота колледжа", "", normalized, body)
+
+
+async def _join_page_html(title: str, message: str, code: str, body: str) -> HTMLResponse:
+    """Одна колонка без панели: страницу видно и с телефона, и с чужого компьютера."""
+    target = await bot_profile_link()
+    join_button = (f'<a class="btn" href="{esc(target)}">Открыть бота в MAX</a>' if target else
+                   '<p class="small mut">Откройте бота в MAX и отправьте команду /join с кодом.</p>')
+    return HTMLResponse(f"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{esc(title)}</title><style>{JOIN_STYLE}</style></head><body>
+<main><h1>{esc(title)}</h1>
+{f'<p class="lead">{esc(message)}</p>' if message else ''}
+{body}
+{join_button}
+<p class="small mut">Бот колледжа: Лангепасский политехнический колледж, ул. Ленина, 52,
+приёмная директора +7 (34669) 2-26-50, учебная часть +7 (34669) 2-71-33.</p>
+</main></body></html>""", status_code=200)
 
 
 @router.post("/access/code")

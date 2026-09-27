@@ -31,6 +31,15 @@ async def on_message(x: str, text: str):
     if cmd == "/cancel":
         await db.clear_state(x)
         return await show_home(x)
+    if cmd.split(":")[0] == "/join":
+        # приглашение по ссылке: /join ABC123. Без кода - обычный вход кодом
+        parts = text.split()
+        code = parts[1] if len(parts) > 1 else ""
+        if not code and ":" in parts[0]:
+            code = parts[0].partition(":")[2]
+        if not code:
+            return await _ask_staff_code(x)
+        return await use_staff_code(x, code)
     # Команда из нижнего меню MAX: /today, today или /today@bot ведут туда же,
     # куда кнопка, - чтобы меню не приводило в пустоту.
     if cmd:
@@ -696,6 +705,11 @@ async def _code_locked(x: str, tries: int):
 
 @state("staff_code")
 async def st_staff_code(x, text, p):
+    return await use_staff_code(x, text)
+
+
+async def use_staff_code(x: str, text: str):
+    """Принимает код сотрудника. Один вход и для кнопки, и для /join <код>."""
     if await admin_of(x):
         await db.clear_state(x)
         return await show_home(x)
