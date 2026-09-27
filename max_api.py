@@ -43,6 +43,25 @@ def link_btn(text: str, url: str) -> dict:
     return {"type": "link", "text": text[:128], "url": url}
 
 
+def bottom_btn(text: str, payload: str = "") -> dict:
+    """Кнопка нижней клавиатуры.
+
+    С payload - та же callback-кнопка, что и в сообщении, только висит под полем
+    ввода и не уезжает вверх вместе с текстом. Без payload кнопка отправляет
+    текст в чат как обычное сообщение.
+    """
+    if payload:
+        return {"type": "callback", "text": text[:64], "payload": payload[:MAX_PAYLOAD]}
+    return {"type": "text", "text": text[:64]}
+
+
+def bottom_keyboard(buttons: list | None) -> dict | None:
+    """Готовое поле reply_markup для отправки. [] - снять нижнюю клавиатуру."""
+    if not buttons:
+        return {"buttons": []} if buttons is not None else None
+    return {"buttons": buttons}
+
+
 def split_keyboard(keyboard: list | None, limit: int = MAX_ROWS) -> list[list[list]]:
     """Режет клавиатуру на части по limit строк.
 
@@ -158,7 +177,8 @@ class MaxAPI:
         raise last or MaxAPIError(0, "unknown error")
 
     # ── сообщения ────────────────────────────────────────────────────────────
-    async def send(self, user_id, text: str, keyboard: list | None = None) -> dict:
+    async def send(self, user_id, text: str, keyboard: list | None = None,
+                   bottom: list | None = None) -> dict:
         """Отправляет сообщение пользователю. keyboard — список рядов кнопок.
 
         Длинный текст режется на части, длинная клавиатура — на несколько
@@ -176,8 +196,11 @@ class MaxAPI:
         # первая часть клавиатуры идёт вместе с последней частью текста,
         # остальные - отдельными сообщениями с подписью
         result: dict = {}
+        markup = bottom_keyboard(bottom)
         for index, part in enumerate(parts):
             body: dict = {"text": part}
+            if markup:
+                body["reply_markup"] = markup      # нижние кнопки - на каждой части
             if chunks and index == len(parts) - 1:
                 body["attachments"] = [{"type": "inline_keyboard",
                                         "payload": {"buttons": chunks[0]}}]
@@ -187,10 +210,11 @@ class MaxAPI:
             caption = ("👆 Кнопки ниже" if index == 1
                        else f"👆 Продолжение: {index} из {len(chunks) - 1}")
             await self._user_wait(user_id)
-            result = await self._request("POST", "/messages", params={"user_id": uid}, json={
-                "text": caption,
-                "attachments": [{"type": "inline_keyboard", "payload": {"buttons": chunks[index]}}],
-            })
+            body = {"text": caption,
+                    "attachments": [{"type": "inline_keyboard", "payload": {"buttons": chunks[index]}}]}
+            if markup:
+                body["reply_markup"] = markup
+            result = await self._request("POST", "/messages", params={"user_id": uid}, json=body)
         return result
 
     async def answer(self, callback_id: str, notification: str | None = None) -> None:

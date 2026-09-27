@@ -326,7 +326,8 @@ async def ticket_thread(ticket_id: int, limit: int = 50) -> list:
     """Переписка с именами, должностями и временем — от свежих к старым."""
     return await db.many(
         "SELECT m.id, m.sender_id, m.sender_role, m.text, m.created_at, "
-        "COALESCE(u.full_name, '') sender_name, COALESCE(u.group_code, '') group_code, "
+        "COALESCE(NULLIF(u.full_name, ''), a.full_name, '') sender_name, "
+        "COALESCE(u.group_code, '') group_code, "
         "COALESCE(a.position, a.role, '') position, COALESCE(a.role_type, '') role_type "
         "FROM ticket_messages m "
         "LEFT JOIN users u ON u.user_id=m.sender_id AND m.sender_role='student' "

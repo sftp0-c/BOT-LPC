@@ -9,7 +9,7 @@ from handlers import schedules
 from handlers.admin import audit, command as admin_command, sysadmin_ids
 from handlers.common import BACK, DEFAULT_WELCOME, admin_of, api, can_broadcast, is_super, log, need_super, notify
 from handlers.registry import STATES, callback, state
-from max_api import btn, link_btn
+from max_api import bottom_btn, btn, link_btn
 from timetable import WEEKDAYS_FULL
 from utils import (as_str, group_code, group_digits, norm_code, norm_group, short, to_int,
                     valid_group)
@@ -48,6 +48,36 @@ def student_menu():
         [btn("📚 Все расписания", "view_schedules")],
         [btn("📋 Мои обращения", "tickets"), btn("👤 Мой профиль", "profile")],
     ]
+
+
+# Нижняя клавиатура: кнопки висят под полем ввода и не уезжают вверх вместе
+# с текстом. Инлайн-кнопки остаются в списках и карточках (они по смыслу относятся
+# к конкретному экрану), а «хлебные крошки» меню уезжают вниз.
+BOTTOM_HOME = bottom_btn("🏠 Меню", "home")
+BOTTOM_SCHEDULE = bottom_btn("📚 Расписание", "view_schedules")
+BOTTOM_TICKETS = bottom_btn("🗂 Мои обращения", "tickets")
+BOTTOM_NEW = bottom_btn("✉️ Новое обращение", "new:feedback")
+BOTTOM_PROFILE = bottom_btn("👤 Профиль", "profile")
+BOTTOM_QUEUE = bottom_btn("📥 Очередь", "staff")
+BOTTOM_STATS = bottom_btn("📊 Статистика", "staffstats")
+BOTTOM_SYSADM = bottom_btn("⚙️ Сис-админ", "sysadm")
+
+
+def bottom_menu(role: str = "student", a=None) -> list:
+    """Кнопки снизу под роль: у студента, сотрудника и сис-админа свой набор."""
+    if role == "admin":
+        buttons = [BOTTOM_HOME, BOTTOM_QUEUE, BOTTOM_SYSADM, BOTTOM_STATS]
+        if can_broadcast(a):
+            buttons.insert(3, bottom_btn("📣 Рассылка", "broadcast"))
+        return buttons
+    if role == "staff":
+        buttons = [BOTTOM_HOME, BOTTOM_QUEUE, BOTTOM_STATS]
+        if can_broadcast(a):
+            buttons.append(bottom_btn("📣 Рассылка", "broadcast"))
+        if is_super(a):
+            buttons.append(BOTTOM_SYSADM)
+        return buttons
+    return [BOTTOM_HOME, BOTTOM_SCHEDULE, BOTTOM_TICKETS, BOTTOM_NEW, BOTTOM_PROFILE]
 
 
 def _clean_fio(value) -> str:
@@ -238,15 +268,18 @@ async def show_home(x: str):
         if view == "student":
             return await api.send(
                 x, "🎓 Режим студента. Основное меню бота — ниже, админские кнопки — в «⚙️ Ещё».",
-                [*student_menu(), await view_switcher(x), [btn("↩️ В меню", "home")]])
+                [*student_menu(), await view_switcher(x), [btn("↩️ В меню", "home")]],
+                bottom=bottom_menu("student"))
         if view == "staff":
             return await api.send(
                 x, "👔 Режим сотрудника. Обращения и статистика — ниже.",
-                [*staff_menu(a), await view_switcher(x), [btn("↩️ В меню", "home")]])
-        return await api.send(x, "🏫 Кабинет сотрудника", staff_menu(a))
+                [*staff_menu(a), await view_switcher(x), [btn("↩️ В меню", "home")]],
+                bottom=bottom_menu("staff", a))
+        return await api.send(x, "🏫 Кабинет сотрудника", staff_menu(a), bottom=bottom_menu("admin", a))
     if not await repo.is_registered(x):
         return await start(x)
-    return await api.send(x, await db.get_setting("welcome_text", DEFAULT_WELCOME), student_menu())
+    return await api.send(x, await db.get_setting("welcome_text", DEFAULT_WELCOME),
+                          student_menu(), bottom=bottom_menu("student"))
 
 
 @state("reg_name")
