@@ -1,6 +1,7 @@
 """Панель сис-админа: сотрудники, справочник групп, расписания, настройки, статистика."""
 import ipaddress
 import time
+from datetime import datetime
 from urllib.parse import urlsplit
 
 import httpx
@@ -8,11 +9,13 @@ import httpx
 import config
 import database as db
 import repository as repo
+import timetable as tt
+from handlers import schedules
 from handlers.common import BACK, DEFAULT_WELCOME, admin_of, api, is_super, log, need_super, notify, spawn
 from handlers.registry import callback, state
 from max_api import btn
-from utils import (CODE_TTL_CHOICES, POSITION_HINTS, STAFF_CATS, STATUS, as_str, fmt_when, gen_code, is_sysadmin_role,
-                   norm_group, profile_url, short, tail_file, to_int, ttl_label, valid_group)
+from utils import (CODE_TTL_CHOICES, POSITION_HINTS, STAFF_CATS, STATUS, as_str, fmt_when, gen_code, group_code,
+                   is_sysadmin_role, norm_group, profile_url, short, tail_file, to_int, ttl_label, valid_group)
 
 
 # ── общие мелочи для строк из БД ─────────────────────────────────────────────
@@ -1440,7 +1443,9 @@ async def cb_schedules(x, arg):
         return
     rows = await repo.schedule_groups()
     text = f"📅 Расписания групп: {len(rows)}" if rows else "📅 Расписаний пока нет."
-    kb = [[btn(r["group_code"], f"sc:{r['group_code']}")] for r in rows]
+    # «👀» открывает расписание сразу, «название» - карточку для правок
+    kb = [[btn(r["group_code"], f"sc:{r['group_code']}"), btn("👀", f"scview:{r['group_code']}")]
+          for r in rows]
     await api.send(x, text, [*kb,
                             [btn("➕ Добавить / изменить", "scadd"),
                              btn("⬇️ Импорт с сайта", "scimport")],
@@ -1452,11 +1457,66 @@ async def cb_schedule_card(x, group):
     row = await repo.get_schedule(group)
     if not (await need_super(x) and row):
         return
+    code = group_code(_field(row, "group_code", default=group))
+    parsed = _field(row, "parsed_at")
+    found = _field(row, "found_groups")
+    state_line = ""
+    if parsed:
+        state_line = f"\n🗂 Разобрано: {len([f for f in found.split(',') if f.strip()])} колонок, файл от {fmt_when(parsed)}"
+    else:
+        state_line = "\n🗂 Файл ещё ни разу не разбирался"
     await api.send(
         x,
-        f"📅 {row['group_code']}\n{row['pdf_url']}",
-        [[btn("✏️ Изменить ссылку", f"scedit:{group}"), btn("🗑 Удалить", f"scdel:{group}")], [btn("↩️ К списку", "schedules")]],
+        f"📅 {code}{state_line}\n{_field(row, 'pdf_url')}",
+        [[btn("👀 Открыть расписание", f"scview:{code}")],
+         [btn("✏️ Изменить ссылку", f"scedit:{code}"), btn("🗑 Удалить", f"scdel:{code}")],
+         [btn("↩️ К списку", "schedules")]],
     )
+
+
+@callback("scview")
+async def cb_schedule_view(x, arg):
+    """Показать расписание группы: неделя, день или ближайшие пары.
+
+    Тот же разбор, что у студента, но без кнопки подписки - сис-админ и так
+    видит всё, и подписываться ему незачем.
+    """
+    if not await need_super(x):
+        return
+    raw = as_str(arg)
+    if raw.startswith("scview:"):
+        raw = raw[7:]
+    code_raw, _, view = raw.partition(":")
+    code = group_code(code_raw)
+    if view not in ("day", "next"):
+        view = "week"
+    row = await repo.get_schedule(code)
+    if not row:
+        return await api.send(x, f"📅 У группы {code} нет расписания.",
+                              [[btn("↩️ К списку", "schedules")]])
+    result = await schedules.parse_group(code)
+    back = [[btn("↩️ К карточке", f"sc:{code}")]]
+    if not result.has_lessons:
+        hint = f"\n(разобрать не удалось: {short(result.reason, 80)})" if result.reason else ""
+        url = as_str(_field(row, "pdf_url"))
+        return await api.send(x, f"📅 {code} — PDF{hint}\n{url}", back)
+
+    schedule = result.schedule
+    weekday = datetime.now().weekday()
+    if view == "day":
+        day = schedule.day(weekday)
+        text = tt.format_day(day) if day and not day.is_empty else "📅 Сегодня занятий нет"
+    elif view == "next":
+        text = tt.format_upcoming(schedule) or "📅 Ближайших пар нет"
+    else:
+        text = tt.format_schedule(schedule)
+    keyboard = [
+        [btn("📆 Сегодня", f"scview:{code}:day"),
+         btn("🕐 Ближайшие", f"scview:{code}:next"),
+         btn("📅 Вся неделя", f"scview:{code}")],
+        *back,
+    ]
+    await api.send(x, text, keyboard)
 
 
 @callback("scdel")
