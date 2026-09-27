@@ -1431,8 +1431,12 @@ async def probe_pdf_url(url: str) -> tuple[bool, str]:
 
 
 # ── расписания ────────────────────────────────────────────────────────────────
+SCHEDULES_PAGE = 15      # групп на страницу списка
+SCHEDULES_ALL = 300      # справочник целиком: колледж даёт больше 25 групп
+
+
 async def schedule_group_codes() -> list[str]:
-    codes = {norm_group(_field(r, "group_code", "code")) for r in (await repo.schedule_groups() or [])}
+    codes = {norm_group(_field(r, "group_code", "code")) for r in (await repo.schedule_groups(SCHEDULES_ALL) or [])}
     codes |= {code for code, _ in await all_groups()}
     return sorted(codes - {""})
 
@@ -1441,11 +1445,24 @@ async def schedule_group_codes() -> list[str]:
 async def cb_schedules(x, arg):
     if not await need_super(x):
         return
-    rows = await repo.schedule_groups()
+    rows = await repo.schedule_groups(SCHEDULES_ALL)
+    page = max(0, to_int(str(arg or "").replace("schedules:", "", 1)))
+    pages = max(1, -(-len(rows) // SCHEDULES_PAGE))
+    page = min(page, pages - 1)
+    chunk = rows[page * SCHEDULES_PAGE:(page + 1) * SCHEDULES_PAGE]
     text = f"📅 Расписания групп: {len(rows)}" if rows else "📅 Расписаний пока нет."
+    if pages > 1:
+        text += f"\nСтраница {page + 1} из {pages}."
     # «👀» открывает расписание сразу, «название» - карточку для правок
     kb = [[btn(r["group_code"], f"sc:{r['group_code']}"), btn("👀", f"scview:{r['group_code']}")]
-          for r in rows]
+          for r in chunk]
+    nav = []
+    if page:
+        nav.append(btn("◀️ Назад", f"schedules:{page - 1}"))
+    if page < pages - 1:
+        nav.append(btn("Вперёд ▶️", f"schedules:{page + 1}"))
+    if nav:
+        kb.append(nav)
     await api.send(x, text, [*kb,
                             [btn("➕ Добавить / изменить", "scadd"),
                              btn("⬇️ Импорт с сайта", "scimport")],

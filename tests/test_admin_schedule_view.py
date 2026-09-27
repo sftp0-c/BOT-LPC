@@ -53,6 +53,42 @@ async def test_list_has_eye_button_next_to_every_group(env_sysadmin, api):
     assert f"sc:{GROUP}" in payloads
 
 
+async def test_list_is_paged_so_no_group_is_hidden(env_sysadmin, api):
+    """Групп больше 25: список листается, а не обрезается."""
+    import repository as repo
+    from handlers import admin
+
+    for index in range(admin.SCHEDULES_ALL - 1):
+        await repo.upsert_schedule(f"25-{index:02d}", f"https://college.example/{index}.pdf")
+    seen, page = set(), 0
+    expected_pages = -(-admin.SCHEDULES_ALL // admin.SCHEDULES_PAGE)
+    while True:
+        await press(SYS, f"schedules:{page}" if page else "schedules")
+        payloads = api.payloads(SYS)
+        seen |= {p[7:] for p in payloads if p.startswith("scview:")}
+        if f"schedules:{page + 1}" not in payloads:
+            break
+        page += 1
+        assert page < expected_pages + 1, "страницы не заканчиваются"
+    assert page + 1 == expected_pages
+    assert GROUP in seen
+    assert len(seen) == admin.SCHEDULES_ALL
+
+
+async def test_paged_list_mentions_total(env_sysadmin, api):
+    import repository as repo
+    from handlers import admin
+
+    for index in range(admin.SCHEDULES_PAGE + 5):
+        await repo.upsert_schedule(f"25-{index:02d}", f"https://college.example/{index}.pdf")
+    await press(SYS, "schedules")
+    body = api.to(SYS)[-1][1]
+    total = admin.SCHEDULES_PAGE + 6
+    assert f"Расписания групп: {total}" in body
+    pages = -(-total // admin.SCHEDULES_PAGE)
+    assert f"Страница 1 из {pages}" in body
+
+
 async def test_card_offers_to_open_the_schedule(env_sysadmin, api):
     await press(SYS, f"sc:{GROUP}")
     assert f"scview:{GROUP}" in api.payloads(SYS)
