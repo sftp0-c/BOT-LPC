@@ -90,6 +90,10 @@ def _group_from_row(row) -> str:
     return _group_code(value)
 
 
+GROUPS_PAGE = 12      # групп на экране выбора: 30 строк кнопок - предел MAX
+GROUPS_ALL = 300      # справочник целиком, колледж даёт больше 25 групп
+
+
 async def _active_group_rows():
     lister = getattr(repo, "list_groups", None)
     if lister is None:
@@ -853,21 +857,46 @@ async def cb_done(x, arg):
 # ── расписание ────────────────────────────────────────────────────────────────
 @callback("view_schedules")
 async def cb_view_schedules(x, arg):
-    rows = await _active_group_rows()
+    codes = await _schedule_group_codes()
+    if not codes:
+        return await cb_schedule(x, arg)
+    raw = str(arg or "")
+    page = max(0, to_int(raw.replace("view_schedules:", "", 1)))
+    pages = max(1, -(-len(codes) // GROUPS_PAGE))
+    page = min(page, pages - 1)
+    chunk = codes[page * GROUPS_PAGE:(page + 1) * GROUPS_PAGE]
+    keyboard = []
+    for code in chunk:
+        label = await _schedule_subscription_label(x, code)
+        keyboard.append([btn(f"📅 {code}", f"sched:{code}"), btn(label, f"schedsub:{code}")])
+    nav = []
+    if page:
+        nav.append(btn("◀️ Назад", f"view_schedules:{page - 1}"))
+    if page < pages - 1:
+        nav.append(btn("Вперёд ▶️", f"view_schedules:{page + 1}"))
+    if nav:
+        keyboard.append(nav)
+    text = "📅 Выберите группу для расписания:"
+    if pages > 1:
+        text += f"\nГрупп: {len(codes)}, страница {page + 1} из {pages}."
+    await api.send(x, text, [*keyboard, *BACK])
+
+
+async def _schedule_group_codes() -> list[str]:
+    """Все группы, у которых есть расписание: из справочника и из списка ссылок."""
     schedule_lister = getattr(repo, "schedule_groups", None)
-    schedule_rows = await schedule_lister() if schedule_lister is not None else []
-    codes = []
-    for row in list(rows or []) + list(schedule_rows or []):
+    rows = list(await _active_group_rows())
+    if schedule_lister is not None:
+        try:
+            rows += list(await schedule_lister(GROUPS_ALL) or [])
+        except TypeError:          # старый вызов без лимита
+            rows += list(await schedule_lister() or [])
+    codes: list[str] = []
+    for row in rows:
         code = _group_from_row(row)
         if code and code not in codes:
             codes.append(code)
-    if not codes:
-        return await cb_schedule(x, arg)
-    keyboard = []
-    for code in codes:
-        label = await _schedule_subscription_label(x, code)
-        keyboard.append([btn(f"📅 {code}", f"sched:{code}"), btn(label, f"schedsub:{code}")])
-    await api.send(x, "📅 Выберите группу для расписания:", [*keyboard, *BACK])
+    return sorted(codes)
 
 
 @callback("sched")

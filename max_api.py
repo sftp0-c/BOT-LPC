@@ -30,6 +30,8 @@ class MaxAPIError(Exception):
 
 
 MAX_PAYLOAD = 1024  # предельная длина callback-payload по спецификации MAX API
+MAX_ROWS = 30       # строк клавиатуры в одном сообщении: дальше MAX отвечает
+                    # errors.maxRows (предел проверен запросами к API)
 
 
 def btn(text: str, payload: str) -> dict:
@@ -39,6 +41,20 @@ def btn(text: str, payload: str) -> dict:
 
 def link_btn(text: str, url: str) -> dict:
     return {"type": "link", "text": text[:128], "url": url}
+
+
+def split_keyboard(keyboard: list | None, limit: int = MAX_ROWS) -> list[list[list]]:
+    """Режет клавиатуру на части по limit строк.
+
+    MAX не принимает сообщение с 31+ строкой кнопок, поэтому длинные списки
+    (35 групп, 60 сотрудников) уходят несколькими сообщениями, а не падают.
+    """
+    rows = [row for row in (keyboard or []) if row]
+    if not rows:
+        return []
+    if limit < 1:
+        limit = 1
+    return [rows[i:i + limit] for i in range(0, len(rows), limit)]
 
 
 def split_text(text: str, size: int = MAX_TEXT) -> list[str]:
@@ -143,21 +159,38 @@ class MaxAPI:
 
     # ── сообщения ────────────────────────────────────────────────────────────
     async def send(self, user_id, text: str, keyboard: list | None = None) -> dict:
-        """Отправляет сообщение пользователю. keyboard — список рядов кнопок."""
+        """Отправляет сообщение пользователю. keyboard — список рядов кнопок.
+
+        Длинный текст режется на части, длинная клавиатура — на несколько
+        сообщений: предел MAX — 30 строк кнопок, иначе API отвечает
+        errors.maxRows и событие падает с «Ошибка при обработке».
+        """
         user_id = str(user_id)
+        # user_id в системе — строка; MAX API ожидает числовой id
+        try:
+            uid: int | str = int(user_id)
+        except (TypeError, ValueError):
+            uid = user_id
         parts = split_text(text or "…")
+        chunks = split_keyboard(keyboard)
+        # первая часть клавиатуры идёт вместе с последней частью текста,
+        # остальные - отдельными сообщениями с подписью
         result: dict = {}
-        for i, part in enumerate(parts):
+        for index, part in enumerate(parts):
             body: dict = {"text": part}
-            if keyboard and i == len(parts) - 1:
-                body["attachments"] = [{"type": "inline_keyboard", "payload": {"buttons": keyboard}}]
+            if chunks and index == len(parts) - 1:
+                body["attachments"] = [{"type": "inline_keyboard",
+                                        "payload": {"buttons": chunks[0]}}]
             await self._user_wait(user_id)
-            # user_id в системе — строка; MAX API ожидает числовой id
-            try:
-                uid: int | str = int(user_id)
-            except (TypeError, ValueError):
-                uid = user_id
             result = await self._request("POST", "/messages", params={"user_id": uid}, json=body)
+        for index in range(1, len(chunks)):
+            caption = ("👆 Кнопки ниже" if index == 1
+                       else f"👆 Продолжение: {index} из {len(chunks) - 1}")
+            await self._user_wait(user_id)
+            result = await self._request("POST", "/messages", params={"user_id": uid}, json={
+                "text": caption,
+                "attachments": [{"type": "inline_keyboard", "payload": {"buttons": chunks[index]}}],
+            })
         return result
 
     async def answer(self, callback_id: str, notification: str | None = None) -> None:
