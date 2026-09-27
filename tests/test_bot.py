@@ -87,6 +87,7 @@ async def test_full_ticket_conversation(api):
     assert f"pick:feedback:{STAFF}" in api.payloads(STUDENT)
     await press(STUDENT, f"pick:feedback:{STAFF}")
     await say(STUDENT, "Не работает электронный журнал")
+    await press(STUDENT, "ticketsend")
 
     t = await db.one("SELECT * FROM tickets")
     assert (t["student_id"], t["target_admin_id"], t["status"]) == (STUDENT, STAFF, "new")
@@ -122,6 +123,7 @@ async def test_ticket_access_control(api):
     await add_staff(STAFF2, "Козлов Иван")
     await press(STUDENT, f"pick:certificates:{STAFF}")
     await say(STUDENT, "Нужна справка")
+    await press(STUDENT, "ticketsend")
     tid = (await db.one("SELECT ticket_id FROM tickets"))["ticket_id"]
 
     for outsider in (OTHER, STAFF2):
@@ -292,6 +294,7 @@ async def test_delete_staff_blocked_while_tickets_open(api):
     await add_staff(STAFF, "Петрова Анна")
     await press(STUDENT, f"pick:feedback:{STAFF}")
     await say(STUDENT, "Вопрос")
+    await press(STUDENT, "ticketsend")
     await press("1", f"sfdy:{STAFF}")
     assert await db.one("SELECT 1 FROM admins WHERE user_id=?", (STAFF,))
     tid = (await db.one("SELECT ticket_id FROM tickets"))["ticket_id"]

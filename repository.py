@@ -281,8 +281,9 @@ async def set_staff_broadcast(user_id: str, allowed: bool) -> None:
 
 
 # ── обращения ─────────────────────────────────────────────────────────────────
-async def get_ticket(ticket_id: int):
-    ticket = await db.one("SELECT * FROM tickets WHERE ticket_id=?", (ticket_id,))
+async def get_ticket(ticket_id: int, include_archived: bool = False):
+    where = "WHERE ticket_id=?" if include_archived else "WHERE ticket_id=? AND deleted_at=''"
+    ticket = await db.one(f"SELECT * FROM tickets {where}", (ticket_id,))
     if not ticket:
         return None
     result = _row_dict(ticket)
@@ -310,14 +311,34 @@ async def recent_student_tickets(user_id: str, limit: int = 15) -> list:
     return await db.many("SELECT * FROM tickets WHERE student_id=? ORDER BY ticket_id DESC LIMIT ?", (user_id, limit))
 
 
-async def admin_tickets(admin_id: Optional[str], limit: int = 20) -> list:
-    """Обращения сотрудника; None — все обращения (для сис-админа). Сначала открытые."""
-    where, params = ("WHERE target_admin_id=?", (admin_id,)) if admin_id else ("", ())
+async def admin_tickets(admin_id: Optional[str], limit: int = 20,
+                        archived: bool = False) -> list:
+    """Обращения сотрудника; None — все обращения (для сис-админа). Сначала открытые.
+
+    По умолчанию отдаёт живые обращения: убранные в архив видны только
+    отдельным запросом, иначе они засоряли бы очередь.
+    """
+    if admin_id:
+        where = "WHERE t.deleted_at<>''" if archived else "WHERE t.target_admin_id=? AND t.deleted_at=''"
+        params = (admin_id,)
+    else:
+        where = "WHERE t.deleted_at<>''" if archived else "WHERE t.deleted_at=''"
+        params = ()
+    # Студент и сотрудник джойнятся сразу: и боту, и панели нужны ФИО и группа в
+    # каждой строке очереди, а запрос на строку здесь обернулся бы в N+1.
     return await db.many(
-        f"SELECT * FROM tickets {where} "
-        "ORDER BY (status IN ('ready','completed','rejected')), "
-        "CASE WHEN status='ready' THEN 0 ELSE 1 END, "
-        "ticket_id DESC LIMIT ?",
+        "SELECT t.*, "
+        "COALESCE(NULLIF(u.full_name, ''), '') student_name, "
+        "COALESCE(u.group_code, '') student_group, "
+        "COALESCE(a.full_name, '') staff_name, "
+        "COALESCE(NULLIF(a.position, ''), a.role, '') staff_position "
+        "FROM tickets t "
+        "LEFT JOIN users u ON u.user_id = t.student_id "
+        "LEFT JOIN admins a ON a.user_id = t.target_admin_id "
+        f"{where} "
+        "ORDER BY (t.status IN ('ready','completed','rejected')), "
+        "CASE WHEN t.status='ready' THEN 0 ELSE 1 END, "
+        "t.ticket_id DESC LIMIT ?",
         params + (limit,),
     )
 
@@ -419,8 +440,11 @@ async def open_tickets_count(admin_id: str) -> int:
 
 
 async def status_counts(admin_id: Optional[str] = None) -> dict:
-    """{status: количество}; admin_id=None — по всем обращениям."""
-    where, params = ("WHERE target_admin_id=?", (admin_id,)) if admin_id else ("", ())
+    """{status: количество}; admin_id=None — по всем обращениям. Архив не считается."""
+    if admin_id:
+        where, params = "WHERE target_admin_id=? AND deleted_at=''", (admin_id,)
+    else:
+        where, params = "WHERE deleted_at=''", ()
     rows = await db.many(f"SELECT status, COUNT(*) n FROM tickets {where} GROUP BY status", params)
     return {r["status"]: r["n"] for r in rows}
 
@@ -618,6 +642,42 @@ async def lessons_for_group(group_code: str) -> list:
         "WHERE group_code=? ORDER BY weekday, lesson_num",
         (code,),
     )
+
+
+async def search_teachers(needle: str, limit: int = 10) -> list[str]:
+    """Преподаватели, чьё имя похоже на запрос. Пустой запрос - самые ходовые."""
+    text = f"%{as_str(needle).strip()}%"
+    rows = await db.many(
+        "SELECT teacher, COUNT(*) n FROM lessons "
+        "WHERE teacher<>'' AND teacher LIKE ? "
+        "GROUP BY teacher ORDER BY n DESC, teacher LIMIT ?",
+        (text, int(limit)),
+    )
+    return [as_str(row["teacher"]) for row in rows]
+
+
+async def teacher_groups(teacher: str, limit: int = 20) -> list[str]:
+    """Группы, где у преподавателя есть занятия."""
+    rows = await db.many(
+        "SELECT DISTINCT group_code FROM lessons WHERE teacher=? ORDER BY group_code LIMIT ?",
+        (as_str(teacher), int(limit)),
+    )
+    return [as_str(row["group_code"]) for row in rows]
+
+
+async def lessons_for_teacher(teacher: str) -> dict:
+    """Занятия преподавателя по дням: {weekday: [(номер, предмет, группа, аудитория)]}."""
+    rows = await db.many(
+        "SELECT weekday, lesson_num, subject, group_code, room FROM lessons "
+        "WHERE teacher=? ORDER BY weekday, lesson_num, group_code",
+        (as_str(teacher),),
+    )
+    days: dict[int, list] = {}
+    for row in rows:
+        days.setdefault(int(row["weekday"]), []).append(
+            (int(row["lesson_num"]), as_str(row["subject"]), as_str(row["group_code"]),
+             as_str(row["room"])))
+    return days
 
 
 async def lessons_count(group_code: str) -> int:
@@ -1109,6 +1169,119 @@ async def delete_user(user_id: str, with_tickets: bool = False) -> tuple[bool, s
         await c.commit()
     detail = f"удалено обращений: {tickets}" if with_tickets else "обращения оставлены"
     return True, f"{'Пользователь ' + name if name else 'Пользователь'} удалён ({detail})"
+
+
+async def archive_ticket(ticket_id: int, actor_id: str = "") -> tuple[bool, str]:
+    """Мягкое удаление: обращение уходит в архив, переписка и история остаются.
+
+    Возвращается одним действием (restore_ticket), поэтому спорный вопрос можно
+    вернуть в работу, а не искать в резервной копии базы.
+    """
+    ticket_id = int(ticket_id)
+    row = await db.one("SELECT deleted_at FROM tickets WHERE ticket_id=?", (ticket_id,))
+    if not row:
+        return False, f"Обращение №{ticket_id} не найдено"
+    if as_str(row["deleted_at"]):
+        return False, f"Обращение №{ticket_id} уже в архиве"
+    await db.run("UPDATE tickets SET deleted_at=datetime('now'), deleted_by=?, "
+                 "updated_at=datetime('now') WHERE ticket_id=?", (as_str(actor_id), ticket_id))
+    await log_ticket_event(ticket_id, as_str(actor_id) or "сис-админ", "archived", "")
+    return True, f"Обращение №{ticket_id} в архиве"
+
+
+async def restore_ticket(ticket_id: int, actor_id: str = "") -> tuple[bool, str]:
+    """Возвращает обращение из архива в работу."""
+    ticket_id = int(ticket_id)
+    row = await db.one("SELECT deleted_at FROM tickets WHERE ticket_id=?", (ticket_id,))
+    if not row:
+        return False, f"Обращение №{ticket_id} не найдено"
+    if not as_str(row["deleted_at"]):
+        return False, f"Обращение №{ticket_id} и так в работе"
+    await db.run("UPDATE tickets SET deleted_at='', deleted_by='', "
+                 "updated_at=datetime('now') WHERE ticket_id=?", (ticket_id,))
+    await log_ticket_event(ticket_id, as_str(actor_id) or "сис-админ", "restored", "")
+    return True, f"Обращение №{ticket_id} снова в работе"
+
+
+async def archive_count() -> int:
+    row = await db.one("SELECT COUNT(*) n FROM tickets WHERE deleted_at<>''")
+    return int(row["n"]) if row else 0
+
+
+async def update_ticket(ticket_id: int, actor_id: str = "", **fields) -> tuple[bool, str]:
+    """Правка полей обращения из панели: каждое изменение попадает в историю.
+
+    Пустое значение поле не затирает: такие поля просто не трогаются, иначе один
+    невнимательный клик стирал бы текст обращения.
+    """
+    ticket_id = int(ticket_id)
+    row = await db.one("SELECT * FROM tickets WHERE ticket_id=?", (ticket_id,))
+    if not row:
+        return False, f"Обращение №{ticket_id} не найдено"
+    if as_str(row["deleted_at"]):
+        return False, f"Обращение №{ticket_id} в архиве - сначала восстановите"
+    columns = {
+        "text_content": "текст", "category": "категория", "topic": "тема",
+        "target_admin_id": "ответственный", "status": "статус",
+        "pickup_place": "кабинет выдачи", "ready_until": "срок готовности",
+        "doc_url": "документ",
+    }
+    changes = []
+    for field, label in columns.items():
+        if field not in fields or fields[field] is None:
+            continue
+        value = as_str(fields[field]).strip()
+        if not value or value == as_str(row[field]):
+            continue
+        changes.append(f"{label}: {as_str(row[field]) or '—'} → {value}")
+        await db.run(f"UPDATE tickets SET {field}=?, updated_at=datetime('now') WHERE ticket_id=?",
+                     (value, ticket_id))
+    if not changes:
+        return True, "Изменений не было"
+    detail = "; ".join(changes)[:300]
+    event = "status" if len(changes) == 1 and changes[0].startswith("статус") else "edited"
+    await log_ticket_event(ticket_id, as_str(actor_id) or "сис-админ", event, detail)
+    return True, f"Обращение №{ticket_id} сохранено: {detail}"
+
+
+async def bulk_update(ticket_ids: list, action: str, value: str = "",
+                      actor_id: str = "") -> tuple[int, str]:
+    """Массовые действия: назначить, сменить статус, поставить кабинет, убрать в архив."""
+    done = 0
+    for raw in ticket_ids or []:
+        try:
+            ticket_id = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if action == "assign":
+            ok, _ = await update_ticket(ticket_id, actor_id, target_admin_id=as_str(value))
+        elif action == "status":
+            ok, _ = await update_ticket(ticket_id, actor_id, status=as_str(value))
+        elif action == "pickup":
+            ok, _ = await update_ticket(ticket_id, actor_id, pickup_place=as_str(value))
+        elif action == "archive":
+            ok, _ = await archive_ticket(ticket_id, actor_id)
+        else:
+            return done, f"Неизвестное действие: {action}"
+        done += int(bool(ok))
+    labels = {"assign": "назначено", "status": "статус изменён",
+              "pickup": "кабинет обновлён", "archive": "в архиве"}
+    return done, f"Обращений обработано: {done} ({labels.get(action, action)})"
+
+
+async def set_staff_see_all(user_id: str, value: bool) -> bool:
+    """Доступ сотрудника к чужим обращениям: очередь отдела или только свои."""
+    await db.run("UPDATE admins SET see_all_tickets=? WHERE user_id=?",
+                 (1 if value else 0, as_str(user_id)))
+    return True
+
+
+async def staff_sees_all(user_id: str) -> bool:
+    """Видит ли сотрудник чужие обращения: выданное право или роль сис-админа."""
+    row = await db.one("SELECT see_all_tickets, role_type FROM admins WHERE user_id=?", (as_str(user_id),))
+    if not row:
+        return False
+    return bool(row["see_all_tickets"]) or as_str(row["role_type"]) in ("owner", "sysadmin", "superadmin")
 
 
 async def delete_ticket(ticket_id: int) -> tuple[bool, str]:

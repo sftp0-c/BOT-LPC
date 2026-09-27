@@ -21,6 +21,9 @@ import config
 import database as db
 import repository as repo
 import timetable as tt
+from handlers.common import api
+from handlers.registry import callback, state
+from max_api import btn
 from utils import as_str
 
 log = logging.getLogger("bot")
@@ -262,3 +265,63 @@ async def notify_changed(group: str, result: ScheduleResult) -> None:
     head = f"🔔 Расписание группы {group} обновилось."
     upcoming = tt.format_upcoming(result.schedule) if result.has_lessons else ""
     await notify_schedule_subscribers(group, f"{head}\n\n{upcoming}" if upcoming else head)
+
+
+# ── расписание преподавателя ─────────────────────────────────────────────────
+WEEKDAYS = ("Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье")
+
+
+def format_teacher_week(days: dict) -> str:
+    """Неделя преподавателя текстом: день, урок, предмет, группа, аудитория."""
+    if not days:
+        return "📅 Занятий не найдено"
+    lines = []
+    for weekday in sorted(days):
+        lines.append(f"\n📅 {WEEKDAYS[weekday % 7]}")
+        for number, subject, group, room in days[weekday]:
+            where = f" · {room}" if room else ""
+            lines.append(f"   {number} урок · {subject} · {group}{where}")
+    return "\n".join(lines)
+
+
+@callback("teacher")
+async def cb_teacher_search(x, arg):
+    """Кто ведёт: ищем преподавателя по фамилии и показываем его неделю."""
+    found = await repo.search_teachers(as_str(arg))
+    if not found:
+        return await api.send(
+            x, "🔍 Никого не нашлось. Напишите фамилию преподавателя — например, часть фамилии.",
+            [[btn("🔍 Искать ещё", "teacherask")], [btn("↩️ В меню", "home")]])
+    if len(found) == 1:
+        return await show_teacher(x, found[0])
+    keyboard = [[btn(name, f"teacher:{name}")] for name in found[:8]]
+    keyboard += [[btn("🔍 Искать ещё", "teacherask")], [btn("↩️ В меню", "home")]]
+    return await api.send(x, "🔍 Кого показать?", keyboard)
+
+
+async def show_teacher(x: str, teacher: str) -> None:
+    """Неделя преподавателя: группы, где он ведёт, и его занятия по дням."""
+    days = await repo.lessons_for_teacher(teacher)
+    groups = await repo.teacher_groups(teacher)
+    head = f"👨‍🏫 {teacher}"
+    if groups:
+        head += f"\nГруппы: {', '.join(groups[:12])}"
+    await api.send(x, f"{head}\n\n{format_teacher_week(days)}",
+                   [[btn("🔍 Искать ещё", "teacherask")], [btn("↩️ В меню", "home")]])
+
+
+@callback("teacherask")
+async def cb_teacher_ask(x, arg):
+    """Запрашиваем фамилию для поиска по расписанию."""
+    await db.set_state(x, "teacher_search", {})
+    await api.send(x, "Напишите фамилию или часть фамилии преподавателя:")
+
+
+@state("teacher_search")
+async def st_teacher_search(x, text, p):
+    """Фамилия из сообщения -> подходящие преподаватели или сразу неделя."""
+    await db.clear_state(x)
+    needle = as_str(text).strip()
+    if not needle:
+        return await cb_teacher_search(x, "")
+    return await cb_teacher_search(x, needle)

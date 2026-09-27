@@ -44,6 +44,7 @@ from utils import (
     fmt_time,
     fmt_when,
     gen_code,
+    group_code,
     is_sysadmin_role,
     log_level_of,
     norm_group,
@@ -299,6 +300,24 @@ footer{color:var(--mut);font-size:12px;padding:14px 26px 30px;margin-left:var(--
 }
 
 /* ── телефон и планшет ─────────────────────────────────────────────────── */
+/* Рабочее место с обращениями: очередь слева, карточка справа. */
+.workbench{display:grid;grid-template-columns:minmax(280px,360px) 1fr;gap:12px;
+           align-items:start}
+.wb-queue,.wb-card{min-width:0}
+.wb-list{display:flex;flex-direction:column;gap:4px;max-height:62vh;overflow-y:auto}
+.wb-item{display:flex;gap:8px;align-items:flex-start;padding:7px 8px;border-radius:8px;
+         border:1px solid transparent;cursor:pointer}
+.wb-item:hover{background:var(--bg)}
+.wb-item.wb-on{background:var(--bg);border-color:var(--accent)}
+.wb-item input{margin-top:3px;flex:0 0 auto}
+.wb-item a{flex:1;min-width:0;color:inherit;text-decoration:none;font-size:13px;line-height:1.35}
+.wb-item b{font-weight:650}
+.wb-bulk{margin-top:10px;padding-top:8px;border-top:1px solid var(--line);font-size:13px}
+.wb-bulk summary{cursor:pointer;color:var(--muted)}
+@media (max-width:1000px){
+  .workbench{grid-template-columns:1fr}
+  .wb-list{max-height:38vh}
+}
 @media (max-width:1000px){
   :root{--sb:0px}
   header{flex-wrap:wrap;padding:10px 14px;gap:10px}
@@ -418,6 +437,10 @@ async def global_search(request: Request, q: str = ""):
             f"<div class=\"card\"><h2>👥 Пользователи: {len(people)}</h2>{_people_table(people)}</div>"
             f"<div class=\"card\"><h2>👔 Сотрудники: {len(staff)}</h2>{staff_table}</div>")
     return page("Поиск", body, user, "/")
+
+
+PICKUP_DEFAULT = "115"        # кабинет выдачи по умолчанию; исключения - в карточке
+TICKETS_PAGE = 25             # обращений в очереди рабочего места
 
 
 def flash(message: str) -> None:
@@ -846,10 +869,15 @@ EVENT_LABELS = {"created": "обращение создано", "status": "ст�
 
 @router.get("/tickets")
 async def tickets_list(request: Request, status: str = "", q: str = "", category: str = "",
-                       scope: str = ""):
-    """Очередь обращений с фильтрами: статус, раздел, «только ждут ответа»."""
+                       scope: str = "", t: int = 0, view: str = ""):
+    """Рабочее место: очередь слева, выбранное обращение справа.
+
+    Отдельная страница карточки больше не нужна - рутина идёт без переходов,
+    а старые ссылки из отчётов ведут сюда же.
+    """
     user = await require_user(request)
-    rows = await repo.admin_tickets(None, 200)
+    archived = view == "archive"
+    rows = await repo.admin_tickets(None, 500, archived=archived)
     if status == "open":
         rows = [r for r in rows if as_str(r["status"]) in OPEN_STATUSES]
     elif status:
@@ -858,82 +886,364 @@ async def tickets_list(request: Request, status: str = "", q: str = "", category
         rows = [r for r in rows if as_str(r["category"]) == category]
     if q:
         needle = q.lower()
-        rows = [r for r in rows if needle in as_str(r["text_content"]).lower() or needle in as_str(r["student_id"])]
-    counts = await repo.status_counts()
+        rows = [r for r in rows
+                if needle in as_str(r["text_content"]).lower() or needle in as_str(r["student_id"])]
     latest = await repo.latest_message_roles([row["ticket_id"] for row in rows])
     if scope == "waiting":
         rows = [row for row in rows if latest.get(int(row["ticket_id"])) == "student"]
     waiting = sum(1 for row in rows if latest.get(int(row["ticket_id"])) == "student")
-    options = {"": "все статусы", "open": "🔓 открытые"} | {code: label for code, label in STATUS.items()}
+    selected = next((row for row in rows if int(row["ticket_id"]) == int(t or 0)), None)
+    counts = await repo.status_counts()
+    archived_n = await repo.archive_count()
+
+    options = {"": "все статусы", "open": "🔓 открытые"}
+    options |= {code: label for code, label in STATUS.items()}
     cat_options = {"": "все разделы", **{code: label for code, label in CATS.items()}}
+    query = f"status={esc(status)}&category={esc(category)}&q={esc(q)}&scope={esc(scope)}"
+    live_query = query + (f"&view={esc(view)}" if view else "")
     filters = f"""
-<form method="get" action="/panel/tickets" class="grid" style="margin-bottom:14px">
+<form method="get" action="/panel/tickets" class="grid" style="margin-bottom:10px">
 <div>{select("status", options, status)}</div>
 <div>{select("category", cat_options, category)}</div>
-<div><label>Поиск по тексту или ID</label><input name="q" value="{esc(q)}"></div>
+<div><label>🔍 Поиск</label><input name="q" value="{esc(q)}" placeholder="текст или ID"></div>
 <div><button>Найти</button></div></form>
-<p class="small mut"><a class="btn{'-grey' if scope != 'waiting' else ''}" href="/panel/tickets?status={esc(status)}&category={esc(category)}&q={esc(q)}{'&scope=waiting' if scope != 'waiting' else ''}">🔔 Только ждут ответа: {waiting}</a></p>"""
-    summary = (" · ".join(f"{STATUS.get(c, c)}: {counts.get(c, 0)}" for c in STATUS)
-               + ' · <a class="btn btn-grey btn-sm" href="/panel/tickets.csv">⬇️ Выгрузить CSV</a>')
-    return page("Обращения", f'<div class="card"><p class="small mut">{esc(summary)}</p>{filters}'
-                 f"{_tickets_table(rows)}<p class=\"small mut\">Показано обращений: {len(rows)}</p></div>",
-                 user, "/tickets")
+<p class="small mut">
+<a class="btn{' btn-grey' if scope else ''}" href="/panel/tickets?{live_query}">🔔 Только ждут ответа: {waiting}</a>
+<a class="btn{' btn-grey' if not archived else ''}" href="/panel/tickets?{query}">📥 В работе</a>
+<a class="btn{' btn-grey' if not archived else ' btn-ok'}" href="/panel/tickets?{query}&view=archive">🗄 Архив: {archived_n}</a>
+<a class="btn" href="/panel/tickets/new">➕ Создать обращение</a>
+<a class="btn btn-grey" href="/panel/tickets.csv">⬇️ CSV</a></p>"""
+    summary = " · ".join(f"{STATUS.get(c, c)}: {counts.get(c, 0)}" for c in STATUS)
+    access = await _tickets_access(request)
+    queue = _tickets_queue(request, rows, latest, query, selected, archived)
+    card = await _ticket_workbench(request, selected) if selected else (
+        '<div class="card mut">Выберите обращение в очереди слева — здесь появятся переписка, '
+        'правки и быстрые ответы.</div>')
+    body = f"""<div class="card"><p class="small mut">{esc(summary)}</p>{filters}</div>
+<div class="workbench"><div class="wb-queue">{queue}</div><div class="wb-card">{card}{access}</div></div>"""
+    title = "🗄 Архив обращений" if archived else "🗂 Обращения"
+    return page(title, body, user, "/tickets")
 
 
-@router.get("/tickets/{ticket_id}")
-async def ticket_card(request: Request, ticket_id: int):
-    user = await require_user(request)
-    t = await repo.get_ticket(ticket_id)
-    if not t:
-        return page("Обращение", '<div class="card msg-bad">Обращение не найдено.</div>', user, "/tickets")
-    student = t.get("student") or {}
-    staff = t.get("staff") or {}
+async def _staff_choices(keep_current: str = "", current_name: str = "") -> dict:
+    """Сотрудники панели для выбора: текущий исполнитель виден первым."""
+    choices = {"": "— не назначен —"}
+    if keep_current:
+        choices[keep_current] = f"{current_name or keep_current} (сейчас)"
+    for row in await repo.list_staff():
+        person = dict(row)          # db.many отдаёт sqlite3.Row, а нужны ключи по имени
+        uid = as_str(person.get("user_id"))
+        if uid and uid != keep_current:
+            choices[uid] = short(f"{person.get('full_name', uid)} · "
+                                 f"{person.get('position') or person.get('role') or '—'}", 40)
+    return choices
+
+
+def _tickets_queue(request: Request, rows, latest: dict, query: str, selected, archived: bool) -> str:
+    """Левая колонка: отметки для массовых действий и переход в карточку."""
+    if not rows:
+        return '<div class="card mut">Обращений нет.</div>'
+    visible = rows[:TICKETS_PAGE]
+    ids = ",".join(str(row["ticket_id"]) for row in visible)
+    items = []
+    for row in visible:
+        ticket_id = row["ticket_id"]
+        mark = "wb-on" if selected and int(selected["ticket_id"]) == int(ticket_id) else ""
+        wait = " ⏳" if latest.get(int(ticket_id)) == "student" else ""
+        items.append(
+            f'<label class="wb-item {mark}"><input type="checkbox" name="tids" value="{esc(ticket_id)}">'
+            f'<a href="/panel/tickets?{query}&t={esc(ticket_id)}">'
+            f'<b>№{esc(ticket_id)}</b> · {esc(STATUS.get(row["status"], row["status"]))}{wait}<br>'
+            f'<span class="small mut">{esc(short(row["text_content"], 70))}</span></a></label>')
+    head = "◀️ Из архива" if archived else f"Очередь · {len(rows)}"
+    more = (f'<p class="small mut">Показано {len(visible)} из {len(rows)} — сузьте фильтр '
+            f'по статусу, чтобы увидеть нужное.</p>' if len(rows) > len(visible) else "")
+    return f"""<div class="card"><h2>{head}</h2>
+<form method="post" action="/panel/tickets/bulk">{csrf(request)}
+<input type="hidden" name="return" value="{esc(query)}">
+<div class="wb-list">{''.join(items)}</div>
+<details class="wb-bulk"><summary>Групповые действия для отмеченных</summary>
+<div class="grid" style="margin-top:8px">
+<div>{select("action", {"assign": "👤 Назначить сотрудника",
+                        "status": "🔄 Сменить статус",
+                        "pickup": "📍 Кабинет выдачи",
+                        "archive": "🗄 В архив"}, "assign")}</div>
+<div><label>Куда</label><input name="value"
+  placeholder="сотрудник, статус или кабинет {PICKUP_DEFAULT}"></div>
+<div><button class="btn-ok">Применить</button></div></div>
+<p class="small mut">Отметьте обращения галочкой слева. Поле «Куда» принимает свой текст:
+например <code>115</code> для кабинета или <code>in_progress</code> для статуса.</p>
+</details>
+<input type="hidden" name="all" value="{esc(ids)}">
+</form>{more}</div>"""
+
+
+async def _ticket_workbench(request: Request, t) -> str:
+    """Правая колонка: карточка со всеми правками и быстрыми ответами."""
+    ticket_id = int(t["ticket_id"])
+    student_name = as_str(t["student_name"]) or as_str(t["student_id"])
+    student_group = as_str(t["student_group"]) or "—"
     messages = await repo.ticket_thread(ticket_id, 100)
-    history = "".join(
+    events = await repo.ticket_events(ticket_id, 50)
+    staff_options = await _staff_choices(as_str(t["target_admin_id"]),
+                                         as_str(t["staff_name"]))
+    template_options = {"": "— шаблон —"}
+    for row in await repo.list_templates():
+        template = dict(row)
+        key = as_str(template.get("template_id") or template.get("id"))
+        if key:
+            template_options[key] = as_str(template.get("title"))
+    def _cell(m) -> str:
+        body = esc(m["text"])
+        if as_str(m["text"]).startswith("📎 Файл: "):
+            file_name = as_str(m["text"])[len("📎 Файл: "):].split(" (")[0]
+            body = (f'<a href="/panel/attachments/{esc(file_name)}">📎 {esc(file_name)}</a>'
+                    f' <span class="small mut">открыть</span>')
+        return f"<td>{body}</td></tr>"
+
+    thread = "".join(
         f"<tr><td class='small mut'>{esc(fmt_when(m['created_at']))}</td>"
-        f"<td class='small'>{'🎓 студент' if m['sender_role'] == 'student' else '🏫 сотрудник'} "
+        f"<td class='small'>{'🎓' if m['sender_role'] == 'student' else '🏫'} "
         f"{esc(m['sender_name'])}{' · ' + esc(m['position']) if m['position'] else ''}"
         f"<div class='small mut'>{esc(m['group_code'] or m['sender_id'])}</div></td>"
-        f"<td>{esc(m['text'])}</td></tr>"
+        + _cell(m)
         for m in reversed(messages)
     ) or "<tr><td colspan='3' class='mut'>Сообщений нет</td></tr>"
-    events = await repo.ticket_events(ticket_id, 50)
     event_rows = "".join(
         f"<tr><td class='small mut'>{esc(fmt_when(e['created_at']))}</td>"
         f"<td class='small'>{esc(e['actor_name'] or e['actor_id'])}</td>"
         f"<td class='small'>{esc(EVENT_LABELS.get(e['event'], e['event']))}: {esc(e['detail'] or '—')}</td></tr>"
         for e in reversed(events)
     ) or "<tr><td colspan='3' class='mut'>Событий нет</td></tr>"
-    status_options = dict(STATUS)
-    head = f"""
-<div class="card"><h2>Обращение №{esc(t['ticket_id'])}</h2>
-<table>
-<tr><th>Студент</th><td>{esc(student.get('full_name', '—'))} (ID {esc(student.get('user_id', t['student_id']))}),
-    группа {esc(student.get('group_code', '—'))}</td></tr>
-<tr><th>Сотрудник</th><td>{esc(staff.get('full_name', '—'))} (ID {esc(t['target_admin_id'])}),
-    {esc(staff.get('position') or staff.get('role') or '—')}
-    {('· ' + esc(staff['department'])) if staff.get('department') else ''}</td></tr>
-<tr><th>Категория</th><td>{esc(t['category'])} {esc(t['topic'] or '')}</td></tr>
-<tr><th>Статус</th><td>{esc(STATUS.get(t['status'], t['status']))}</td></tr>
-<tr><th>Текст</th><td>{esc(t['text_content'])}</td></tr>
-<tr><th>Создано</th><td>{esc(fmt_when(t['created_at']))}</td></tr>
-<tr><th>Обновлено</th><td>{esc(fmt_when(t['updated_at']))}</td></tr>
-</table>
-<div style="margin-top:14px">{form(request, f"/panel/tickets/{t['ticket_id']}/status",
-     select("status", status_options, t["status"]), "Сменить статус", "btn-ok")}</div></div>
+    edit = f"""
+<form method="post" action="/panel/tickets/{ticket_id}/edit">{csrf(request)}
+<div class="grid">
+<div class="full"><label>Текст обращения</label>
+<textarea name="text_content" rows="2">{esc(t['text_content'])}</textarea></div>
+<div>{select("target_admin_id", staff_options, "")}</div>
+<div>{select("category", dict(CATS), as_str(t['category']))}</div>
+<div><label>Тема</label><input name="topic" value="{esc(t['topic'])}"></div>
+<div><label>Кабинет выдачи</label>
+<input name="pickup_place" value="{esc(t['pickup_place'])}" placeholder="{PICKUP_DEFAULT}"></div>
+<div><label>Срок готовности</label><input name="ready_until" value="{esc(t['ready_until'])}"
+  placeholder="например, 15:00 в пятницу"></div>
+<div>{select("status", dict(STATUS), as_str(t['status']))}</div>
+</div>
+<div class="grid" style="margin-top:10px">
+<div><button class="btn-ok">Сохранить</button></div>
+<div>{_action_form(request, f'/panel/tickets/{ticket_id}/ready', '✅ Справка готова')}</div>
+<div>{_action_form(request, f'/panel/tickets/{ticket_id}/archive', '🗄 В архив')}</div>
+</div>
+<p class="small mut">Пустое поле не затирает старое значение. «Справка готова» пишет
+студенту кабинет {PICKUP_DEFAULT} и закрывает обращение.</p></form>"""
+    return f"""<div class="card"><h2>Обращение №{ticket_id}</h2>
+<p class="small mut">🎓 {esc(student_name)} (ID {esc(t['student_id'])}),
+группа {esc(student_group)} · создано {esc(fmt_when(t['created_at']))}</p>
+{edit}</div>
 <div class="card"><h2>Быстрый ответ</h2>
-<form method="post" action="/panel/tickets/{t['ticket_id']}/reply">{csrf(request)}
-<textarea name="text" rows="3" required placeholder="Ответ студенту — уйдёт в MAX от имени сотрудника"></textarea>
-<div class="grid" style="margin-top:10px"><button class="btn-ok">Отправить</button></div></form>
-<p class="small mut">Ответ уходит студенту и появляется в переписке бота.</p></div>
-<div class="card"><h2>Переписка</h2><table><tr><th>Когда</th><th>Кто</th><th>Текст</th></tr>{history}</table></div>
-<div class="card"><h2>История</h2><table><tr><th>Когда</th><th>Кто</th><th>Событие</th></tr>{event_rows}</table></div>
-<div class="card"><h2>Удаление</h2>
-<p class="small mut">Обращение удаляется вместе с перепиской и историей — восстановить его можно
-только из резервной копии базы (вкладка «База данных»). Студент получит уведомление.</p>
-{_action_form(request, f'/panel/tickets/{ticket_id}/delete', '🗑 Удалить обращение',
-              f'Удалить обращение №{ticket_id} вместе с перепиской? Действие необратимо.', 'btn-bad')}</div>"""
-    return page(f"Обращение №{ticket_id}", head, user, "/tickets")
+<form method="post" action="/panel/tickets/{ticket_id}/reply">{csrf(request)}
+<textarea name="text" rows="3" required placeholder="Ответ студенту — уйдёт в MAX"></textarea>
+<div class="grid" style="margin-top:10px">
+<div><button class="btn-ok">Отправить</button></div>
+<div>{select("template", template_options, "")}</div>
+</div></form>
+<p class="small mut">Ответ уходит студенту и остаётся в переписке бота.</p></div>
+<div class="card"><h2>Переписка</h2>
+<table><tr><th>Когда</th><th>Кто</th><th>Текст</th></tr>{thread}</table></div>
+<div class="card"><h2>История изменений</h2>
+<table><tr><th>Когда</th><th>Кто</th><th>Событие</th></tr>{event_rows}</table></div>"""
+
+
+@router.post("/tickets/see-all")
+async def tickets_see_all(request: Request):
+    """Кто из сотрудников видит чужие обращения: очередь отдела или только свои."""
+    actor = await require_form(request)
+    data = await request.form()
+    user_id = value(data, "user_id")
+    flag = as_str(data.get("value", "")).strip() in ("1", "on", "true", "да")
+    if not await repo.get_admin(user_id):
+        flash("!Сотрудник не найден.")
+        return redirect("/panel/tickets")
+    await repo.set_staff_see_all(user_id, flag)
+    await repo.log_action(actor, "доступ к чужим обращениям",
+                          f"{user_id}: {'видит все' if flag else 'только свои'}")
+    flash(f"{user_id}: {'видит все обращения' if flag else 'видит только свои'}.")
+    return redirect("/panel/tickets")
+
+
+async def _tickets_access(request: Request) -> str:
+    """Кто видит чужие обращения: галочка рядом с именем сотрудника."""
+    rows = [row for row in await repo.list_staff()]
+    if not rows:
+        return ""
+    items = []
+    for row in rows:
+        person = dict(row)
+        uid = as_str(person.get("user_id"))
+        sees_all = await repo.staff_sees_all(uid)
+        position = person.get("position") or person.get("role") or "—"
+        items.append(
+            f"""<form method="post" action="/panel/tickets/see-all" class="wb-access">
+{csrf(request)}<input type="hidden" name="user_id" value="{esc(uid)}">
+<label><input type="checkbox" name="value" value="1" {'checked' if sees_all else ''}
+ onchange="this.form.submit()"> {esc(short(f"{person.get('full_name', uid)} · {position}", 40))}</label>
+</form>""")
+    return f"""<div class="card"><h2>Кто видит чужие обращения</h2>
+<p class="small mut">Сотрудник без галочки видит только свои обращения. Системные права
+в список не попадают - они и так видят всё.</p>{''.join(items)}
+<style>.wb-access{{display:inline-block;margin:0 8px 4px 0}}
+.wb-access label{{font-size:13px;display:flex;gap:6px;align-items:center;cursor:pointer}}</style>
+</div>"""
+
+
+@router.get("/attachments/{name}")
+async def attachment_download(request: Request, name: str):
+    """Отдаём файл обращения. Без входа в панель файл недоступен."""
+    await require_user(request)
+    import attachments
+
+    safe = attachments.safe_name(name, "")
+    if not safe:
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    path = os.path.join(attachments.attachments_dir(), safe)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    return FileResponse(path, filename=safe)
+
+
+@router.get("/tickets/new")
+async def ticket_new(request: Request):
+    """Создание обращения из панели: для заявок, пришедших не через бота."""
+    user = await require_user(request)
+    staff_options = await _staff_choices()
+    body = f"""<div class="card"><h2>Новое обращение</h2>
+<form method="post" action="/panel/tickets/new">{csrf(request)}
+<div class="grid">
+<div><label>MAX ID студента</label><input name="student_id" required></div>
+<div><label>ФИО (если ещё не регистрировался)</label><input name="full_name"></div>
+<div><label>Группа</label><input name="group_code" placeholder="24-23"></div>
+<div>{select("category", dict(CATS), "feedback")}</div>
+<div>{select("target_admin_id", staff_options, "")}</div>
+<div class="full"><label>Текст обращения</label>
+<textarea name="text_content" rows="4" required></textarea></div>
+<div><label>Кабинет выдачи</label><input name="pickup_place" placeholder="{PICKUP_DEFAULT}"></div>
+</div>
+<div class="grid" style="margin-top:10px">
+<div><button class="btn-ok">Создать</button></div>
+<div><a class="btn btn-grey" href="/panel/tickets">Отмена</a></div></div>
+</form></div>"""
+    return page("Новое обращение", body, user, "/tickets")
+
+
+@router.post("/tickets/new")
+async def ticket_new_submit(request: Request):
+    actor = await require_form(request)
+    data = await request.form()
+    student_id = value(data, "student_id").strip()
+    text = value(data, "text_content").strip()
+    if not student_id or not text:
+        flash("!Нужен MAX ID студента и текст обращения.")
+        return redirect("/panel/tickets/new")
+    group_raw = value(data, "group_code").strip()
+    if group_raw and not await repo.get_user(student_id):
+        await db.run("INSERT INTO users(user_id, full_name, group_code) VALUES(?,?,?) "
+                     "ON CONFLICT(user_id) DO UPDATE SET full_name=excluded.full_name, "
+                     "group_code=excluded.group_code",
+                     (student_id, value(data, "full_name").strip() or f"Студент {student_id}",
+                      group_code(group_raw)))
+    ticket_id = await repo.create_ticket(student_id, value(data, "target_admin_id"),
+                                         value(data, "category"), text, "")
+    pickup = value(data, "pickup_place").strip()
+    if pickup:
+        await repo.update_ticket(ticket_id, actor, pickup_place=pickup)
+    await repo.log_action(actor, "обращение создано из панели",
+                          f"№{ticket_id}, студент {student_id}")
+    flash(f"Обращение №{ticket_id} создано.")
+    return redirect(f"/panel/tickets?t={ticket_id}")
+
+
+@router.post("/tickets/bulk")
+async def tickets_bulk(request: Request):
+    actor = await require_form(request)
+    data = await request.form()
+    chosen = [item for item in value(data, "tids").split(",") if item]
+    action = value(data, "action")
+    if not chosen:
+        flash("!Отметьте обращения галочкой слева.")
+        return redirect(value(data, "return") or "/panel/tickets")
+    done, message = await repo.bulk_update(chosen, action, value(data, "value"), actor)
+    await repo.log_action(actor, f"массово: {action}", f"{done} обращений")
+    flash(message)
+    return redirect(value(data, "return") or "/panel/tickets")
+
+
+@router.post("/tickets/{ticket_id}/edit")
+async def ticket_edit(request: Request, ticket_id: int):
+    actor = await require_form(request)
+    data = await request.form()
+    ok, message = await repo.update_ticket(
+        ticket_id, actor,
+        text_content=value(data, "text_content"),
+        target_admin_id=value(data, "target_admin_id"),
+        category=value(data, "category"),
+        topic=value(data, "topic"),
+        pickup_place=value(data, "pickup_place"),
+        ready_until=value(data, "ready_until"),
+        status=value(data, "status"),
+    )
+    flash(message if ok else f"!{message}")
+    return redirect(f"/panel/tickets?t={ticket_id}")
+
+
+@router.post("/tickets/{ticket_id}/ready")
+async def ticket_ready(request: Request, ticket_id: int):
+    """Кнопка «Справка готова»: сообщение студенту с кабинетом и закрытие."""
+    actor = await require_form(request)
+    t = await repo.get_ticket(ticket_id)
+    if not t:
+        flash("!Обращение не найдено.")
+        return redirect("/panel/tickets")
+    place = as_str(t["pickup_place"]).strip() or PICKUP_DEFAULT
+    await repo.update_ticket(ticket_id, actor, status="ready", pickup_place=place)
+    await repo.add_ticket_message(ticket_id, actor, "staff",
+                                  f"✅ Документ готов. Заберите в кабинете {place}.")
+    await notify(t["student_id"],
+                 f"✅ Документ по обращению №{ticket_id} готов. Заберите в кабинете {place}.")
+    await repo.log_action(actor, "справка готова", f"№{ticket_id}, кабинет {place}")
+    flash(f"Обращение №{ticket_id}: документ готов, кабинет {place}. Студенту отправлено уведомление.")
+    return redirect(f"/panel/tickets?t={ticket_id}")
+
+
+@router.post("/tickets/{ticket_id}/archive")
+async def ticket_archive(request: Request, ticket_id: int):
+    actor = await require_form(request)
+    ok, message = await repo.archive_ticket(ticket_id, actor)
+    if ok:
+        t = await repo.get_ticket(ticket_id, include_archived=True)
+        if t:
+            await notify(t["student_id"],
+                         f"🗄 Обращение №{ticket_id} убрано в архив. Вопрос не решён — "
+                         "напишите новое обращение.")
+        await repo.log_action(actor, "обращение в архиве", f"№{ticket_id}")
+    flash(message if ok else f"!{message}")
+    return redirect("/panel/tickets")
+
+
+@router.post("/tickets/{ticket_id}/restore")
+async def ticket_restore(request: Request, ticket_id: int):
+    actor = await require_form(request)
+    ok, message = await repo.restore_ticket(ticket_id, actor)
+    if ok:
+        await repo.log_action(actor, "обращение восстановлено", f"№{ticket_id}")
+    flash(message if ok else f"!{message}")
+    return redirect("/panel/tickets?view=archive")
+
+
+@router.get("/tickets/{ticket_id}")
+async def ticket_card(request: Request, ticket_id: int):
+    """Старая ссылка на карточку ведёт в рабочее место - отдельной страницы нет."""
+    await require_user(request)
+    return redirect(f"/panel/tickets?t={ticket_id}")
 
 
 @router.post("/tickets/{ticket_id}/delete")

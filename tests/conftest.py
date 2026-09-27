@@ -8,7 +8,7 @@ import bot
 import config
 import database as db
 import webpanel
-from handlers import admin, broadcast, common, menus, tickets
+from handlers import admin, broadcast, common, menus, schedules, tickets
 
 BOT_ID = 999
 PANEL_PASSWORD = "test-panel-pass"
@@ -135,7 +135,7 @@ async def env(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "BACKUP_DIR", str(tmp_path / "backups"))
     _retarget_log_file()
     fake = FakeAPI()
-    for module in (bot, common, admin, broadcast, menus, tickets):
+    for module in (bot, common, admin, broadcast, menus, tickets, schedules):
         monkeypatch.setattr(module, "api", fake)
     bot._locks.clear()
     await db.init_db()

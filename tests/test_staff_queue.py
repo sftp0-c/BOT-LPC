@@ -8,12 +8,24 @@ from conftest import add_staff, login_panel, press, register, say
 SYS, STAFF, STUDENT = "1", "200", "100"
 
 
+@pytest.fixture
+def panel_client(panel_client):
+    """conftest-фикстура плюс явное закрытие клиента.
+
+    Без закрытия TestClient остаётся живым до конца сессии, а на Windows
+    незакрытые дескрипторы базы мешают следующим тестам работать с файлом.
+    """
+    yield panel_client
+    panel_client.close()
+
+
 async def ticket(category: str = "feedback", staff: str = STAFF) -> int:
     await register(STUDENT, name="Иванов Иван")
     await add_staff(staff, "Петрова Анна", category="all")
     await press(STUDENT, f"new:{category}")
     await press(STUDENT, f"pick:{category}:{staff}")
     await say(STUDENT, "Нужна справка")
+    await press(STUDENT, "ticketsend")
     return (await db.one("SELECT ticket_id FROM tickets ORDER BY ticket_id DESC"))["ticket_id"]
 
 
@@ -102,9 +114,11 @@ async def test_sysadmin_sees_all_departments(api):
     await press(STUDENT, "new:feedback")
     await press(STUDENT, f"pick:feedback:{STAFF}")
     await say(STUDENT, "Первое")
+    await press(STUDENT, "ticketsend")
     await press(STUDENT, "new:feedback")
     await press(STUDENT, "pick:feedback:201")
     await say(STUDENT, "Второе")
+    await press(STUDENT, "ticketsend")
     await press(SYS, "staff")
     payloads = api.payloads(SYS)
     assert "t:1" in payloads and "t:2" in payloads  # сис-админ видит все

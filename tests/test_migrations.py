@@ -172,8 +172,9 @@ async def test_init_db_creates_groups_and_topic_on_empty_db(env, tmp_path, monke
     assert set(group_cols) == {"group_code", "title", "active", "created_at"}
     assert group_cols["title"] == ("TEXT", 1, "''")
     assert group_cols["active"] == ("INTEGER", 1, "1")
-    assert {"role", "office"} <= set(columns(config.DATABASE_PATH, "admins"))
-    assert {"topic", "ready_until", "doc_url", "pickup_place"} <= set(columns(config.DATABASE_PATH, "tickets"))
+    assert {"role", "office", "see_all_tickets"} <= set(columns(config.DATABASE_PATH, "admins"))
+    assert {"topic", "ready_until", "doc_url", "pickup_place", "deleted_at"} <= set(
+        columns(config.DATABASE_PATH, "tickets"))
 
 
 async def test_init_db_adds_only_missing_objects(legacy):
@@ -198,8 +199,9 @@ async def test_init_db_adds_only_missing_objects(legacy):
         # прежние колонки не изменились, добавиться могла только новая
         assert {k: v for k, v in after_cols[name].items() if k in cols} == cols, name
         expected = {
-            "admins": {"role", "office", "position", "department"},
-            "tickets": {"topic", "ready_until", "doc_url", "pickup_place"},
+            "admins": {"role", "office", "position", "department", "see_all_tickets"},
+            "tickets": {"topic", "ready_until", "doc_url", "pickup_place",
+                        "deleted_at", "deleted_by"},
             "broadcasts": {"sender_name", "sender_role"},
             "user_states": {"created_at"},
             "schedules": {"parsed_at", "parsed_hash", "found_groups", "parse_error"},

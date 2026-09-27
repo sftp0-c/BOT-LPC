@@ -327,6 +327,7 @@ async def test_ticket_events_are_logged_with_authors(api):
     await press(STUDENT, "new:feedback")
     await press(STUDENT, f"pick:feedback:{NEWSTAFF}")
     await say(STUDENT, "Нужна справка")
+    await press(STUDENT, "ticketsend")
     tid = (await db.one("SELECT ticket_id FROM tickets"))["ticket_id"]
 
     await press(NEWSTAFF, f"rp:{tid}")
@@ -358,6 +359,7 @@ async def test_ticket_list_marks_who_waits_for_answer(api):
     await press(STUDENT, "new:feedback")
     await press(STUDENT, f"pick:feedback:{NEWSTAFF}")
     await say(STUDENT, "Нужна справка")
+    await press(STUDENT, "ticketsend")
     tid = (await db.one("SELECT ticket_id FROM tickets"))["ticket_id"]
 
     await press(NEWSTAFF, "staff")
@@ -396,6 +398,7 @@ async def test_delete_user_keeps_tickets_by_default(api):
     await press(STUDENT, "new:feedback")
     await press(STUDENT, f"pick:feedback:{NEWSTAFF}")
     await say(STUDENT, "Нужна справка")
+    await press(STUDENT, "ticketsend")
     tid = (await db.one("SELECT ticket_id FROM tickets"))["ticket_id"]
 
     # при открытом обращении удаление без «вместе с обращениями» запрещено
@@ -421,6 +424,7 @@ async def test_delete_closed_ticket_user_keeps_ticket(api):
     await press(STUDENT, "new:feedback")
     await press(STUDENT, f"pick:feedback:{NEWSTAFF}")
     await say(STUDENT, "Нужна справка")
+    await press(STUDENT, "ticketsend")
     tid = (await db.one("SELECT ticket_id FROM tickets"))["ticket_id"]
     await press(NEWSTAFF, f"st:{tid}:completed")
 
@@ -467,6 +471,7 @@ async def test_bot_refuses_to_delete_with_open_tickets(api):
     await press(STUDENT, "new:feedback")
     await press(STUDENT, f"pick:feedback:{NEWSTAFF}")
     await say(STUDENT, "Нужна справка")
+    await press(STUDENT, "ticketsend")
 
     await press(SYS, f"persondel:{STUDENT}")
     assert f"persondely:{STUDENT}:1" in api.payloads(SYS)

@@ -2,10 +2,12 @@
 from datetime import datetime, timedelta
 
 import config
+import os
+
 import database as db
 import repository as repo
 from handlers.admin import STAFF_ROLES, audit
-from handlers.common import BACK, admin_of, api, is_super, notify
+from handlers.common import BACK, admin_of, api, is_super, log, notify
 from handlers.menus import need_author
 from handlers.registry import callback, state
 from max_api import btn, link_btn
@@ -118,6 +120,9 @@ async def load_ticket(x: str, ticket_id: int):
     return None, False
 
 
+PICKUP_PLACE = "115"    # кабинет выдачи по умолчанию; исключения - в панели
+
+
 def ticket_kb(t, staff_side: bool, can_delete: bool = False):
     tid, status = t["ticket_id"], t["status"]
     if not staff_side:
@@ -133,7 +138,32 @@ def ticket_kb(t, staff_side: bool, can_delete: bool = False):
         tail.insert(0, btn("⚡ Шаблоны", f"tpl:{tid}"))
         tail.insert(1, btn("📝 Заметка", f"note:{tid}"))
         tail.insert(2, btn("↪️ Переслать", f"fwd:{tid}"))
+        if as_str(t.get("pickup_place")).strip() != PICKUP_PLACE or status not in ("ready", "completed"):
+            tail.append(btn(f"✅ Готово ({PICKUP_PLACE})", f"tdready:{tid}"))
     return [*rows, tail]
+
+
+@callback("tdready")
+async def cb_ticket_ready(x, arg):
+    """«Справка готова»: закрываем обращение и пишем студенту, где забрать.
+
+    Кабинет по умолчанию 115; если в обращении проставлен другой - уважаем
+    исключение, это правится в панели.
+    """
+    if not await admin_of(x):
+        return
+    tid = to_int(arg)
+    t = await repo.get_ticket(tid)
+    if not t:
+        return await api.send(x, "Обращение не найдено.", [[btn("↩️ В меню", "staff")]])
+    place = as_str(t.get("pickup_place")).strip() or PICKUP_PLACE
+    await repo.update_ticket(tid, x, status="ready", pickup_place=place)
+    await repo.add_ticket_message(tid, x, "staff",
+                                  f"✅ Документ готов. Заберите в кабинете {place}.")
+    await notify(t["student_id"],
+                 f"✅ Документ по обращению №{tid} готов. Заберите в кабинете {place}.",
+                 [[btn("📂 Открыть обращение", f"t:{tid}")]])
+    await send_ticket(x, await repo.get_ticket(tid), True)
 
 
 @callback("tdel")
@@ -272,7 +302,9 @@ async def send_staff_queue(x: str, view: str = "") -> None:
     a = await admin_of(x)
     if not a:
         return await api.send(x, "Сотрудник не найден.", BACK)
-    scope = None if is_super(a) else x
+    # Системные права видят всё; остальным достаточно выданного права:
+    # scope=None в admin_tickets отдаёт всю очередь, scope=x - только свои.
+    scope = None if (is_super(a) or await repo.staff_sees_all(x)) else x
     all_rows = await repo.admin_tickets(scope)
     counts = await repo.status_counts(scope)
     if view == "open":
@@ -324,6 +356,12 @@ async def cb_new_ticket_start(x, arg):
         "✍️ Новое обращение. Выберите раздел — дальше сотрудника и текст:",
         [[btn(label, f"new:{code}")] for code, label in CATS.items()] + BACK,
     )
+
+
+# Категории для кнопок меню: студент сразу выбирает, что его волнует,
+# и не разбирается в общем «новом обращении» с двумя шагами выбора.
+MENU_TICKETS = (("certificates", "📄 Справки"), ("academic", "🎓 Учёба"),
+                ("accounting", "💰 Стипендия"), ("feedback", "💬 Другое"))
 
 
 @callback("new")
@@ -382,6 +420,7 @@ async def cb_pick_staff(x, arg):
 
 @state("ticket")
 async def st_ticket(x, text, p):
+    """Сценарий обращения: сообщения копятся в черновике, создаёт обращение кнопка."""
     user = await need_author(x)
     if not user:
         return
@@ -390,20 +429,33 @@ async def st_ticket(x, text, p):
         return await api.send(x, "Приём обращений временно отключён.", BACK)
     admin_id = as_str(p.get("admin"))
     if not admin_id:
-        await db.clear_state(x)
-        return await api.send(x, "Сначала выберите сотрудника: нажмите «↩️ В меню» и начните заново.", BACK)
+        return await _ask_draft(x, p, text)     # сотрудника выберут позже или сейчас
     admin = await admin_of(admin_id)
     if not admin:
         await db.clear_state(x)
         return await api.send(x, "Сотрудник больше недоступен. Начните заново.", BACK)
-    text = text[:3000]
-    topic = " ".join(as_str(p.get("topic", "")).split())[:READY_MAX]
-    tid = await repo.create_ticket(x, admin_id, p["cat"], text, topic=topic)
+    draft = as_str(p.get("draft")).strip()
+    if draft:
+        text = f"{draft}\n\n{text}"          # второе и третье сообщение дописывают
+    return await _ask_draft(x, p, text[:3000])
+
+
+async def _send_draft(x: str, payload) -> None:
+    """Создаёт обращение из черновика и уведомляет сотрудника."""
+    user = await need_author(x)
+    if not user:
+        return
+    text = as_str(payload.get("draft")).strip()[:3000]
+    admin_id = as_str(payload.get("admin"))
+    if not text or not admin_id:
+        return await api.send(x, "Черновик пуст — напишите текст обращения заново.", BACK)
+    topic = " ".join(as_str(payload.get("topic", "")).split())[:READY_MAX]
+    tid = await repo.create_ticket(x, admin_id, payload["cat"], text, topic=topic)
     await db.clear_state(x)
     t = await repo.get_ticket(tid)
     delivered = await notify(
         admin_id,
-        f"🔔 Новое обращение №{tid}\n{cat_topic_line(p['cat'], topic)}\n"
+        f"🔔 Новое обращение №{tid}\n{cat_topic_line(payload['cat'], topic)}\n"
         f"От: {user['full_name']} ({user['group_code']})\n\n{text}",
         ticket_kb(t, True),
     )
@@ -413,7 +465,120 @@ async def st_ticket(x, text, p):
     lines += ["", short(text, 700)]
     if not delivered:
         lines.append("\n⚠️ Сотрудник пока не запускал бота — уведомление не дошло, но обращение сохранено.")
-    await api.send(x, "\n".join(lines), [[btn("📂 Открыть", f"t:{tid}")], *BACK])
+    await api.send(x, "\n".join(lines),
+                   [attach_kb(tid), [btn("↩️ В меню", "home")]])
+
+
+def draft_keyboard(x: str) -> list:
+    """Кнопки черновика: отправить, дочистить, выйти в меню."""
+    return [[btn("✉️ Отправить обращение", "ticketsend")],
+            [btn("🗑 Очистить черновик", "draftclr"), btn("↩️ В меню", "home")]]
+
+
+async def _ask_draft(x: str, payload, text: str) -> None:
+    """Черновик: первое сообщение сохранено, обращение ещё не создано."""
+    await db.set_state(x, "ticket", {**payload, "draft": text})
+    count = len([line for line in text.splitlines() if line.strip()])
+    await api.send(x, "✍️ Сообщение сохранено"
+                      + (f" ({count} шт. в тексте)" if count > 1 else "")
+                      + ".\n\nМожно дописать ещё сообщение или отправить обращение сейчас.",
+                  draft_keyboard(x))
+
+
+ATTACH_MAX = 3       # больше трёх файлов к одному обращению не нужно
+
+
+def attach_kb(tid: int) -> list:
+    return [[btn("📎 Прикрепить файл", f"tattach:{tid}"),
+             btn("📂 Открыть обращение", f"t:{tid}")],
+            [btn("↩️ В меню", "home")]]
+
+
+@callback("tattach")
+async def cb_ticket_attach(x, arg):
+    """Предложение прикрепить файл: ждём следующего вложения."""
+    tid = to_int(arg)
+    t = await repo.get_ticket(tid)
+    if not t or as_str(t["student_id"]) != str(x):
+        return await api.send(x, "Обращение не найдено.", BACK)
+    await db.set_state(x, "attach_file", {"tid": tid})
+    await api.send(x, "📎 Пришлите файл (фото или документ) — он прикрепится к обращению.\n"
+                      "Жду сообщение с файлом. Отмена — /cancel или «↩️ В меню».", attach_kb(tid))
+
+
+@state("attach_file")
+async def st_attach_file(x, text, p):
+    """Обычный текст вместо файла: подсказываем, что ждём именно файл."""
+    tid = to_int(p.get("tid"))
+    return await api.send(x, "Нужен файл: пришлите фото или документ сообщением.\n"
+                             "Если передумали — /cancel.", attach_kb(tid))
+
+
+async def on_attachment(x: str, files: list) -> bool:
+    """Файл пришёл в личный диалог. True - событие обработано, больше не отвечать."""
+    item = (files or [{}])[0]
+    st = await db.get_state(x)
+    if not st or st["state"] != "attach_file":
+        await api.send(x, "Принял файл. Прикрепить файл к обращению можно кнопкой "
+                          "«📎 Прикрепить файл» в самом обращении.", BACK)
+        return True
+    tid = to_int(st["payload"].get("tid"))
+    t = await repo.get_ticket(tid)
+    if not t:
+        await db.clear_state(x)
+        return await api.send(x, "Обращение не найдено — файл не прикреплён.", BACK) or True
+    existing = [name for name in await attached_names(tid)]
+    if len(existing) >= ATTACH_MAX:
+        await db.clear_state(x)
+        return await api.send(x, f"К обращению уже прикреплено {ATTACH_MAX} файла.", attach_kb(tid)) or True
+    try:
+        from attachments import download_attachment
+
+        path, name = await download_attachment(item.get("url", ""), item.get("name", ""))
+    except Exception as exc:  # noqa: BLE001 - студенту нужна причина, а не трассировка
+        log.warning("не удалось сохранить вложение %s: %s", item.get("name"), exc)
+        return await api.send(x, f"⚠️ Файл не сохранился: {exc}\nПришлите другой или напишите текстом.",
+                              attach_kb(tid)) or True
+    size = item.get("size") or os.path.getsize(path)
+    line = f"📎 Файл: {name} ({size // 1024} КБ)"
+    await repo.add_ticket_message(tid, x, "student", line)
+    await notify(t["target_admin_id"], f"📎 Файл к обращению №{tid}: {name}", ticket_kb(t, True))
+    await db.clear_state(x)
+    await api.send(x, f"✅ Файл прикреплён к обращению №{tid}.", attach_kb(tid))
+    return True
+
+
+async def attached_names(ticket_id: int) -> list[str]:
+    """Имена файлов, прикреплённых к обращению: по строкам «📎 Файл: …»."""
+    names = []
+    for row in await repo.ticket_thread(ticket_id, 100):
+        text = as_str(row["text"])
+        if text.startswith("📎 Файл: "):
+            names.append(text[len("📎 Файл: "):].split(" (")[0])
+    return names
+
+
+@callback("ticketsend")
+async def cb_ticket_send(x, arg):
+    """Отправка черновика: последний шанс передумать."""
+    st = await db.get_state(x)
+    if not st or st["state"] != "ticket":
+        return await api.send(x, "Черновик пуст — напишите текст обращения заново.", BACK)
+    payload = st["payload"]
+    if not as_str(payload.get("draft")).strip():
+        return await api.send(x, "Черновик пуст — напишите текст обращения заново.", BACK)
+    return await _send_draft(x, payload)
+
+
+@callback("draftclr")
+async def cb_draft_clear(x, arg):
+    """Очистить черновик и начать заново."""
+    st = await db.get_state(x)
+    if st and st["state"] == "ticket":
+        await db.set_state(x, "ticket", {k: v for k, v in st["payload"].items() if k != "draft"})
+        return await api.send(x, "🗑 Черновик очищен. Напишите обращение заново.",
+                              draft_keyboard(x))
+    return await api.send(x, "Активных черновиков нет.", BACK)
 
 
 @callback("tickets")

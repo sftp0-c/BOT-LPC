@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS admins(
     office          TEXT NOT NULL DEFAULT '',
     ticket_category TEXT NOT NULL DEFAULT 'all',        -- feedback | certificates | all
     can_broadcast   INTEGER NOT NULL DEFAULT 0,
+    see_all_tickets INTEGER NOT NULL DEFAULT 0,       -- видит чужие обращения, а не только свои
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS user_states(
@@ -46,6 +47,8 @@ CREATE TABLE IF NOT EXISTS tickets(
     doc_url         TEXT NOT NULL DEFAULT '',
     pickup_place    TEXT NOT NULL DEFAULT '',
     status          TEXT NOT NULL DEFAULT 'new',        -- new | in_progress | completed | rejected
+    deleted_at      TEXT NOT NULL DEFAULT '',           -- мягкое удаление: пусто = живое обращение
+    deleted_by      TEXT NOT NULL DEFAULT '',           -- кто убрал в архив
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -192,12 +195,15 @@ COLUMN_UPGRADES: dict[str, dict[str, str]] = {
         "office": "TEXT NOT NULL DEFAULT ''",
         "position": "TEXT NOT NULL DEFAULT ''",
         "department": "TEXT NOT NULL DEFAULT ''",
+        "see_all_tickets": "INTEGER NOT NULL DEFAULT 0",
     },
     "tickets": {
         "topic": "TEXT NOT NULL DEFAULT ''",
         "ready_until": "TEXT NOT NULL DEFAULT ''",
         "doc_url": "TEXT NOT NULL DEFAULT ''",
         "pickup_place": "TEXT NOT NULL DEFAULT ''",
+        "deleted_at": "TEXT NOT NULL DEFAULT ''",
+        "deleted_by": "TEXT NOT NULL DEFAULT ''",
     },
     "broadcasts": {
         "sender_name": "TEXT NOT NULL DEFAULT ''",

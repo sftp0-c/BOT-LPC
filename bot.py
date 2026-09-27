@@ -30,7 +30,9 @@ import repository as repo
 from handlers import admin, broadcast, menus, tickets  # noqa: F401  — регистрация обработчиков при импорте
 from handlers.common import api, log, notify, pending_tasks, spawn
 from handlers.registry import CALLBACKS
-from updates import callback_id, callback_payload, is_dialog, message_text, profile_of, sender_id, update_key
+from schedule_watch import start_watcher, stop_watcher  # слежение за PDF с расписанием
+from updates import (callback_id, callback_payload, is_dialog, message_attachments, message_text,
+                    profile_of, sender_id, update_key)
 from utils import UserLocks, as_str, short
 from webpanel import router as panel_router
 import webpanel
@@ -66,7 +68,8 @@ SHUTDOWN_TIMEOUT = 60  # сколько ждём завершения фонов
 # Кнопки, которые продолжают диалог выдачи прав, отправку ответа по шаблону
 # и регистрацию: нажатие не должно стирать то, что человек уже выбрал.
 STATE_KEEPING_CALLBACKS = frozenset({"bcgo", "mph", "mkc", "sfbc", "tplsend", "tplmore",
-                                     "regyes", "regpick"})
+                                     "regyes", "regpick",
+                                     "ticketsend", "draftclr"})
 
 
 async def on_callback(x: str, payload: str):
@@ -118,7 +121,12 @@ async def process(u: dict):
             elif kind == "message_created":
                 if not is_dialog(u):
                     return  # группы и каналы не обслуживаем
+                files = message_attachments(u)
                 text = message_text(u)
+                if files:
+                    handled = await tickets.on_attachment(x, files)
+                    if handled:
+                        return
                 if not text:
                     return await api.send(x, "Пока я понимаю только текстовые сообщения.")
                 await menus.on_message(x, text)
@@ -316,8 +324,10 @@ async def lifespan(app: FastAPI):
             poller = spawn(poll())
             log.info("Запущен long polling")
         await register_bot_menu()
+        start_watcher()  # бот сам следит за PDF колледжа и пишет подписчикам об изменениях
         yield
     finally:  # try/finally обязателен: при сбое старта клиент тоже должен закрыться
+        stop_watcher()
         if maintenance:
             maintenance.cancel()
         await shutdown(poller)

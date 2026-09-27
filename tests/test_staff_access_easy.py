@@ -303,6 +303,7 @@ async def test_panel_shows_staff_activity(panel_client):
     await press(STUDENT, "new:feedback")
     await press(STUDENT, f"pick:feedback:{STAFF}")
     await say(STUDENT, "Нужна справка")
+    await press(STUDENT, "ticketsend")
     assert login_panel(panel_client)
     body = panel_client.get("/panel/staff").text
     assert "За 90 дней / открытых" in body
@@ -355,6 +356,7 @@ async def test_sysadmin_creates_ticket_to_colleague(api):
     await press(SYS, f"pick:feedback:{NEW1}")
     assert "Кому: Соколов Иван" in api.last(SYS)[1]
     await say(SYS, "Нужна подпись на приказ")
+    await press(SYS, "ticketsend")
     text = api.last(SYS)[1]
     assert "Обращение №1 отправлено" in text
 
@@ -370,6 +372,7 @@ async def test_sysadmin_sees_own_tickets(api):
     await press(SYS, "new:feedback")
     await press(SYS, f"pick:feedback:{NEW1}")
     await say(SYS, "Вопрос по расписанию")
+    await press(SYS, "ticketsend")
     await press(SYS, "tickets")
     assert "t:1" in api.payloads(SYS)
 

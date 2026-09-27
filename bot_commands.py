@@ -15,6 +15,7 @@ BOT_COMMANDS: list[tuple[str, str, str]] = [
     ("tickets", "Мои обращения", "tickets"),
     ("new_request", "Новое обращение", "new:feedback"),
     ("profile", "Профиль и группа", "profile"),
+    ("teacher", "Расписание преподавателя", "teacher"),
     ("queue", "Очередь обращений", "staff"),
     ("stats", "Статистика", "staffstats"),
     ("help", "Что умеет бот и помощь", "help"),

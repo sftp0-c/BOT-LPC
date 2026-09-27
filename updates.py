@@ -79,6 +79,41 @@ def message_text(u: dict) -> str:
     return as_str(((u.get("message") or {}).get("body") or {}).get("text")).strip()
 
 
+def message_attachments(u: dict) -> list[dict]:
+    """Вложения сообщения в нормализованном виде: {type, url, name, size}.
+
+    У MAX вложение - это тип, размер, идентификатор и ссылка. Имена полей в
+    разных версиях отличаются, поэтому берём первое, что нашлось, и не падаем
+    на незнакомом формате: непонятное вложение просто не попадёт в список.
+    """
+    body = (u.get("message") or {}).get("body") or {}
+    items = []
+    for item in body.get("attachments") or []:
+        if not isinstance(item, dict):
+            continue
+        url = ""
+        for key in ("url", "link", "href"):
+            if item.get(key):
+                url = as_str(item[key])
+                break
+        if not url:
+            continue
+        name = ""
+        for key in ("title", "file_name", "name", "filename"):
+            if item.get(key):
+                name = as_str(item[key])
+                break
+        if not name:
+            name = url.rsplit("/", 1)[-1].split("?")[0] or "файл"
+        try:
+            size = int(item.get("size") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        items.append({"type": as_str(item.get("type") or "file"), "url": url,
+                      "name": name[:120], "size": size})
+    return items
+
+
 def is_dialog(u: dict) -> bool:
     """Сообщение из личного диалога? (группы и каналы бот не обслуживает)"""
     return ((u.get("message") or {}).get("recipient") or {}).get("chat_type", "dialog") == "dialog"

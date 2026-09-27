@@ -126,9 +126,18 @@ def flow(monkeypatch):
 
 
 def test_student_menu_contract():
+    """В меню студента - конкретные обращения, а не один общий пункт."""
     payloads = [button["payload"] for row in menus.student_menu() for button in row]
-    assert {"academic", "accounting", "new:feedback", "view_schedules", "profile"} <= set(payloads)
-    assert "new:certificates" not in payloads
+    assert {"academic", "accounting", "new:certificates", "new:academic",
+            "new:accounting", "new:feedback", "view_schedules", "profile",
+            "tickets", "sched"} <= set(payloads)
+
+
+def test_student_menu_fits_max_keyboard_limit():
+    """Клавиатура MAX - не больше 30 строк, в меню студента должно быть место."""
+    import max_api
+
+    assert len(menus.student_menu()) <= max_api.MAX_ROWS
 
 
 async def test_sections_expose_topics_application_and_back(flow):

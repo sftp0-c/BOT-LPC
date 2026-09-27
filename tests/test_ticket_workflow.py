@@ -93,6 +93,7 @@ async def make_ticket(
         await press(STUDENT, f"topic:{cat}:{topic_code}")
     await press(STUDENT, f"pick:{cat}:{staff_id}" + (f":{topic_code}" if topic_code else ""))
     await say(STUDENT, text)
+    await press(STUDENT, "ticketsend")   # черновик → отправка
     return (await db.one("SELECT ticket_id FROM tickets"))["ticket_id"]
 
 
@@ -156,6 +157,7 @@ async def test_feedback_ticket_has_no_topic(api, fake_repo):
 
     await press(STUDENT, f"pick:feedback:{STAFF}")
     await say(STUDENT, "Не работает электронный журнал")
+    await press(STUDENT, "ticketsend")
     tid = (await db.one("SELECT ticket_id FROM tickets"))["ticket_id"]
     row = await db.one("SELECT * FROM tickets WHERE ticket_id=?", (tid,))
     assert row["topic"] == "" and row["category"] == "feedback"
@@ -268,6 +270,7 @@ async def test_ready_pickup_place_falls_back_to_staff_office(api, fake_repo, mon
     await db.run("UPDATE admins SET office='каб. 204' WHERE user_id=?", (STAFF,))
     await press(STUDENT, f"pick:certificates:{STAFF}")
     await say(STUDENT, "Нужна справка")
+    await press(STUDENT, "ticketsend")
     tid = (await db.one("SELECT ticket_id FROM tickets"))["ticket_id"]
 
     await press(STAFF, f"st:{tid}:accepted")

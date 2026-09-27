@@ -12,6 +12,7 @@ async def make_ticket(category: str = "feedback") -> int:
     await press(STUDENT, f"new:{category}")
     await press(STUDENT, f"pick:{category}:{STAFF}")
     await say(STUDENT, "Нужна справка")
+    await press(STUDENT, "ticketsend")
     return (await db.one("SELECT ticket_id FROM tickets ORDER BY ticket_id DESC"))["ticket_id"]
 
 

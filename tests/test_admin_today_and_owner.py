@@ -17,6 +17,7 @@ async def make_ticket(text="Нужна справка", status="new"):
     await press(STUDENT, "new:feedback")
     await press(STUDENT, f"pick:feedback:{STAFF}")
     await say(STUDENT, text)
+    await press(STUDENT, "ticketsend")
     ticket_id = (await db.one("SELECT ticket_id FROM tickets ORDER BY ticket_id DESC"))["ticket_id"]
     if status != "new":
         await press(STAFF, f"st:{ticket_id}:{status}")
@@ -109,19 +110,22 @@ async def test_delete_missing_ticket_is_graceful(api):
     assert "не найдено" in api.last(SYS)[1]
 
 
-async def test_panel_deletes_ticket(panel, api):
+async def test_panel_archives_ticket(panel, api):
+    """В панели удаление мягкое: обращение уходит в архив и возвращается."""
     await make_ticket()
     assert login(panel)
-    body = panel.get("/panel/tickets/1").text
-    assert "Удалить обращение" in body
+    body = panel.get("/panel/tickets?t=1").text
+    assert "Обращение №1" in body and "В архив" in body
 
     api.sent.clear()
-    assert post(panel, "/panel/tickets/1/delete").status_code == 303
-    assert await db.one("SELECT 1 FROM tickets WHERE ticket_id=1") is None
-    assert "удалено администратором" in "\n".join(text for _, text, _ in api.to(STUDENT))
-    assert "Обращение №1 удалено" in panel.get("/panel/tickets").text
-    log_rows = await repo.admin_log(10)
-    assert any("обращение удалено" in item["action"] for item in log_rows)
+    assert post(panel, "/panel/tickets/1/archive").status_code == 303
+    assert await db.one("SELECT 1 FROM tickets WHERE ticket_id=1") is not None
+    assert "убрано в архив" in "\n".join(text for _, text, _ in api.to(STUDENT))
+    assert 'class="wb-item' not in panel.get("/panel/tickets").text
+    assert 'class="wb-item' in panel.get("/panel/tickets?view=archive").text
+
+    assert post(panel, "/panel/tickets/1/restore").status_code == 303
+    assert not (await repo.get_ticket(1, include_archived=True))["deleted_at"]
 
 
 async def test_panel_delete_unknown_ticket_is_404(panel):

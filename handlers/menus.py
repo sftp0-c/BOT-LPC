@@ -10,10 +10,10 @@ from handlers.admin import audit, command as admin_command, sysadmin_ids
 from handlers.common import BACK, DEFAULT_WELCOME, admin_of, api, can_broadcast, is_super, log, need_super, notify
 from bot_commands import command_payload
 from handlers.registry import CALLBACKS, STATES, callback, state
-from max_api import btn, link_btn
+from max_api import MAX_ROWS, btn, link_btn
 from timetable import WEEKDAYS_FULL
-from utils import (as_str, group_code, group_digits, norm_code, norm_group, short, to_int,
-                    valid_group)
+from utils import (OPEN_STATUSES, STATUS, as_str, fmt_time, group_code, group_digits, norm_code,
+                    norm_group, short, to_int, valid_group)
 
 
 # ── входящие сообщения и команды ──────────────────────────────────────────────
@@ -55,9 +55,12 @@ async def on_message(x: str, text: str):
 def student_menu():
     return [
         [btn("🎓 Учебная часть", "academic"), btn("💰 Бухгалтерия", "accounting")],
-        [btn("💬 Обратная связь", "new:feedback"), btn("📅 Моё расписание", "sched")],
+        [btn("📄 Справки", "new:certificates"), btn("🎓 Учёба", "new:academic")],
+        [btn("💰 Стипендия", "new:accounting"), btn("💬 Другое", "new:feedback")],
+        [btn("📅 Моё расписание", "sched"), btn("👨‍🏫 Преподаватель", "teacherask")],
         [btn("📚 Все расписания", "view_schedules")],
         [btn("📋 Мои обращения", "tickets"), btn("👤 Мой профиль", "profile")],
+        [btn("⚠️ Ошибка в боте", "bugreport")],
     ]
 
 
@@ -769,8 +772,144 @@ async def cb_profile(x, arg):
         await api.send(
             x,
             f"👤 Профиль\nФИО: {full_name}\nГруппа: {group}",
-            [[btn("✏️ Изменить ФИО", "pf:name"), btn("✏️ Изменить группу", "pf:group")], *BACK],
+            [[btn("🗂 Всё моё", "myall"),
+              btn("✏️ Изменить ФИО", "pf:name"), btn("✏️ Изменить группу", "pf:group")], *BACK],
         )
+
+
+# ── «всё моё»: сводка по одному нажатию ──────────────────────────────────────
+MY_TICKETS_TOTAL = 200     # сколько обращений пересчитываем для счётчиков
+MY_TICKETS_PREVIEW = 5     # столько последних показываем кнопками
+
+
+async def _my_tickets(x: str, limit: int = 0) -> list:
+    """Свои обращения из репозитория. getattr-безопасно: метод может отсутствовать."""
+    lister = getattr(repo, "recent_student_tickets", None)
+    if lister is None:
+        return []
+    try:
+        rows = await (lister(x, limit) if limit else lister(x))
+    except TypeError:        # старый вызов без лимита
+        rows = await lister(x)
+    return list(rows or [])
+
+
+async def _my_ticket_stats(rows: list) -> dict:
+    """Всего обращений, сколько в работе и сколько ждут ответа сотрудника."""
+    open_ids = [to_int(_row_value(row, "ticket_id"), -1) for row in rows
+                if as_str(_row_value(row, "status")) in OPEN_STATUSES]
+    open_ids = [ticket_id for ticket_id in open_ids if ticket_id >= 0]
+    waiting = 0
+    roles = getattr(repo, "latest_message_roles", None)
+    if roles is not None and open_ids:
+        # ждёт ответа то обращение, где последнее слово за сотрудником
+        latest = await roles(open_ids)
+        waiting = sum(1 for ticket_id in open_ids if as_str(latest.get(ticket_id)) == "staff")
+    return {"total": len(rows), "open": len(open_ids), "waiting": waiting}
+
+
+async def _my_subscription_line(x: str, group: str) -> str:
+    """Подписка на обновления расписания: getattr-безопасно, как в других местах."""
+    checker = getattr(repo, "is_schedule_subscribed", None)
+    if not group or checker is None:
+        return "подписок нет"
+    try:
+        subscribed = bool(await checker(x, group))
+    except Exception:       # подписки может не быть вовсе - сводка не должна падать
+        return "подписок нет"
+    return f"подписка на обновления группы {group}" if subscribed else "подписок нет"
+
+
+def _ticket_label(row) -> str:
+    """«№12 · 🆕 Новое» — подпись обращения и в тексте сводки, и на кнопке."""
+    status = as_str(_row_value(row, "status"))
+    return f"№{_row_value(row, 'ticket_id')} · {STATUS.get(status, status or 'без статуса')}"
+
+
+@callback("myall")
+async def cb_my_all(x, arg):
+    """Сводка «всё моё»: обращения, группа, подписка на расписание и данные."""
+    user = await need_student(x)
+    if not user:
+        return
+    full_name = _row_value(user, "full_name")
+    group = _group_code(_row_value(user, "group_code"))
+    rows = await _my_tickets(x, MY_TICKETS_TOTAL)
+    stats = await _my_ticket_stats(rows)
+    lines = [
+        "🗂 Всё моё",
+        "",
+        f"🗂 Обращения: всего {stats['total']} · в работе {stats['open']} · "
+        f"ждут ответа {stats['waiting']}",
+    ]
+    if rows:
+        lines.append("")
+        lines.append("📋 Последние обращения — нажмите, чтобы открыть:")
+        lines += [f"  • {_ticket_label(row)}" for row in rows[:MY_TICKETS_PREVIEW]]
+    lines += [
+        "",
+        f"🎓 Моя группа: {group or 'не указана'}",
+        f"🔔 Расписание: {await _my_subscription_line(x, group)}",
+        "",
+        "👤 Мои данные",
+        f"ФИО: {full_name}",
+        f"ID: {x}",
+        f"В боте с: {fmt_time(_row_value(user, 'created_at'), '%d.%m.%Y') or 'неизвестно'}",
+    ]
+    keyboard = [[btn(_ticket_label(row), f"t:{_row_value(row, 'ticket_id')}")]
+                for row in rows[:MY_TICKETS_PREVIEW]]
+    keyboard += [
+        [btn("↩️ В меню", "home")],
+        [btn("🗂 Мои обращения", "tickets"), btn("📅 Моё расписание", "sched")],
+        [btn("👤 Профиль", "profile")],
+    ]
+    if len(keyboard) > MAX_ROWS:   # страховка: MAX не принимает больше 30 строк
+        keyboard = keyboard[:MAX_ROWS]
+    await api.send(x, "\n".join(lines), keyboard)
+
+
+# ── «ошибка в боте»: короткое описание → журнал и сис-админы ──────────────────
+BUGREPORT_LIMIT = 300      # сколько символов описания уходит в журнал
+
+
+def _who_line(x: str, user) -> str:
+    """Подпись человека для журнала: ФИО, группа и ID — как в заявках сотрудников."""
+    fio = _clean_fio(_row_value(user, "full_name")) if user else ""
+    group = _group_code(_row_value(user, "group_code")) if user else ""
+    return f" от {fio or 'без имени'} ({group or 'группа не указана'}, ID {x})"
+
+
+@callback("bugreport")
+async def cb_bugreport(x, arg):
+    """Кнопка «Ошибка в боте»: спрашиваем, что не сработало, и пишем сис-админам."""
+    await db.set_state(x, "bug_report")
+    await api.send(
+        x,
+        "⚠️ Ошибка в боте\nОпишите одним сообщением, что не сработало: какую кнопку "
+        "нажали и что получили вместо ответа. Сис-админ прочитает и исправит.",
+        [[btn("❌ Отмена", "home")]],
+    )
+
+
+@state("bug_report")
+async def st_bug_report(x, text, p):
+    """Сообщение об ошибке: пишем в admin_log и отправляем его всем сис-админам."""
+    report = " ".join(as_str(text).split())
+    if not report:
+        return await api.send(
+            x,
+            "Опишите ошибку хотя бы парой слов — иначе сис-админ не разберётся.",
+            [[btn("❌ Отмена", "home")]],
+        )
+    report = report[:BUGREPORT_LIMIT]
+    details = f"ошибка в боте: {report}{_who_line(x, await repo.get_user(x))}"
+    await repo.log_action(x, "ошибка в боте", details)
+    for uid in sysadmin_ids():
+        await notify(uid, f"⚠️ {details}", [[btn("🗂 Журнал", "diag")]])
+    log.info("студент %s сообщил об ошибке: %s", x, short(report, 120))
+    await db.clear_state(x)
+    await api.send(x, "✅ Спасибо, сообщили. Сис-админ прочитает и исправит.")
+    return await show_home(x)
 
 
 @callback("pf")
