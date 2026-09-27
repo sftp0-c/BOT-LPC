@@ -5,6 +5,8 @@ import repository as repo
 from conftest import add_staff, press, register, say
 
 SYS, STAFF, STUDENT = "1", "200", "100"
+# меню студента: три подменю и три частых дела
+STUDENT_MENU = ["sub:cert", "sub:acc", "sub:fb", "sched", "tickets", "profile"]
 
 
 # ── меню сис-админа ───────────────────────────────────────────────────────────
@@ -31,7 +33,9 @@ async def test_more_screen_is_closed_for_others(api):
     await press(STUDENT, "more")
     payloads = set(api.payloads(STUDENT))
     assert "settings" not in payloads and "diag" not in payloads
-    assert "new:feedback" in payloads  # обычное меню студента
+    # меню студента, а не служебный экран и не старые разделы обращений
+    assert set(STUDENT_MENU) <= payloads
+    assert not [p for p in payloads if p in ("settings", "diag", "stats", "groups", "sysadm")]
 
 
 async def test_switch_to_student_view(api):
@@ -40,7 +44,10 @@ async def test_switch_to_student_view(api):
     text = api.last(SYS)[1]
     assert "Режим студента" in text
     payloads = set(api.payloads(SYS))
-    assert "new:feedback" in payloads and "view:admin" in payloads
+    assert set(STUDENT_MENU) <= payloads
+    # рядом - переключатель вида, а админские экраны в режиме студента не видны
+    assert "view:admin" in payloads and "view:staff" in payloads
+    assert "more" not in payloads and "settings" not in payloads
     assert await db.get_setting(f"menu_view:{SYS}") == "student"
 
 

@@ -301,22 +301,38 @@ footer{color:var(--mut);font-size:12px;padding:14px 26px 30px;margin-left:var(--
 
 /* ── телефон и планшет ─────────────────────────────────────────────────── */
 /* Рабочее место с обращениями: очередь слева, карточка справа. */
-.workbench{display:grid;grid-template-columns:minmax(280px,360px) 1fr;gap:12px;
+.workbench{display:grid;grid-template-columns:minmax(320px,380px) 1fr;gap:12px;
            align-items:start}
 .wb-queue,.wb-card{min-width:0}
-.wb-list{display:flex;flex-direction:column;gap:4px;max-height:62vh;overflow-y:auto}
-.wb-item{display:flex;gap:8px;align-items:flex-start;padding:7px 8px;border-radius:8px;
-         border:1px solid transparent;cursor:pointer}
+.wb-queue{position:sticky;top:12px}
+.wb-list{display:flex;flex-direction:column;gap:2px;max-height:64vh;overflow-y:auto;
+         padding-right:2px}
+.wb-item{display:grid;grid-template-columns:18px 1fr;gap:8px;align-items:start;
+         padding:8px;border-radius:8px;border:1px solid transparent;cursor:pointer}
 .wb-item:hover{background:var(--bg)}
 .wb-item.wb-on{background:var(--bg);border-color:var(--accent)}
-.wb-item input{margin-top:3px;flex:0 0 auto}
-.wb-item a{flex:1;min-width:0;color:inherit;text-decoration:none;font-size:13px;line-height:1.35}
-.wb-item b{font-weight:650}
+.wb-item input{margin:3px 0 0;flex:0 0 auto}
+.wb-item a{min-width:0;color:inherit;text-decoration:none;font-size:13px;line-height:1.4}
+/* номер, статус и дата - в одну строку, текст обрезается многоточием */
+.wb-head{display:flex;align-items:baseline;gap:6px;white-space:nowrap}
+.wb-head b{font-weight:650;flex:0 0 auto}
+.wb-status{color:var(--muted);overflow:hidden;text-overflow:ellipsis;flex:1 1 auto;
+           min-width:0}
+.wb-date{color:var(--muted);font-size:12px;flex:0 0 auto;margin-left:auto}
+.wb-text{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+         color:var(--muted);margin-top:1px}
 .wb-bulk{margin-top:10px;padding-top:8px;border-top:1px solid var(--line);font-size:13px}
 .wb-bulk summary{cursor:pointer;color:var(--muted)}
+/* карточка: таблицы с ровными колонками и обрезкой длинных текстов */
+.wb-card table{table-layout:fixed}
+.wb-card table td,.wb-card table th{vertical-align:top;word-break:break-word}
+.wb-card table td:nth-child(1){width:130px}
+.wb-card table td:nth-child(2){width:180px}
+.wb-card table td small{color:var(--muted)}
 @media (max-width:1000px){
   .workbench{grid-template-columns:1fr}
-  .wb-list{max-height:38vh}
+  .wb-queue{position:static}
+  .wb-list{max-height:40vh}
 }
 @media (max-width:1000px){
   :root{--sb:0px}
@@ -950,11 +966,20 @@ def _tickets_queue(request: Request, rows, latest: dict, query: str, selected, a
         ticket_id = row["ticket_id"]
         mark = "wb-on" if selected and int(selected["ticket_id"]) == int(ticket_id) else ""
         wait = " ⏳" if latest.get(int(ticket_id)) == "student" else ""
+        # db.many отдаёт sqlite3.Row, поэтому по именам колонок идём через dict()
+        data = dict(row)
+        who = " ".join(part for part in (as_str(data.get("student_name")),
+                                         as_str(data.get("student_group"))) if part)
+        status = f'{esc(STATUS.get(data["status"], data["status"]))}{wait}'
         items.append(
             f'<label class="wb-item {mark}"><input type="checkbox" name="tids" value="{esc(ticket_id)}">'
             f'<a href="/panel/tickets?{query}&t={esc(ticket_id)}">'
-            f'<b>№{esc(ticket_id)}</b> · {esc(STATUS.get(row["status"], row["status"]))}{wait}<br>'
-            f'<span class="small mut">{esc(short(row["text_content"], 70))}</span></a></label>')
+            f'<span class="wb-head"><b>№{esc(ticket_id)}</b>'
+            f'<span class="wb-status">{status}</span>'
+            f'<span class="wb-date">{esc(fmt_when(data["updated_at"]))}</span></span>'
+            f'<span class="wb-text" title="{esc(data["text_content"])}">'
+            f'{esc(short(who, 40))} · {esc(short(data["text_content"], 90))}</span>'
+            f'</a></label>')
     head = "◀️ Из архива" if archived else f"Очередь · {len(rows)}"
     more = (f'<p class="small mut">Показано {len(visible)} из {len(rows)} — сузьте фильтр '
             f'по статусу, чтобы увидеть нужное.</p>' if len(rows) > len(visible) else "")

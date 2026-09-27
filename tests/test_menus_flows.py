@@ -2,10 +2,14 @@
 
 import pytest
 
+from conftest import add_staff, press, register
 from handlers import menus
+from repository import set_admin_profile
 
 
 USER = "100"
+STAFF = "200"
+DIRECTOR = "201"
 
 
 class FakeAPI:
@@ -125,12 +129,39 @@ def flow(monkeypatch):
     return api, repo, db
 
 
-def test_student_menu_contract():
-    """В меню студента - конкретные обращения, а не один общий пункт."""
-    payloads = [button["payload"] for row in menus.student_menu() for button in row]
-    assert {"academic", "accounting", "new:certificates", "new:academic",
-            "new:accounting", "new:feedback", "view_schedules", "profile",
-            "tickets", "sched"} <= set(payloads)
+async def test_student_menu_contract(api):
+    """Меню студента - ровно шесть кнопок, и каждое подменю открывается по своей.
+
+    Проверяем через бота, а не через student_menu(): важно, что человек реально
+    доходит до подменю нажатием, а не то, что функция вернула список.
+    """
+    await register(USER, "Иванов Иван", "ИС-21")
+    await add_staff(STAFF, "Петрова Анна", category="all")
+    await add_staff(DIRECTOR, "Сидоров Пётр Петрович", category="all")
+    await set_admin_profile(DIRECTOR, role="director", position="Директор")
+
+    api.sent.clear()
+    await press(USER, "home")
+    # ровно шесть: три подменю и три частых дела. Старых кнопок в меню нет.
+    assert api.payloads(USER) == ["sub:cert", "sub:acc", "sub:fb", "sched", "tickets", "profile", "bugreport"]
+
+    await press(USER, "sub:cert")
+    assert set(api.payloads(USER)) == {"ask:certificates:place", "ask:certificates:period",
+                                      "ask:certificates:vacancies", "new:certificates", "home"}
+    assert "Выберите, что именно" in api.last(USER)[1]
+
+    await press(USER, "sub:acc")
+    assert set(api.payloads(USER)) == {"ask:accounting:scholarship", "ask:accounting:payout",
+                                      "ask:accounting:other", "new:accounting", "home"}
+    assert "Выберите, что именно" in api.last(USER)[1]
+
+    # обратная связь адресная: кнопка ведёт сразу к директору, а не к разделу
+    await press(USER, "sub:fb")
+    payloads = set(api.payloads(USER))
+    assert f"pick:feedback:{DIRECTOR}" in payloads
+    assert "new:feedback" in payloads and "home" in payloads
+    assert "Директор — Сидоров" in " ".join(
+        button["text"] for row in api.last(USER)[2] for button in row)
 
 
 def test_student_menu_fits_max_keyboard_limit():
@@ -195,8 +226,8 @@ async def test_regok_saves_normalized_group_and_preserves_colon(flow):
     await menus.cb_regok(USER, "НОВАЯ-99:Иванов:Иван")
 
     assert repo.saved == [(USER, "Иванов:Иван", "НОВАЯ-99")]
-    payloads = set(api.payloads(USER))
-    assert {"academic", "accounting", "new:feedback", "view_schedules", "profile"} <= payloads
+    # после сохранения - меню бота, а не старые разделы обращений
+    assert {"sub:cert", "sub:acc", "sub:fb", "sched", "tickets", "profile"} <= set(api.payloads(USER))
 
 
 async def test_empty_registry_accepts_normalized_group(flow):
@@ -212,7 +243,8 @@ async def test_empty_registry_accepts_normalized_group(flow):
 
     await menus.cb_registration_confirm(USER, "")
     assert repo.saved == [(USER, "Иванов Иван", "НОВЫЙ-7")]
-    assert {"academic", "accounting", "new:feedback", "view_schedules", "profile"} <= set(api.payloads(USER))
+    # сохранили - показали меню бота
+    assert {"sub:cert", "sub:acc", "sub:fb", "sched", "tickets", "profile"} <= set(api.payloads(USER))
 
 
 async def test_registration_offers_known_groups(flow):

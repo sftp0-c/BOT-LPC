@@ -74,10 +74,10 @@ async def test_menu_button_cancels_draft_and_returns_home(env, api):
     await press(STUDENT, "home")
     assert await db.get_state(STUDENT) is None
     assert await repo.recent_student_tickets(STUDENT) == []
-    payloads = api.payloads(STUDENT)                     # клавиатура последнего сообщения
-    assert "new:certificates" in payloads                # это меню бота: разделы обращений
-    assert "ticketsend" not in payloads                  # кнопок черновика больше нет
-    assert "draftclr" not in payloads
+    # клавиатура последнего сообщения - это меню бота, а не кнопки черновика
+    payloads = api.payloads(STUDENT)
+    assert {"sub:cert", "sub:acc", "sub:fb", "sched", "tickets", "profile"} <= set(payloads)
+    assert "ticketsend" not in payloads and "draftclr" not in payloads
 
 
 async def test_send_without_draft_is_graceful(env, api):

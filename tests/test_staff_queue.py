@@ -35,14 +35,40 @@ async def set_status(ticket_id: int, status: str) -> None:
 
 # ── бот ───────────────────────────────────────────────────────────────────────
 async def test_queue_shows_counters_and_filters(api):
-    await ticket()
-    await ticket("certificates")
+    """Очередь открывается четырьмя счётчиками, а фильтры - из подменю «По отделам»."""
+    first = await ticket()
+    second = await ticket("certificates")
     await press(STAFF, "staff")
-    text = api.last(STAFF)[1]
-    assert "Очередь обращений" in text
-    assert "🆕 Новое — 2" in text
-    assert "stafff:open" in api.payloads(STAFF)
-    assert "stafff:certificates" in api.payloads(STAFF)
+
+    assert "Очередь обращений" in api.last(STAFF)[1]
+    payloads = set(api.payloads(STAFF))
+    assert {"staffv:waiting", "staffv:in_progress", "staffv:ready", "staffv:",
+            "staffcat", "staff:"} <= payloads
+    # восьми фильтров на главном экране больше нет - они в подменю
+    assert not [p for p in payloads if p.startswith("stafff:")]
+    assert {f"t:{first}", f"t:{second}"} <= payloads
+
+    counters = {b["payload"]: b["text"] for row in api.last(STAFF)[2] for b in row}
+    assert counters["staffv:waiting"].endswith("(2)")        # оба ждут ответа
+    assert counters["staffv:in_progress"].endswith("(0)")
+    assert counters["staffv:ready"].endswith("(0)")
+    assert counters["staffv:"].endswith("(2)")              # все обращения
+
+    # счётчик работает как фильтр: ответили на один - он из «ждут ответа» ушёл
+    await press(STAFF, f"rp:{first}")
+    await say(STAFF, "Ответили")
+    await press(STAFF, "staffv:waiting")
+    waiting = set(api.payloads(STAFF))
+    assert f"t:{second}" in waiting and f"t:{first}" not in waiting
+
+    # фильтры по отделам и статусам живут в подменю и работают оттуда
+    await press(STAFF, "staffcat")
+    assert "Очередь по отделам" in api.last(STAFF)[1]
+    departments = set(api.payloads(STAFF))
+    assert "stafff:certificates" in departments and "stafff:open" in departments
+    await press(STAFF, "stafff:certificates")
+    assert "Фильтр: 📄 Справка — 1" in api.last(STAFF)[1]
+    assert f"t:{second}" in api.payloads(STAFF)
 
 
 async def test_filter_by_status(api):

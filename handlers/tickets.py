@@ -289,6 +289,15 @@ async def ticket_rows_kb(rows, staff_side: bool = False):
 
 
 # Фильтры очереди сотрудника: сгруппированы по смыслу, а не по алфавиту.
+# Четыре входа в очередь вместо восьми фильтров на одном экране: список
+# открытых, но непонятных кнопок сотрудник пролистывал, не понимая, что есть.
+STAFF_QUEUE_VIEWS = (("waiting", "🔔 Ждут ответа"), ("in_progress", "🔧 В работе"),
+                     ("ready", "📄 Готовы"), ("", "🗂 Все"))
+# Подпись выбранного вида: виды очереди не совпадают со статусами обращения,
+# поэтому «Фильтр: waiting» студенту показывать нельзя.
+STAFF_VIEW_LABEL = {"waiting": "🔔 Ждут ответа", "in_progress": "🔧 В работе",
+                    "ready": "📄 Готовы", "": "🗂 Все", "open": "🔓 Открытые",
+                    "new": "🆕 Без ответа", "completed": "✅ Завершённые"}
 STAFF_QUEUE_FILTERS = (("open", "🔓 Открытые"), ("new", "🆕 Без ответа"),
                        ("ready", "📄 К выдаче"), ("completed", "✅ Завершённые"))
 
@@ -307,7 +316,11 @@ async def send_staff_queue(x: str, view: str = "") -> None:
     scope = None if (is_super(a) or await repo.staff_sees_all(x)) else x
     all_rows = await repo.admin_tickets(scope)
     counts = await repo.status_counts(scope)
-    if view == "open":
+    if view == "__waiting__":
+        latest = await repo.latest_message_roles([row["ticket_id"] for row in all_rows])
+        rows = [row for row in all_rows if latest.get(int(row["ticket_id"])) == "student"]
+        view = "waiting"
+    elif view == "open":
         rows = [row for row in all_rows if row["status"] in OPEN_STATUSES]
     elif view in dict(STAFF_QUEUE_FILTERS):
         rows = [row for row in all_rows if as_str(row["status"]) == view]
@@ -319,21 +332,43 @@ async def send_staff_queue(x: str, view: str = "") -> None:
     lines.append(" · ".join(f"{STATUS[code]} — {counts.get(code, 0)}"
                             for code in ("new", "accepted", "in_progress", "ready", "completed")))
     if view:
-        lines.append(f"\nФильтр: {dict(STAFF_QUEUE_FILTERS).get(view) or CATS.get(view, view)} — {len(rows)}")
+        title = STAFF_VIEW_LABEL.get(view) or CATS.get(view) or dict(STAFF_QUEUE_FILTERS).get(view)
+        lines.append(f"\nФильтр: {title or view} — {len(rows)}")
     else:
         lines.append("Фильтр не выбран — показаны все обращения")
-    status_row = [btn(("● " if code == view else "") + label, f"stafff:{code}")
-                  for code, label in STAFF_QUEUE_FILTERS]
-    cat_row = [btn(("● " if code == view else "") + label, f"stafff:{code}") for code, label in CATS.items()]
-    keyboard = [status_row[i:i + 2] for i in range(0, len(status_row), 2)]
-    keyboard += [cat_row[i:i + 2] for i in range(0, len(cat_row), 2)]
-    keyboard.append([btn(f"🔄 Обновить ({len(rows)})", f"staff:{view}"),
-                     btn("Сбросить фильтр", f"staff:{''}")])
+    latest_roles = await repo.latest_message_roles([row["ticket_id"] for row in all_rows])
+    views = []
+    for code, label in STAFF_QUEUE_VIEWS:
+        count = (sum(1 for row in all_rows
+                     if latest_roles.get(int(row["ticket_id"])) == "student")
+                 if code == "waiting"
+                 else sum(1 for row in all_rows
+                          if not code or as_str(row["status"]) == code))
+        views.append(btn(f"{'▸ ' if view == code else ''}{label} ({count})", f"staffv:{code}"))
+    keyboard = [views[0:2], views[2:4]]
+    keyboard.append([btn("👥 По отделам", "staffcat"), btn("🔄 Обновить", f"staff:{view}")])
+    if view:
+        keyboard.append([btn("Сбросить фильтр", "staff:")])
     if rows:
         keyboard += await ticket_rows_kb(rows[:15], True)
     else:
         keyboard.append([btn("Под таким фильтром обращений нет", "noop")])
     await api.send(x, "\n".join(lines), [*keyboard, *BACK])
+
+
+@callback("staffv")
+async def cb_staff_view(x, arg):
+    """Очередь по подменю: ждут ответа, в работе, готовы или все."""
+    return await send_staff_queue(x, "__waiting__" if as_str(arg).strip() == "waiting"
+                                  else as_str(arg).strip())
+
+
+@callback("staffcat")
+async def cb_staff_categories(x, arg):
+    """Отделы отдельным подменю, иначе очередь перегружена кнопками."""
+    keyboard = [[btn(label, f"stafff:{code}")] for code, label in CATS.items()]
+    keyboard += [[btn("🔓 Все открытые", "stafff:open")], [btn("📥 В меню", "staff")]]
+    await api.send(x, "👥 Очередь по отделам:", keyboard)
 
 
 @callback("stafff")
@@ -356,6 +391,90 @@ async def cb_new_ticket_start(x, arg):
         "✍️ Новое обращение. Выберите раздел — дальше сотрудника и текст:",
         [[btn(label, f"new:{code}")] for code, label in CATS.items()] + BACK,
     )
+
+
+# Подменю меню студента. Ключ - код категории, значение - конкретные вопросы:
+# студент выбирает суть, а не «категорию вообще».
+SUBMENU_TOPICS = {
+    "cert": ("certificates", (
+        ("place", "📍 Справка с места обучения"),
+        ("period", "🗓 Справка о периоде обучения"),
+        ("vacancies", "🎓 Справка о вакантных местах"),
+    )),
+    "acc": ("accounting", (
+        ("scholarship", "💰 О стипендии"),
+        ("payout", "🧾 Выплаты и документы"),
+        ("other", "❓ Другой вопрос по бухгалтерии"),
+    )),
+}
+
+# Обратная связь - адресная: кто именно принимает решение.
+FEEDBACK_ROLES = (
+    ("director", "👔 Директор"),
+    ("deputy_uvr", "👤 Зам УРП"),
+    ("deputy_upr", "👤 Зам УПР"),
+    ("deputy_unr", "👤 Зам УМР"),
+)
+
+
+@callback("sub")
+async def cb_submenu(x, arg):
+    """Подменю меню: справки, бухгалтерия или адресаты обратной связи."""
+    key = as_str(arg).strip()
+    if key == "fb":
+        return await _feedback_menu(x)
+    if key not in SUBMENU_TOPICS:
+        return await api.send(x, "Раздел не найден.", [[btn("🏠 Меню", "home")]])
+    category, items = SUBMENU_TOPICS[key]
+    keyboard = [[btn(label, f"ask:{category}:{code}")] for code, label in items]
+    keyboard += [[btn("👥 Другой сотрудник", f"new:{category}")],
+                 [btn("🏠 Меню", "home")]]
+    await api.send(x, f"{CATS[category]}\nВыберите, что именно:", keyboard)
+
+
+async def _feedback_menu(x: str) -> None:
+    """Обратная связь адресная: директор и замы по должностям."""
+    people: list[dict] = []
+    for code, label in FEEDBACK_ROLES:
+        for row in await repo.staff_by_role(code):
+            person = dict(row)
+            people.append({"uid": as_str(person["user_id"]), "label": label,
+                           "name": as_str(person["full_name"])})
+    if not people:
+        await api.send(
+            x, "👤 Обратная связь\n\nДолжности ещё не назначены в системе — напишите "
+                "любому сотруднику из общего списка.",
+            [[btn("👥 Выбрать сотрудника", "new:feedback")], [btn("🏠 Меню", "home")]])
+        return
+    keyboard = [[btn(f"{item['label']} — {short(item['name'], 28)}", f"pick:feedback:{item['uid']}")]
+                for item in people]
+    keyboard += [[btn("👥 Другой сотрудник", "new:feedback")], [btn("🏠 Меню", "home")]]
+    await api.send(x, "👤 Обратная связь — кому пишете?", keyboard)
+
+
+@callback("ask")
+async def cb_ask(x, arg):
+    """Конкретный вопрос из подменю: сразу с темой и выбором сотрудника."""
+    category, _, code = as_str(arg).partition(":")
+    title = ""
+    for cat, items in SUBMENU_TOPICS.values():
+        for key, label in items:
+            if cat == category and key == code:
+                title = label
+    if not title or not await need_author(x):
+        return await api.send(x, "Вопрос не найден.", [[btn("🏠 Меню", "home")]])
+    if await db.get_setting("tickets_enabled", "1") != "1":
+        return await api.send(x, "Приём обращений временно отключён.", BACK)
+    await db.set_state(x, "ticket", {"cat": category, "topic": title})
+    rows = await repo.staff_for_category(category)
+    if not rows:
+        return await api.send(x, "Сотрудник по этому вопросу ещё не назначен — напишите через "
+                                 "общий список.",
+                              [[btn("👥 Выбрать сотрудника", f"new:{category}")],
+                               [btn("🏠 Меню", "home")]])
+    keyboard = [[btn(short(staff_pick_label(r), 60), f"pick:{category}:{r['user_id']}:{code}")]
+                for r in rows]
+    await api.send(x, f"{title}\nКому пишете?", keyboard + [[btn("🏠 Меню", "home")]])
 
 
 # Категории для кнопок меню: студент сразу выбирает, что его волнует,
@@ -396,8 +515,21 @@ async def cb_ticket_topic(x, arg):
     await api.send(x, f"{CATS[cat]} · {title}\nВыберите сотрудника:", kb + BACK)
 
 
+def submenu_topic(cat: str, code: str) -> str:
+    """Тема вопроса из подменю меню («Справка с места обучения» и подобные)."""
+    if not code:
+        return ""
+    for category, items in SUBMENU_TOPICS.values():
+        if category != cat:
+            continue
+        for key, label in items:
+            if key == code:
+                return label
+    return ""
+
+
 async def _pending_topic(x: str, cat: str, code: str) -> str:
-    topic = topic_title(cat, code)
+    topic = topic_title(cat, code) or submenu_topic(cat, code)
     if topic:
         return topic
     st = await db.get_state(x)

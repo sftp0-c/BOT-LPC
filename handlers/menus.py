@@ -53,13 +53,16 @@ async def on_message(x: str, text: str):
 
 
 def student_menu():
+    """Три подменю и три частые кнопки - вместо россыпи кнопок в один экран.
+
+    Подменю «Справка», «Бухгалтерия» и «Обратная связь» раскрываются
+    конкретными вопросами, а не общими категориями.
+    """
     return [
-        [btn("🎓 Учебная часть", "academic"), btn("💰 Бухгалтерия", "accounting")],
-        [btn("📄 Справки", "new:certificates"), btn("🎓 Учёба", "new:academic")],
-        [btn("💰 Стипендия", "new:accounting"), btn("💬 Другое", "new:feedback")],
-        [btn("📅 Моё расписание", "sched"), btn("👨‍🏫 Преподаватель", "teacherask")],
-        [btn("📚 Все расписания", "view_schedules")],
-        [btn("📋 Мои обращения", "tickets"), btn("👤 Мой профиль", "profile")],
+        [btn("📄 Справка", "sub:cert"), btn("💰 Бухгалтерия", "sub:acc"),
+         btn("💬 Обратная связь", "sub:fb")],
+        [btn("📅 Моё расписание", "sched"), btn("📋 Мои обращения", "tickets"),
+         btn("👤 Профиль", "profile")],
         [btn("⚠️ Ошибка в боте", "bugreport")],
     ]
 

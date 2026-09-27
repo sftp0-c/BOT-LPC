@@ -127,6 +127,20 @@ async def list_staff() -> list:
     return await db.many(f"SELECT * FROM admins WHERE role_type {STAFF_ROLES_SQL} ORDER BY full_name")
 
 
+async def staff_by_role(role: str) -> list:
+    """Сотрудники с указанной должностью (ролем): директор, замы.
+
+    Пусто, если должность ещё не назначена - тогда подменю обратной связи
+    честно скажет об этом, а не покажет пустые кнопки.
+    """
+    return await db.many(
+        "SELECT user_id, full_name, role, position, ticket_category FROM admins "
+        "WHERE role=? AND role_type NOT IN ('sysadmin','owner','superadmin') "
+        "ORDER BY full_name",
+        (as_str(role),),
+    )
+
+
 async def staff_for_category(category: str, limit: int = 25) -> list:
     return await db.many(
         "SELECT user_id, full_name, role, position, department, office FROM admins "
