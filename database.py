@@ -98,11 +98,17 @@ CREATE TABLE IF NOT EXISTS schedule_subscriptions(
 CREATE INDEX IF NOT EXISTS idx_schedule_subscriptions_group
     ON schedule_subscriptions(group_code);
 CREATE TABLE IF NOT EXISTS groups(
-    group_code TEXT PRIMARY KEY,                         -- нормализованный код группы, см. utils.norm_group
-    title      TEXT NOT NULL DEFAULT '',                 -- человекочитаемое название группы
-    active     INTEGER NOT NULL DEFAULT 1,              -- 0 — группа скрыта из подсказок
+    group_code TEXT PRIMARY KEY,                         -- единый вид кода: 24-23П, 24-21-2С (utils.group_code)
+    title      TEXT NOT NULL DEFAULT '',                 -- название группы или код как на сайте: «24-23 (П)»
+    active     INTEGER NOT NULL DEFAULT 1,              -- 0 - группа не принимает студентов
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS group_aliases(                           -- как ещё люди пишут код группы
+    alias      TEXT PRIMARY KEY,                        -- нормализованный вариант: 2423П, 24 23 П
+    group_code TEXT NOT NULL,                           -- на какую группу указывает
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_group_aliases_group ON group_aliases(group_code);
 CREATE TABLE IF NOT EXISTS settings(
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL

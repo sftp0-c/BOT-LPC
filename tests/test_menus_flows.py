@@ -1,3 +1,5 @@
+﻿import re
+
 import pytest
 
 from handlers import menus
@@ -74,8 +76,42 @@ class FakeRepo:
         return {"group_code": group_code, "pdf_url": url} if url else None
 
     async def top_groups(self, limit=8):
-        """Подсказки групп при регистрации: берём из справочника."""
+        """Заведённые группы: берём из справочника, как в боте."""
         return [{"group_code": row["code"]} for row in self.groups if row["active"]][:limit]
+
+    async def suggest_groups(self, text="", limit=8):
+        """Подсказки по цифрам кода: так же, как в настоящем справочнике."""
+        digits = re.sub(r"\D", "", str(text))
+        groups = [{"code": row["code"], "title": "", "active": 1} for row in self.groups]
+        if not digits:
+            return groups[:limit]
+        return sorted(groups, key=lambda g: (0 if g["code"] == str(text).upper() else 1, g["code"]))[:limit]
+
+    async def resolve_group(self, text):
+        """Есть ли такая группа в справочнике."""
+        wanted = str(text).strip().upper()
+        if any(g["code"] == wanted for g in self.groups):
+            return {"found": True, "code": wanted, "title": "", "suggestions": []}
+        return {"found": False, "code": wanted, "title": "",
+                "suggestions": await self.suggest_groups(text)}
+
+    async def find_group(self, text):
+        answer = await self.resolve_group(text)
+        return {"code": answer["code"], "title": "", "active": 1} if answer["found"] else None
+
+    async def add_group_aliases(self, group_code, aliases=()):
+        return 0
+
+    async def upsert_group(self, code="", title=None, active=None, **kwargs):
+        if code and not any(g["code"] == code for g in self.groups):
+            self.groups.append({"code": code, "active": 1})
+        return True
+
+    async def all_admins(self):
+        return []
+
+    async def log_action(self, actor, action, details=""):
+        return 0
 
 
 @pytest.fixture
@@ -117,16 +153,32 @@ async def test_view_schedules_uses_active_registry(flow):
     assert "https://college.example/is-21.pdf" in api.last(USER)[1]
 
 
-async def test_unknown_group_waits_for_confirmation(flow):
+async def test_unknown_group_is_added_and_confirmed(flow):
+    """Новой группы нет в справочнике - заводим её сразу и сверяем данные.
+
+    Раньше неизвестный код уходил в отдельное подтверждение «завести группу?».
+    Теперь студент не встаёт из-за того, что группа ещё не заведена, а сис-админы
+    получают уведомление о новой группе.
+    """
     api, repo, db = flow
     repo.groups[:] = [{"code": "ИС-21", "active": 1}]
     await menus.st_reg_group(USER, "НОВАЯ-99", {"name": "Иванов Иван"})
 
-    assert repo.saved == []
-    payloads = api.payloads(USER)
-    assert "regok:НОВАЯ-99:Иванов Иван" in payloads
-    assert "editname" in payloads
-    assert db.states[USER]["state"] == "reg_group"
+    assert any(g["code"] == "НОВАЯ-99" for g in repo.groups)  # группа заведена
+    assert db.states[USER]["state"] == "reg_confirm"           # данные показаны
+    assert "regyes" in api.payloads(USER)
+
+
+async def test_typo_gets_suggestions_instead_of_new_group(flow):
+    """Похожий код - это опечатка: предлагаем варианты, новую группу не создаём."""
+    api, repo, db = flow
+    repo.groups[:] = [{"code": "24-23", "active": 1}, {"code": "24-24", "active": 1}]
+    await db.set_state(USER, "reg_group", {"name": "Иванов Иван"})
+    await menus.st_reg_group(USER, "2423", {"name": "Иванов Иван"})
+
+    assert not any(g["code"] == "2423" for g in repo.groups)  # не создали мусор
+    assert "regpick:24-23" in api.payloads(USER)
+    assert "не найдена" in api.last(USER)[1]
 
 
 async def test_regok_saves_normalized_group_and_preserves_colon(flow):

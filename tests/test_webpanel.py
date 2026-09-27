@@ -635,7 +635,9 @@ async def test_actions_are_logged_and_shown(panel):
 
     log_rows = await repo.admin_log(20)
     assert any("сотрудником" in item["action"] for item in log_rows)
-    assert all(item["actor_id"] == SYS for item in log_rows)
+    # системные записи (например, новая группа при регистрации) пишутся от "bot";
+    # остальные - от сис-админа, который действительно что-то сделал
+    assert all(item["actor_id"] in (SYS, "bot") for item in log_rows)
     counts = await repo.admin_log_counts(30)
     assert sum(counts.values()) == len(log_rows)
 

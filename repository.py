@@ -1,4 +1,4 @@
-"""Репозиторий: SQL-запросы к схемам из database.py.
+﻿"""Репозиторий: SQL-запросы к схемам из database.py.
 
 bot.py не пишет SQL сам — все обращения к базе идут через функции этого модуля,
 чтобы тексты запросов не дублировались и их было легко менять/тестировать точечно.
@@ -14,8 +14,11 @@ from utils import (
     is_owner_role,
     is_sysadmin_role,
     norm_code,
+    group_code,
+    group_digits,
     norm_group,
     parse_db_time,
+    same_group,
     parse_max_ids,
     parse_nicks,
     to_int,
@@ -703,10 +706,13 @@ async def schedule_subscribers(group_code: str) -> list[str]:
 
 
 # ── справочник групп ──────────────────────────────────────────────────────────
-def _code(group_code) -> str:
-    """Нормализованный код группы; '' — если значения нет (None, пустая строка)."""
-    return norm_group(as_str(group_code))
+def _code(group: str) -> str:
+    """Единый вид кода группы (utils.group_code): «24-23 (П)» и «2423П» -> «24-23П».
 
+    Через одну функцию нормализуются все, кто ищет группу: студенты, расписания,
+    справочник, - иначе одна и та же группа находилась бы под разными ключами.
+    """
+    return group_code(as_str(group))
 
 async def get_group(group_code: str):
     """Строка справочника по коду группы; None — группа неизвестна или код пуст."""
@@ -724,6 +730,108 @@ async def list_groups(active_only: bool = True) -> list[dict]:
     where = " WHERE active=1" if active_only else ""
     rows = await db.many(f"SELECT group_code, active FROM groups{where} ORDER BY group_code")
     return [{"code": _code(row["group_code"]), "active": row["active"]} for row in rows]
+
+
+# ── единый справочник групп ───────────────────────────────────────────────────
+# Люди пишут код группы по-разному: «24-23 (П)», «24-23П», «2423П», «24 23 п».
+# Поэтому храним один канонический вид (utils.group_code) и запоминаем
+# псевдонимы, а при регистрации ищем по обоим.
+async def add_group_aliases(group_code_: str, aliases=()) -> int:
+    """Запоминает, как ещё пишут код группы. Возвращает число новых псевдонимов."""
+    canonical = group_code(group_code_)
+    if not canonical:
+        return 0
+    added = 0
+    for alias in aliases or ():
+        normalized = group_code(alias)
+        if not normalized or normalized == canonical:
+            continue
+        changed = await db.run(
+            "INSERT INTO group_aliases(alias, group_code) VALUES(?,?) "
+            "ON CONFLICT(alias) DO UPDATE SET group_code=excluded.group_code",
+            (normalized, canonical),
+        )
+        added += int(changed > 0)
+    return added
+
+
+async def group_aliases(group_code_: str = "") -> list[str]:
+    """Псевдонимы группы (или все псевдонимы, если код не задан)."""
+    if group_code_:
+        rows = await db.many("SELECT alias FROM group_aliases WHERE group_code=? ORDER BY alias",
+                             (group_code(group_code_),))
+    else:
+        rows = await db.many("SELECT alias FROM group_aliases ORDER BY alias")
+    return [as_str(row["alias"]) for row in rows]
+
+
+async def find_group(text: str) -> dict | None:
+    """Ищет группу по любому написанию кода. None - не нашли.
+
+    Порядок: точное совпадение канонического кода, затем псевдоним, затем
+    сравнение по цифрам (если код отличается одной лишь раскладкой букв).
+    """
+    wanted = group_code(text)
+    if not wanted:
+        return None
+    row = await db.one("SELECT group_code, title, active FROM groups WHERE group_code=?", (wanted,))
+    if row:
+        return _group_dict(row)
+    alias = await db.one("SELECT g.group_code, g.title, g.active FROM group_aliases a "
+                         "JOIN groups g ON g.group_code=a.group_code WHERE a.alias=?", (wanted,))
+    if alias:
+        return _group_dict(alias)
+    digits = group_digits(wanted)
+    if not digits:
+        return None
+    for candidate in await db.many("SELECT group_code, title, active FROM groups"):
+        if same_group(candidate["group_code"], wanted):
+            return _group_dict(candidate)
+    return None
+
+
+def _group_dict(row) -> dict:
+    return {"code": as_str(row["group_code"]), "title": as_str(row["title"]),
+            "active": bool(row["active"])}
+
+
+async def suggest_groups(text: str, limit: int = 8) -> list[dict]:
+    """Подсказки для регистрации: что человек мог иметь в виду.
+
+    Сначала группы, у которых совпадают цифры или начало кода, потом - по
+    похожему началу. Пустой текст даёт первые группы справочника.
+    """
+    rows = await db.many("SELECT group_code, title, active FROM groups ORDER BY group_code")
+    groups = [_group_dict(row) for row in rows]
+    wanted = group_code(text)
+    digits = group_digits(wanted)
+    if not digits:
+        return groups[:limit]
+
+    def score(group: dict) -> tuple:
+        code = group["code"]
+        if code == wanted:
+            return (0, 0, code)
+        if group_digits(code) == digits:
+            return (1, 0, code)
+        if code.startswith(wanted) or wanted.startswith(code):
+            return (2, 0, code)
+        shared = len(set(code) & set(wanted))
+        return (3, -shared, code)
+
+    return sorted(groups, key=score)[:limit]
+
+
+async def resolve_group(text: str) -> dict:
+    """Готовит ответ для регистрации: нашли группу или нет, и что предложить.
+
+    {"found": bool, "code": str, "title": str, "suggestions": [группы]}
+    """
+    group = await find_group(text)
+    if group:
+        return {"found": True, "code": group["code"], "title": group["title"], "suggestions": []}
+    suggestions = await suggest_groups(text)
+    return {"found": False, "code": group_code(text), "title": "", "suggestions": suggestions}
 
 
 async def known_groups(limit: int = 50) -> list[str]:

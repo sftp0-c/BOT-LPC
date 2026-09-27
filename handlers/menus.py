@@ -1,4 +1,4 @@
-"""Главное меню и точки входа (/start, home)."""
+﻿"""Главное меню и точки входа (/start, home)."""
 from datetime import datetime
 
 import config
@@ -7,11 +7,12 @@ import repository as repo
 import timetable as tt
 from handlers import schedules
 from handlers.admin import audit, command as admin_command, sysadmin_ids
-from handlers.common import DEFAULT_WELCOME, BACK, admin_of, api, can_broadcast, is_super, need_super, notify
+from handlers.common import BACK, DEFAULT_WELCOME, admin_of, api, can_broadcast, is_super, log, need_super, notify
 from handlers.registry import STATES, callback, state
 from max_api import btn, link_btn
 from timetable import WEEKDAYS_FULL
-from utils import as_str, norm_code, norm_group, short, to_int, valid_group
+from utils import (as_str, group_code, group_digits, norm_code, norm_group, short, to_int,
+                    valid_group)
 
 
 # ── входящие сообщения и команды ──────────────────────────────────────────────
@@ -59,8 +60,8 @@ def _valid_fio(value) -> bool:
 
 
 def _group_code(value) -> str:
-    value = "" if value is None else str(value).strip()
-    return norm_group(value)
+    """Единый вид кода группы (тот же, что в repository и справочнике)."""
+    return group_code("" if value is None else str(value).strip())
 
 
 def _row_value(row, key, default=""):
@@ -255,13 +256,29 @@ async def st_reg_name(x, text, p):
 
 @state("reg_group")
 async def st_reg_group(x, text, p):
-    group = norm_group(text)
-    if not group or not valid_group(group):
-        return await _ask_group(x, _clean_fio((p or {}).get("name", "")))
+    """Принимает код группы в любом написании и подсказывает похожие.
+
+    «24-23 (П)», «24-23П», «2423П» и «24 23 п» - это одна группа 24-23П.
+    """
     payload = p or {}
     fio = _clean_fio(payload.get("name", ""))
+    typed = as_str(text).strip()
+    if not typed:
+        return await _ask_group(x, fio)
     if not _valid_fio(fio):
         return await start(x)
+    if not group_code(typed):
+        return await _ask_group(x, fio, typed)
+
+    resolved = await repo.resolve_group(typed)
+    if not resolved["found"]:
+        # похожие коды = скорее всего опечатка, спрашиваем; иначе группа новая -
+        # заводим её, чтобы регистрация не вставала из-за того, что сис-админ
+        # ещё не завёл группу в справочнике
+        if _looks_like_typo(typed, resolved["suggestions"]):
+            return await _ask_group(x, fio, typed, resolved["suggestions"])
+        await _register_new_group(x, typed)
+    group = resolved["code"]
     if not await _group_allowed(group):
         return await _group_confirmation(x, group, fio)
     # последний шаг - сверить данные: опечатка в ФИО потом ищется по всему боту
@@ -276,6 +293,10 @@ async def st_reg_group(x, text, p):
 
 async def _finish_registration(x: str, fio: str, group: str):
     """Сохраняет студента после подтверждения. Единственное место записи в users."""
+    code = group_code(group)
+    if code and not await repo.find_group(code):
+        await repo.upsert_group(code, title=as_str(group).strip())
+    group = code or group
     if not await _group_allowed(group):
         return await _group_confirmation(x, group, fio)
     await _save_user(x, fio, group)
@@ -405,6 +426,19 @@ async def cb_registration_pick_group(x, arg):
     return await st_reg_group(x, as_str(arg), {"name": payload.get("name", payload.get("suggest", ""))})
 
 
+@callback("regnew")
+async def cb_registration_new_group(x, arg):
+    """Студент уверен в коде: заводим группу в справочнике и продолжаем."""
+    code = group_code(arg)
+    if not valid_group(code):
+        return await _ask_group(x, "")
+    await repo.upsert_group(code, title=as_str(arg).strip())
+    await repo.add_group_aliases(code, [as_str(arg)])
+    session = await db.get_state(x) or {}
+    name = as_str((session.get("payload") or {}).get("name", ""))
+    return await st_reg_group(x, code, {"name": name})
+
+
 @callback("regyes")
 async def cb_registration_confirm(x, arg):
     """Финальное подтверждение: одна опечатка в ФИО потом ищется по всему боту."""
@@ -414,18 +448,50 @@ async def cb_registration_confirm(x, arg):
                                       as_str(payload.get("group", "")))
 
 
-async def _ask_group(x: str, name: str = "") -> None:
-    """Просит группу и сразу предлагает выбрать из групп, которые уже заведены."""
-    rows = await repo.list_groups(active_only=True)
-    known: list[str] = []
-    for row in rows or []:
-        code = _group_from_row(row)  # строки бывают и с code, и с group_code
-        if code and code not in known:
-            known.append(code)
-    keyboard = [[btn(code, f"regpick:{code}")] for code in known[:8]]
+def _looks_like_typo(typed: str, suggestions) -> bool:
+    """Похоже ли, что человек ошибся в букве, а не назвал новую группу."""
+    digits = group_digits(typed)
+    if not digits:
+        return False
+    for group in suggestions or []:
+        code = group_code(group.get("code", ""))
+        if code == group_code(typed) or group_digits(code) == digits:
+            return True
+    return False
+
+
+async def _register_new_group(x: str, typed: str) -> None:
+    """Новая группа попадает в справочник сразу, сис-админы получают уведомление."""
+    code = group_code(typed)
+    if not code or not valid_group(code):
+        return
+    await repo.upsert_group(code, title=as_str(typed).strip())
+    await repo.add_group_aliases(code, [as_str(typed)])
+    await repo.log_action("bot", "группа добавлена при регистрации", f"{code} (написано: {typed})")
+    for admin_id in {str(value) for value in config.SYSADMIN_IDS} | {as_str(row["user_id"]) for row in await repo.all_admins()}:
+        await notify(admin_id, f"🆕 Новая группа в справочнике: {code} (написал студент: «{typed}»). "
+                              "Проверьте расписание во вкладке «Расписания».")
+    log.info("студент %s добавил группу %s (написал «%s»)", x, code, typed)
+
+
+async def _ask_group(x: str, name: str = "", typed: str = "", suggestions=None) -> None:
+    """Просит группу и показывает подходящие варианты вместо отказа.
+
+    Если человек уже что-то написал, но такой группы нет, - предлагаем похожие
+    коды: обычно это опечатка в одной букве или забытые скобки.
+    """
+    if suggestions is None:
+        suggestions = await repo.suggest_groups(typed)
+    keyboard = [[btn(group["code"], f"regpick:{group['code']}")]
+                for group in suggestions[:8] if group.get("active")]
+    if typed and not keyboard:
+        keyboard.append([btn(f"✍️ Создать группу {group_code(typed)}", f"regnew:{group_code(typed)}")])
     keyboard.append([btn("🔤 Введу код вручную", "regpick:")])
-    await api.send(x, f"{name}, укажите код группы. Часто вводят с ошибкой — сверьтесь: ИС-21, а не ИС21.",
-                   [*keyboard, *BACK])
+    head = (f"{name}, группа «{typed}» в списке не найдена. Похожее — проверьте и выберите:"
+            if typed else
+            f"{name}, укажите код группы. Можно выбрать кнопкой или написать: «24-23 (П)» "
+            f"и «2423П» - это одно и то же.")
+    await api.send(x, head, [*keyboard, *BACK])
 
 
 async def _guest_home(x: str):

@@ -27,6 +27,7 @@ import database as db
 import repository as repo
 import timetable as tt
 import charts
+import schedule_import
 from handlers import schedules
 from handlers.admin import STAFF_ROLES, approve_request, notify_schedule_subscribers, probe_pdf_url, reject_request
 from handlers.broadcast import run_broadcast
@@ -57,6 +58,7 @@ from utils import (
 log = logging.getLogger("panel")
 router = APIRouter(prefix="/panel", tags=["panel"])
 
+COLLEGE_SCHEDULE_PAGE = "https://collegelan.ru/studentam/raspisanie-zanyatiy.php"
 COOKIE = "lpc_panel"          # имя cookie-сессии
 LOG_LINES = 400               # сколько строк журнала показывать по умолчанию
 _flash = ""                   # одноразовое сообщение для следующей страницы
@@ -2073,6 +2075,13 @@ async def schedules_list(request: Request):
         "Сохранить (сразу разберём)", "btn-ok",
     )
     bells = await _lesson_times_form(request)
+    import_box = form(
+        request, "/panel/schedules/import",
+        ('<div class="full"><label>Адрес страницы с расписаниями или список ссылок на PDF '
+         '(по одной в строке)</label>'
+         f'<textarea name="source">{esc(COLLEGE_SCHEDULE_PAGE)}</textarea></div>'),
+        "⬇️ Импортировать с сайта", "btn-ok",
+    )
     body_all = f"""
 <div class="card"><h2>Расписания</h2>{table}
 <p class="small mut">Разобранных пар: {parsed_total}. Скачанные PDF лежат рядом с базой в папке
@@ -2084,6 +2093,11 @@ async def schedules_list(request: Request):
   затем разбираем файл в занятия — студенты увидят расписание текстом, а не ссылкой.</p></div>
   <div class="card" style="flex:1"><h2>Звонки (время пар)</h2>{bells}</div>
 </div>"""
+    body_all = f"""<div class="card"><h2>Импорт с сайта колледжа</h2>{import_box}
+<p class="small mut">Бот скачает указанные PDF, найдёт в них группы и заведёт их расписание
+вместе со справочником кодов. Дальше файлы обновляются на стороне колледжа: бот сам
+перечитывает PDF, когда файл меняется, - руками ничего обновлять не нужно.</p></div>
+{body_all}"""
     return page("Расписания", body_all, user, "/schedules")
 
 
@@ -2223,6 +2237,35 @@ async def schedules_times(request: Request):
     updated = await repo.reapply_lesson_times(times)
     await repo.log_action(actor, "звонки изменены", f"уроков: {size}, обновлено занятий: {updated}")
     flash(f"Звонки сохранены: {size} уроков. Время пересчитано у {updated} занятий.")
+    return redirect("/panel/schedules")
+
+
+@router.post("/schedules/import")
+async def schedules_import(request: Request):
+    """Импортирует расписания с сайта колледжа одной кнопкой.
+
+    На входе - адрес страницы со ссылками на PDF или список ссылок. Группы
+    заводятся автоматически, вместе со справочником вариантов написания кода.
+    """
+    actor = await require_form(request)
+    data = await request.form()
+    source = value(data, "source").strip() or COLLEGE_SCHEDULE_PAGE
+    try:
+        result = await schedule_import.import_sources(source)
+    except Exception as exc:  # noqa: BLE001 - причину покажем сис-админу
+        log.warning("импорт расписаний не получился: %s", exc)
+        flash(f"!Не удалось импортировать: {exc}")
+        return redirect("/panel/schedules")
+    if not result["urls"]:
+        flash("!Не нашлось ни одной ссылки на PDF. Проверьте адрес.")
+        return redirect("/panel/schedules")
+    await repo.log_action(actor, "импорт расписаний", f"файлов {result['files']}, групп {result['total']}")
+    log.info("панель: импорт расписаний - файлов %s, групп %s (сис-админ %s)",
+             result["files"], result["total"], actor)
+    parts = [f"Импортировано файлов: {result['files']}, групп: {result['total']}, занятий: {result['lessons']}"]
+    if result["problems"]:
+        parts.append("Проблемы: " + "; ".join(result["problems"][:5]))
+    flash(". ".join(parts))
     return redirect("/panel/schedules")
 
 

@@ -1441,7 +1441,10 @@ async def cb_schedules(x, arg):
     rows = await repo.schedule_groups()
     text = f"📅 Расписания групп: {len(rows)}" if rows else "📅 Расписаний пока нет."
     kb = [[btn(r["group_code"], f"sc:{r['group_code']}")] for r in rows]
-    await api.send(x, text, [*kb, [btn("➕ Добавить / изменить", "scadd")], *BACK])
+    await api.send(x, text, [*kb,
+                            [btn("➕ Добавить / изменить", "scadd"),
+                             btn("⬇️ Импорт с сайта", "scimport")],
+                            *BACK])
 
 
 @callback("sc")
@@ -1468,6 +1471,38 @@ async def cb_schedule_delete(x, group):
     await api.send(x, f"🗑 Расписание группы {code} удалено.")
     await audit(x, f"Сис-админ {x} удалил расписание группы {code}.")
     await cb_schedules(x, "")
+
+
+@callback("scimport")
+async def cb_schedule_import(x, arg):
+    """Импорт расписаний с сайта колледжа: одна команда вместо ручной настройки."""
+    if not await need_super(x):
+        return
+    await spawn(_run_import(x))
+    await api.send(x, "⬇️ Скачиваю расписания с сайта колледжа. Это займёт около минуты - "
+                      "напишу, когда будут готовы.")
+
+
+async def _run_import(x: str) -> None:
+    """Импорт в фоне, чтобы бот не молчал пока качаются PDF."""
+    from webpanel import COLLEGE_SCHEDULE_PAGE
+    import schedule_import
+
+    try:
+        result = await schedule_import.import_sources(COLLEGE_SCHEDULE_PAGE)
+    except Exception as exc:  # noqa: BLE001 - сис-админу нужна причина, а не трассировка
+        log.warning("импорт расписаний не удался: %s", exc)
+        return await notify(x, f"❌ Импорт не удался: {exc}")
+    if not result["urls"]:
+        return await notify(x, "❌ На странице колледжа не нашлось ссылок на PDF.")
+    await repo.log_action(x, "импорт расписаний", f"файлов {result['files']}, групп {result['total']}")
+    lines = [f"✅ Готово: файлов {result['files']}, групп {result['total']}, занятий {result['lessons']}"]
+    if result["groups"]:
+        lines += ["", "Группы: " + ", ".join(result["groups"])]
+    if result["problems"]:
+        lines += ["", "⚠️ " + "; ".join(result["problems"][:4])]
+    lines += ["", "Расписания обновляются сами, когда колледж меняет PDF."]
+    await notify(x, "\n".join(lines))
 
 
 @callback("scadd")

@@ -1,4 +1,4 @@
-"""Мелкие общие утилиты: приведение значений, константы предметной области."""
+﻿"""Мелкие общие утилиты: приведение значений, константы предметной области."""
 import asyncio
 import os
 import re
@@ -21,6 +21,44 @@ def to_int(value, default: int = 0) -> int:
 def norm_group(text: str) -> str:
     """Нормализация кода группы: схлопываем пробелы, приводим к верхнему регистру."""
     return " ".join(text.split()).upper()
+
+
+# ── коды групп college-lan: люди пишут их по-разному ──────────────────────────
+# На сайте колледжа группы выглядят как «24-23 (П)», «24-21(2С)», «26-29(П)».
+# Студент может написать «24-23П», «24-23 п», «2423П» или «24 23 (п)» - поэтому
+# приводим всё к одному виду: две цифры, дефис, цифры, суффикс без скобок.
+_GROUP_TAIL_RE = re.compile(r"^(\d{2})\s*[-–—_]?\s*(\d{1,3})\s*[([{]?\s*([0-9А-ЯЁA-Z][0-9А-ЯЁA-Z]{0,3})\s*[)\]}]?$")
+
+
+def group_code(text: str) -> str:
+    """Единый вид кода группы: «24-23 (П)» → «24-23П», «24-21(2С)» → «24-21-2С».
+
+    В коде остаются только цифры, дефис и буквы, поэтому он проходит GROUP_RE
+    и его можно набрать как с кириллицей, так и латиницей. Суффикс из одной
+    буквы приклеиваем без дефиса («24-23П»), из нескольких символов - через
+    дефис («24-21-2С»).
+    """
+    raw = " ".join(as_str(text).split()).upper().replace("Ё", "Е")
+    match = _GROUP_TAIL_RE.match(raw)
+    if match:
+        year, number, suffix = match.group(1), match.group(2), match.group(3)
+        base = f"{year}-{number}"
+        return base if not suffix else (f"{base}{suffix}" if len(suffix) == 1 else f"{base}-{suffix}")
+    return re.sub(r"[^А-ЯЁA-Z0-9.-]", "", raw).strip("-.")
+
+
+def group_digits(text: str) -> str:
+    """Только цифры кода - по ним находим группу, когда человек написал её небрежно."""
+    return re.sub(r"\D", "", as_str(text))
+
+
+def same_group(left: str, right: str) -> bool:
+    """Один и тот же ли код записан по-разному: сравниваем и буквы, и цифры."""
+    a, b = group_code(left), group_code(right)
+    if a and a == b:
+        return True
+    digits_a, digits_b = group_digits(a), group_digits(b)
+    return bool(digits_a) and digits_a == digits_b and len(a) == len(b)
 
 
 def short(text: str, n: int) -> str:
