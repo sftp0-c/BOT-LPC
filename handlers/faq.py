@@ -220,18 +220,23 @@ async def set_ask_enabled(value: bool) -> None:
 
 
 async def seed_defaults() -> int:
-    """Залить черновик college.DEFAULT_FAQ в таблицу faq. Возвращает, сколько записей в списке.
+    """Залить черновик college.DEFAULT_FAQ в таблицу faq. Возвращает, сколько реально добавилось.
 
     Существующие вопросы не трогает (сравнение по тексту вопроса), поэтому кнопку
-    можно нажимать повторно и правки сис-админа не затираются.
+    можно нажимать повторно и правки сис-админа не затираются. Повторный запуск
+    на заполненной таблице возвращает 0 - иначе в журнале при каждом старте
+    врётся «добавлено 17».
     """
+    added = 0
     for item in college.DEFAULT_FAQ:
-        await db.run(
+        # run_count возвращает, сколько строк запрос реально изменил: вставка
+        # с WHERE NOT EXISTS не сделает ничего, если такой вопрос уже есть
+        added += await db.run_count(
             "INSERT INTO faq(question, answer, keywords) SELECT ?, ?, ? "
             "WHERE NOT EXISTS(SELECT 1 FROM faq WHERE question=?)",
             (item["question"], item["answer"], item["keywords"], item["question"]),
         )
-    return len(college.DEFAULT_FAQ)
+    return added
 
 
 # ── меню и ответы ────────────────────────────────────────────────────────────

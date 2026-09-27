@@ -151,7 +151,7 @@ def test_unknown_data_is_left_blank_instead_of_invented():
 
 async def test_seed_defaults_fills_table_from_draft(api):
     added = await faq.seed_defaults()
-    assert added == len(college.DEFAULT_FAQ)
+    assert added == len(college.DEFAULT_FAQ)      # первый запуск - всё в таблице
     rows = await db.many("SELECT * FROM faq ORDER BY id")
     assert [row["question"] for row in rows] == [item["question"] for item in college.DEFAULT_FAQ]
     # наполнение идемпотентно: повторный запуск не плодит дубли
