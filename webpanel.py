@@ -141,105 +141,181 @@ async def require_form(request: Request) -> str:
 
 # ── HTML ──────────────────────────────────────────────────────────────────────
 STYLE = """
-:root{--bg:#eef1f6;--card:#fff;--line:#dde3ec;--ink:#1b2430;--mut:#67748a;--acc:#2563eb;
-      --acc-soft:#eff4ff;--bad:#d13b32;--ok:#17915b;--warn:#c98a12;--radius:12px;
-      --shadow:0 1px 2px rgba(16,24,40,.06),0 4px 12px rgba(16,24,40,.06)}
+:root{--bg:#f1f4f9;--card:#fff;--line:#e2e8f0;--line-2:#eef2f7;--ink:#16202c;--mut:#67748a;
+      --acc:#2563eb;--acc-2:#eff4ff;--bad:#d13b32;--bad-2:#fdeeed;--ok:#12855a;--ok-2:#e8f7ef;
+      --warn:#b57e0c;--warn-2:#fdf5e3;--r:14px;--r-sm:9px;
+      --sh:0 1px 2px rgba(16,24,40,.05),0 8px 24px -12px rgba(16,24,40,.18);
+      --sh-sm:0 1px 2px rgba(16,24,40,.06);--sb:250px}
 *{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--ink);
-     font:15px/1.55 -apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+     font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
      -webkit-font-smoothing:antialiased}
-a{color:var(--acc)}
-header{background:linear-gradient(135deg,#1e293b,#2b3b53);color:#fff;padding:14px 22px;
-      display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline}
-header h1{margin:0;font-size:17px;font-weight:650;letter-spacing:.2px}
-header .sub{color:#a8b8cc;font-size:13px;margin-left:auto}
-nav{display:flex;flex-wrap:wrap;gap:2px;background:#fff;border-bottom:1px solid var(--line);
-    padding:0 10px;position:sticky;top:0;z-index:5}
-nav a{color:#4a586c;padding:11px 13px;text-decoration:none;font-size:14px;font-weight:500;
-      border-bottom:2px solid transparent;border-radius:6px 6px 0 0}
-nav a:hover{background:var(--acc-soft);color:var(--acc)}
-nav a.on{color:var(--acc);border-bottom-color:var(--acc);font-weight:600}main{max-width:1180px;margin:22px auto;padding:0 18px 40px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
-      padding:18px 20px;margin-bottom:18px;box-shadow:var(--shadow)}
-.card h2{margin:0 0 14px;font-size:16px;font-weight:650}
-.card h2:first-child{margin-top:-2px}
-h3{margin:20px 0 8px;font-size:13px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px}
-table{width:100%;border-collapse:collapse;font-size:14px}
-th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top}
-th{color:var(--mut);font-weight:600;font-size:12.5px;text-transform:uppercase;letter-spacing:.3px;
-   white-space:nowrap;background:#fafbfd}
-tbody tr:hover{background:#f8fafd}
-tr:last-child td{border-bottom:0}
+a{color:var(--acc);text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* ── шапка ─────────────────────────────────────────────────────────────── */
+header{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:16px;
+       padding:10px 20px;background:linear-gradient(120deg,#1b2739,#2a3a52);color:#fff;
+       box-shadow:0 1px 0 rgba(255,255,255,.06),0 6px 20px -14px rgba(0,0,0,.6)}
+.brand{display:flex;align-items:center;gap:10px;min-width:var(--sb)}
+.brand .logo{font-size:22px}
+.brand b{display:block;font-size:15px;letter-spacing:.3px;line-height:1.2}
+.brand small{display:block;color:#a9b8cc;font-size:11.5px;letter-spacing:.4px;text-transform:uppercase}
+.gsearch{flex:1;display:flex;gap:6px;max-width:520px}
+.gsearch input{border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.10);color:#fff;
+      border-radius:999px;padding:7px 14px;font:inherit;font-size:13.5px}
+.gsearch input::placeholder{color:#9fb0c4}
+.gsearch input:focus{outline:0;background:rgba(255,255,255,.18);border-color:rgba(255,255,255,.4)}
+.gsearch button{border:0;border-radius:999px;background:rgba(255,255,255,.14);color:#fff;
+      padding:6px 12px;cursor:pointer;font-size:14px}
+.who{margin-left:auto;color:#b9c6d6;font-size:12.5px;white-space:nowrap}
+.who b{color:#fff}
+.who a{color:#8fb7ff}
+
+/* ── боковое меню ──────────────────────────────────────────────────────── */
+nav{position:fixed;top:56px;bottom:0;left:0;width:var(--sb);padding:14px 10px 24px;
+    background:var(--card);border-right:1px solid var(--line);overflow-y:auto;z-index:15}
+nav a{display:flex;align-items:center;gap:10px;padding:8px 10px;margin-bottom:2px;border-radius:var(--r-sm);
+      color:#41506a;font-size:14px;font-weight:500;text-decoration:none;transition:background .12s}
+nav a:hover{background:var(--acc-2);color:var(--acc);text-decoration:none}
+nav a.on{background:var(--acc);color:#fff;font-weight:600;box-shadow:var(--sh-sm)}
+.nav-ico{font-size:15px;width:20px;text-align:center;flex:0 0 20px}
+
+/* ── основная область ──────────────────────────────────────────────────── */
+main{margin-left:var(--sb);padding:22px 26px 48px;max-width:1280px}
+.page-title{margin:0 0 18px;font-size:22px;font-weight:700;letter-spacing:-.2px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+      padding:18px 20px;margin-bottom:18px;box-shadow:var(--sh)}
+.card h2{margin:0 0 14px;font-size:15px;font-weight:650;color:#20304a;
+      display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.card h2 .pill,.card h2 .btn{font-size:12px}
+h3{margin:20px 0 8px;font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.6px}
+
+/* ── таблицы ───────────────────────────────────────────────────────────── */
+table{width:100%;border-collapse:separate;border-spacing:0;font-size:14px}
+th,td{text-align:left;padding:10px 10px;border-bottom:1px solid var(--line-2);vertical-align:top}
+th{position:sticky;top:0;background:#f8fafc;color:var(--mut);font-weight:600;font-size:12px;
+   text-transform:uppercase;letter-spacing:.4px;white-space:nowrap;border-bottom:1px solid var(--line);
+   border-radius:var(--r-sm) var(--r-sm) 0 0}
+tbody tr:hover{background:#f7fafd}
+tbody tr:last-child td{border-bottom:0}
+td b{color:#16202c}
 .cards{display:flex;flex-wrap:wrap;gap:12px}
-.stat{flex:1 1 150px;background:linear-gradient(180deg,#fff,#f7f9fc);border:1px solid var(--line);
-      border-radius:var(--radius);padding:14px 16px}
-.stat b{display:block;font-size:26px;line-height:1.2;font-variant-numeric:tabular-nums}
-.stat span{color:var(--mut);font-size:13px}
-input,select,textarea{width:100%;padding:8px 10px;border:1px solid #cdd6e2;border-radius:8px;
-      font:inherit;background:#fff;color:var(--ink);transition:border-color .15s,box-shadow .15s}
+
+/* ── формы и кнопки ────────────────────────────────────────────────────── */
+input,select,textarea{width:100%;padding:9px 11px;border:1px solid #cfd8e6;border-radius:var(--r-sm);
+     font:inherit;background:#fff;color:var(--ink);transition:border-color .15s,box-shadow .15s}
+input:hover,select:hover,textarea:hover{border-color:#b9c6da}
 input:focus,select:focus,textarea:focus{outline:0;border-color:var(--acc);
-     box-shadow:0 0 0 3px rgba(37,99,235,.12)}
+     box-shadow:0 0 0 3px rgba(37,99,235,.14)}
 textarea{min-height:110px;resize:vertical}
-label{display:block;margin:8px 0 4px;font-size:12.5px;color:var(--mut);font-weight:500}
-button,.btn{display:inline-block;padding:8px 14px;border:0;border-radius:8px;background:var(--acc);
-     color:#fff;font:inherit;font-weight:500;cursor:pointer;text-decoration:none;
-     transition:filter .15s,transform .05s}
-button:hover,.btn:hover{filter:brightness(1.07)}
+label{display:block;margin:10px 0 4px;font-size:12.5px;color:var(--mut);font-weight:600;
+      letter-spacing:.2px}
+button,.btn{display:inline-flex;align-items:center;gap:6px;padding:9px 15px;border:0;border-radius:var(--r-sm);
+     background:var(--acc);color:#fff;font:inherit;font-weight:500;cursor:pointer;text-decoration:none;
+     transition:filter .15s,transform .05s,box-shadow .15s}
+button:hover,.btn:hover{filter:brightness(1.08);text-decoration:none;box-shadow:var(--sh-sm)}
 button:active,.btn:active{transform:translateY(1px)}
 .btn-grey{background:#64748b}.btn-bad{background:var(--bad)}.btn-ok{background:var(--ok)}
+.btn-sm{padding:5px 10px;font-size:12.5px;border-radius:7px}
 .grid{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end}
-.grid>*{flex:1 1 170px}
+.grid>*{flex:1 1 180px}
 .grid .full{flex:1 1 100%}
-.mut{color:var(--mut)}.small{font-size:13px}
-pre{background:#0f1723;color:#d3e2f0;padding:16px;border-radius:var(--radius);overflow:auto;
-     max-height:560px;font:12.5px/1.5 Consolas,Menlo,monospace;white-space:pre-wrap;word-break:break-all}
-.msg{padding:12px 14px;border-radius:10px;margin-bottom:14px;font-size:14px}
-.msg-ok{background:#e8f7ef;border:1px solid #b6e2c9;color:#12603d}
-.msg-bad{background:#fdeceb;border:1px solid #f3c3bf;color:#8f241d}
-.pill{display:inline-block;padding:2px 9px;border-radius:999px;background:#eef1f5;color:#41505f;
-      font-size:12px;font-weight:500}
-.pill-on{background:#e6f6ec;color:#14663c}.pill-off{background:#f1f2f4;color:#77808a}
 form.inline{display:inline}
-footer{color:var(--mut);font-size:12px;padding:12px 18px 28px;text-align:center}
+.mut{color:var(--mut)}.small{font-size:13px}
 
-/* ── диаграммы и карточки аналитики ─────────────────────────────────────── */
-.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
-.chart-box{margin:0;background:#fbfcfe;border:1px solid var(--line);border-radius:10px;padding:12px 14px}
-.chart-box figcaption{font-size:13px;font-weight:600;color:var(--mut);margin-bottom:8px}
+/* ── карточки-показатели ───────────────────────────────────────────────── */
+.stat{flex:1 1 160px;background:linear-gradient(180deg,#fff,#f8fafd);border:1px solid var(--line);
+     border-radius:var(--r);padding:14px 16px;box-shadow:var(--sh-sm)}
+.stat b{display:block;font-size:27px;line-height:1.15;font-variant-numeric:tabular-nums;letter-spacing:-.5px}
+.stat span{color:var(--mut);font-size:12.5px}
+.kpi{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:16px}
+.kpi div{flex:1 1 130px;background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+     padding:13px 15px;box-shadow:var(--sh-sm)}
+.kpi b{display:block;font-size:24px;line-height:1.2;font-variant-numeric:tabular-nums}
+.kpi span{color:var(--mut);font-size:12.5px}
+.kpi .warn b{color:var(--bad)}
+.kpi .good b{color:var(--ok)}
+
+/* ── сообщения и метки ─────────────────────────────────────────────────── */
+.msg{padding:12px 14px;border-radius:var(--r-sm);margin-bottom:16px;font-size:14px;font-weight:500}
+.msg-ok{background:var(--ok-2);border:1px solid #b6e2c9;color:#0f5f42}
+.msg-bad{background:var(--bad-2);border:1px solid #f2c0bc;color:#8b231c}
+.pill{display:inline-block;padding:2px 9px;border-radius:999px;background:#eef2f7;color:#41506a;
+      font-size:12px;font-weight:500;white-space:nowrap}
+.pill-on{background:var(--ok-2);color:#0f6b46}.pill-off{background:#f1f3f6;color:#77808a}
+
+/* ── графики ───────────────────────────────────────────────────────────── */
+.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px}
+.chart-box{margin:0;background:linear-gradient(180deg,#fff,#fafcff);border:1px solid var(--line);
+      border-radius:var(--r);padding:13px 15px}
+.chart-box figcaption{font-size:12.5px;font-weight:600;color:var(--mut);margin-bottom:8px}
 .chart{width:100%;height:auto;display:block}
-.chart .grid-line{stroke:#e6eaf0;stroke-width:1}
+.chart .grid-line{stroke:#e9eef5;stroke-width:1}
 .chart .axis{font-size:10px;fill:#8b95a3}
 .donut{width:150px;height:150px;flex:0 0 150px}
 .donut-total{font-size:22px;font-weight:700;fill:var(--ink)}
 .donut-sub{font-size:11px;fill:var(--mut)}
-.donut-wrap{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.donut-wrap{display:flex;gap:16px;align-items:center;flex-wrap:wrap}
 .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mut);margin-top:6px}
 .legend span{display:flex;align-items:center;gap:5px}
-.legend i{width:10px;height:10px;border-radius:2px;display:inline-block}
+.legend i,.legend-list i{width:10px;height:10px;border-radius:3px;display:inline-block}
 .legend-list{list-style:none;margin:0;padding:0;flex:1 1 130px;font-size:13px}
-.legend-list li{display:flex;align-items:center;gap:7px;padding:3px 0}
-.legend-list i{width:10px;height:10px;border-radius:2px;flex:0 0 10px}
+.legend-list li{display:flex;align-items:center;gap:8px;padding:3px 0}
 .legend-list span{flex:1;color:#41505f}
 .legend-list b{font-variant-numeric:tabular-nums}
 .hbar-list{list-style:none;margin:0;padding:0;font-size:13px}
 .hbar-list li{display:flex;align-items:center;gap:8px;padding:3px 0}
 .hbar-label{flex:0 0 34%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#41505f}
-.hbar-track{flex:1;background:#eef1f5;border-radius:4px;height:12px;overflow:hidden}
-.hbar-track i{display:block;height:100%;border-radius:4px}
-.hbar-list b{flex:0 0 34px;text-align:right;font-variant-numeric:tabular-nums}
-.chart-empty{color:#98a2b3;font-size:13px;padding:26px 0;text-align:center}
+.hbar-track{flex:1;background:#eef2f7;border-radius:5px;height:12px;overflow:hidden}
+.hbar-track i{display:block;height:100%;border-radius:5px}
+.hbar-list b{flex:0 0 36px;text-align:right;font-variant-numeric:tabular-nums}
+.chart-empty{color:#9aa5b4;font-size:13px;padding:28px 0;text-align:center}
 .spark svg{height:46px}
-.kpi{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px}
-.kpi div{flex:1 1 120px;background:linear-gradient(180deg,#fff,#f7f9fc);border:1px solid var(--line);
-     border-radius:10px;padding:12px 14px}
-.kpi b{display:block;font-size:26px;line-height:1.15;font-variant-numeric:tabular-nums}
-.kpi span{color:var(--mut);font-size:12.5px}
-.kpi .warn b{color:#c0392b}
-.kpi .good b{color:#1d8a4e}
-@media (max-width:640px){
-    main{padding:0 10px}
-    .donut-wrap{flex-direction:column;align-items:flex-start}
-    .hbar-label{flex-basis:45%}
+
+/* ── журнал ────────────────────────────────────────────────────────────── */
+pre{background:#0e1723;color:#d6e4f2;padding:16px;border-radius:var(--r);overflow:auto;
+     max-height:560px;font:12.5px/1.55 Consolas,Menlo,monospace;white-space:pre-wrap;word-break:break-all}
+footer{color:var(--mut);font-size:12px;padding:14px 26px 30px;margin-left:var(--sb)}
+
+/* ── тёмная тема: включается системой, кнопки не нужно ─────────────────── */
+@media (prefers-color-scheme:dark){
+ :root{--bg:#0e1622;--card:#16202e;--line:#24314a;--line-2:#1e2b3d;--ink:#e6edf6;--mut:#93a3b8;
+       --acc:#5b93ff;--acc-2:#1b2942;--bad-2:#2c1a1a;--ok-2:#122c22;--sh:0 8px 24px -14px rgba(0,0,0,.8);
+       --sh-sm:0 1px 2px rgba(0,0,0,.4)}
+ header{background:linear-gradient(120deg,#0b1220,#16233a)}
+ nav{background:#111a27}
+ nav a{color:#b7c4d6}nav a:hover{background:#1b2740;color:#fff}
+ th{background:#141f2e}
+ tbody tr:hover{background:#1a2536}
+ .stat,.kpi div,.chart-box{background:linear-gradient(180deg,#18242f,#141e2b)}
+ .chart .grid-line{stroke:#26344a}.hbar-track{background:#1e2b3d}
+ .btn-grey{background:#41506a}.pill{background:#1e2b3d;color:#c3cfe0}
+ input,select,textarea{background:#101a27;border-color:#2b3a52;color:#e6edf6}
+ td b{color:#e6edf6}.card h2{color:#dbe6f5}
+}
+
+/* ── телефон и планшет ─────────────────────────────────────────────────── */
+@media (max-width:1000px){
+  :root{--sb:0px}
+  header{flex-wrap:wrap;padding:10px 14px;gap:10px}
+  .brand{min-width:0}
+  .gsearch{order:3;flex:1 1 100%;max-width:none}
+  nav{position:static;top:0;width:auto;height:auto;display:flex;flex-wrap:wrap;gap:6px;
+      border-right:0;border-bottom:1px solid var(--line);padding:10px 12px}
+  nav a{margin:0;padding:6px 10px;font-size:13px}
+  .nav-txt{white-space:nowrap}
+  main{margin-left:0;padding:16px 12px 40px}
+  footer{margin-left:0;padding:12px}
+  .page-title{font-size:19px}
+  .stat,.kpi div{flex:1 1 44%}
+  .charts{grid-template-columns:1fr}
+}
+@media print{
+  header,nav,footer,.gsearch{display:none}
+  main{margin:0;padding:0}
+  .card{break-inside:avoid;box-shadow:none}
 }
 """
 
@@ -252,6 +328,9 @@ def flag(value) -> bool:
     return as_str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
+# ── оболочка страницы ─────────────────────────────────────────────────────────
+# Один и тот же <nav> на всех страницах: на широком экране CSS превращает его
+# в боковое меню, на узком - в верхнюю ленту. Поэтому разметка не дублируется.
 TABS = (
     ("/", "Обзор"),
     ("/tickets", "Обращения"),
@@ -270,11 +349,20 @@ TABS = (
     ("/logs", "Журнал и тесты"),
 )
 
+NAV_ICONS = {
+    "/": "📊", "/tickets": "📬", "/analytics": "📈", "/people": "👥", "/nostaff": "👤",
+    "/students": "🎓", "/staff": "👔", "/access": "🗝", "/templates": "⚡", "/groups": "🗂",
+    "/schedules": "📅", "/broadcasts": "📢", "/database": "🗄", "/settings": "⚙️", "/logs": "🧪",
+}
+
 
 def page(title: str, body: str, user: str = "", tab: str = "") -> str:
     global _flash
     nav = "".join(
-        f'<a href="/panel{path}" class="{"on" if path == tab else ""}">{esc(name)}</a>' for path, name in TABS
+        f'<a href="/panel{path}" class="{"on" if path == tab else ""}">'
+        f'<span class="nav-ico" aria-hidden="true">{NAV_ICONS.get(path, "•")}</span>'
+        f'<span class="nav-txt">{esc(name)}</span></a>'
+        for path, name in TABS
     )
     notice, _flash = _flash, ""
     kind = "bad" if notice.startswith("!") else "ok"
@@ -283,12 +371,51 @@ def page(title: str, body: str, user: str = "", tab: str = "") -> str:
         f"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{esc(title)} — панель сис-админа</title><style>{STYLE}</style></head><body>
-<header><h1>🏫 BOT-LPC — панель сис-админа</h1>
-<div class="sub">вошёл как {esc(user) or '—'} · <a style="color:#9fb0c3" href="/panel/logout">выйти</a></div></header>
-<nav>{nav}</nav><main>{banner}{body}</main>
-<footer>Данные те же, что и в боте: изменения применяются сразу. MAX ID: {esc(user)}</footer>
+<header>
+  <div class="brand"><span class="logo">🏫</span><span>
+    <b>BOT-LPC</b><small>панель сис-админа</small></span></div>
+  <form class="gsearch" method="get" action="/panel/search">
+    <input name="q" value="" placeholder="Поиск: обращение, человек, сотрудник, группа…" autocomplete="off">
+    <button type="submit">🔍</button>
+  </form>
+  <div class="who">вошёл как <b>{esc(user) or '—'}</b> · <a href="/panel/logout">выйти</a></div>
+</header>
+<nav>{nav}</nav>
+<main><h1 class="page-title">{esc(title)}</h1>{banner}{body}</main>
+<footer>Данные те же, что и в боте: изменения применяются сразу · MAX ID {esc(user)}</footer>
 </body></html>"""
     )
+
+
+@router.get("/search")
+async def global_search(request: Request, q: str = ""):
+    """Общий поиск по панели: обращения, люди и сотрудники одним запросом."""
+    user = await require_user(request)
+    needle = as_str(q).strip()
+    if len(needle) < 2:
+        return page("Поиск", '<div class="card msg-bad">Введите хотя бы два символа.</div>', user, "/")
+    low = needle.lower()
+    tickets = [row for row in await repo.admin_tickets(None, 300)
+               if low in as_str(row["text_content"]).lower()
+               or low in as_str(row["topic"]).lower()
+               or low in as_str(row["student_id"])]
+    people = await repo.people(q=needle, limit=30)
+    staff = [row for row in await repo.list_staff()
+             if low in " ".join([as_str(row["user_id"]), as_str(row["full_name"]),
+                                 as_str(row["position"]), as_str(row["department"])]).lower()]
+    staff_rows = "".join(
+        f'<tr><td><a href="/panel/staff/{esc(row["user_id"])}"><b>{esc(row["full_name"])}</b></a>'
+        f'<div class="small mut">ID {esc(row["user_id"])}</div></td>'
+        f'<td>{esc(as_str(row["position"]) or "—")}</td>'
+        f'<td>{esc(as_str(row["department"]) or "—")}</td></tr>'
+        for row in staff
+    ) or "<tr><td colspan='3' class='mut'>Никого не нашлось</td></tr>"
+    staff_table = f"<table><tr><th>Сотрудник</th><th>Должность</th><th>Отдел</th></tr>{staff_rows}</table>"
+    body = (f'<p class="small mut">По запросу «{esc(needle)}»</p>'
+            f"<div class=\"card\"><h2>📬 Обращения: {len(tickets)}</h2>{_tickets_table(tickets[:20])}</div>"
+            f"<div class=\"card\"><h2>👥 Пользователи: {len(people)}</h2>{_people_table(people)}</div>"
+            f"<div class=\"card\"><h2>👔 Сотрудники: {len(staff)}</h2>{staff_table}</div>")
+    return page("Поиск", body, user, "/")
 
 
 def flash(message: str) -> None:
