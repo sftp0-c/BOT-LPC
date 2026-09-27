@@ -1,4 +1,4 @@
-"""Веб-панель сис-админа: /panel — те же данные, что и в боте, но редактируются мышью.
+﻿"""Веб-панель сис-админа: /panel — те же данные, что и в боте, но редактируются мышью.
 
 Панель живёт в том же процессе, что и бот (FastAPI), поэтому все изменения сразу
 видны боту и в MAX. Вход — по MAX ID сис-админа и паролю WEB_PANEL_PASSWORD из .env;
@@ -674,6 +674,95 @@ async def templates_delete(request: Request, template_id: int):
     return redirect("/panel/templates")
 
 
+@router.get("/tickets.csv")
+async def tickets_csv(request: Request, status: str = "", category: str = ""):
+    """Выгрузка обращений в CSV: для отчётов и разборов вне панели."""
+    await require_user(request)  # CSRF-токен не нужен: это скачивание
+    rows = await repo.admin_tickets(None, 1000)
+    if status:
+        rows = [r for r in rows if as_str(r["status"]) == status]
+    if category:
+        rows = [r for r in rows if as_str(r["category"]) == category]
+    # имена подставляем словарём: в строках обращений их нет, а десятки
+    # отдельных запросов на каждую строку были бы лишней нагрузкой
+    students = {as_str(u["user_id"]): as_str(u["full_name"]) for u in await repo.list_users(2000)}
+    staff_names = {as_str(a["user_id"]): as_str(a["full_name"]) for a in await repo.all_admins()}
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, delimiter=";", quoting=csv.QUOTE_MINIMAL)
+    writer.writerow(["№", "Создано", "Статус", "Раздел", "Тема", "Студент", "ID студента",
+                     "Сотрудник", "ID сотрудника", "Текст"])
+    for row in rows:
+        student_id = as_str(row["student_id"])
+        admin_id = as_str(row["target_admin_id"])
+        writer.writerow([
+            row["ticket_id"], as_str(row["created_at"]),
+            STATUS.get(as_str(row["status"]), as_str(row["status"])),
+            STAFF_CATS.get(as_str(row["category"]), as_str(row["category"])),
+            as_str(row["topic"]), students.get(student_id, student_id), student_id,
+            staff_names.get(admin_id, admin_id), admin_id,
+            as_str(row["text_content"])[:1000],
+        ])
+    return Response(
+        "\ufeff" + buffer.getvalue(),   # BOM - чтобы Excel открыл в UTF-8
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="tickets.csv"'},
+    )
+
+
+@router.get("/staff/{user_id}")
+async def staff_card(request: Request, user_id: str):
+    """Всё о сотруднике на одном экране: карточка, нагрузка, последние обращения."""
+    user = await require_user(request)
+    admin = await repo.get_admin(user_id)
+    if not admin:
+        return page("Сотрудник", '<div class="card msg-bad">Сотрудник не найден.</div>', user, "/staff")
+    uid = as_str(admin["user_id"])
+    load = (await repo.staff_activity(90)).get(uid, {})
+    speed = await repo.response_speed(90)
+    tickets = [row for row in await repo.admin_tickets(None, 500) if as_str(row["target_admin_id"]) == uid]
+    recent = tickets[:12]
+    last_reply = load.get("last_reply")
+    cards = f"""
+<div class="kpi">
+  <div><b>{load.get('tickets', 0)}</b><span>обращений за 90 дней</span></div>
+  <div class="warn"><b>{load.get('open', 0)}</b><span>открытых</span></div>
+  <div class="good"><b>{esc(minutes_text(load.get('avg_minutes')))}</b><span>среднее время ответа</span></div>
+  <div><b>{esc(fmt_when(last_reply) if last_reply else '—')}</b><span>последний ответ</span></div>
+  <div><b>{len(tickets)}</b><span>всего обращений</span></div>
+</div>"""
+    recent_rows = "".join(
+        f"<tr><td><a href='/panel/tickets/{esc(row['ticket_id'])}'>№{esc(row['ticket_id'])}</a></td>"
+        f"<td>{esc(STATUS.get(as_str(row['status']), as_str(row['status'])))}</td>"
+        f"<td>{esc(STAFF_CATS.get(as_str(row['category']), as_str(row['category'])))}</td>"
+        f"<td>{esc(as_str(row['topic']) or '—')}</td>"
+        f"<td class='small mut'>{esc(fmt_when(row['created_at']))}</td></tr>"
+        for row in recent
+    ) or "<tr><td class='mut'>Обращений не было</td></tr>"
+    super_row = is_sysadmin_role(as_str(admin["role_type"]))
+    body = f"""
+{cards}
+<div class="card"><h2>{esc(admin['full_name'])}</h2>
+<table>
+<tr><th>MAX ID</th><td>{esc(uid)}</td></tr>
+<tr><th>Роль в боте</th><td>{"сис-админ" if super_row else "сотрудник"}</td></tr>
+<tr><th>Должность</th><td>{esc(as_str(admin['position']) or STAFF_ROLES.get(admin['role'], '—'))}</td></tr>
+<tr><th>Отдел</th><td>{esc(as_str(admin['department']) or '—')}</td></tr>
+<tr><th>Кабинет</th><td>{esc(as_str(admin['office']) or '—')}</td></tr>
+<tr><th>Обращения</th><td>{esc(STAFF_CATS.get(admin['ticket_category'], as_str(admin['ticket_category'])))}</td></tr>
+<tr><th>Рассылка</th><td>{"разрешена" if flag(admin["can_broadcast"]) else "запрещена"}</td></tr>
+<tr><th>Профиль MAX</th><td>{profile_cell((await repo.user_card(uid) or {}).get("username", ""))}</td></tr>
+</table>
+<div style="margin-top:12px">
+<a class="btn" href="/panel/staff?q={esc(uid)}">Все сотрудники</a>
+<a class="btn-grey btn" href="/panel/analytics">К аналитике</a>
+</div></div>
+<div class="card"><h2>Последние обращения</h2>
+<table><tr><th>№</th><th>Статус</th><th>Раздел</th><th>Тема</th><th>Создано</th></tr>{recent_rows}</table></div>
+<p class="small mut">Скорость ответа по боту в целом: {esc(minutes_text(speed['avg_minutes']))} в среднем,
+{esc(minutes_text(speed['worst_minutes']))} худший случай, отвечено {speed['share']}% за 90 дней.</p>"""
+    return page(f"Сотрудник {as_str(admin['full_name'])}", body, user, "/staff")
+
+
 # ── аналитика ─────────────────────────────────────────────────────────────────
 DASH_PERIODS = (7, 30, 90)
 
@@ -782,7 +871,8 @@ async def tickets_list(request: Request, status: str = "", q: str = "", category
 <div><label>Поиск по тексту или ID</label><input name="q" value="{esc(q)}"></div>
 <div><button>Найти</button></div></form>
 <p class="small mut"><a class="btn{'-grey' if scope != 'waiting' else ''}" href="/panel/tickets?status={esc(status)}&category={esc(category)}&q={esc(q)}{'&scope=waiting' if scope != 'waiting' else ''}">🔔 Только ждут ответа: {waiting}</a></p>"""
-    summary = " · ".join(f"{STATUS.get(c, c)}: {counts.get(c, 0)}" for c in STATUS)
+    summary = (" · ".join(f"{STATUS.get(c, c)}: {counts.get(c, 0)}" for c in STATUS)
+               + ' · <a class="btn btn-grey btn-sm" href="/panel/tickets.csv">⬇️ Выгрузить CSV</a>')
     return page("Обращения", f'<div class="card"><p class="small mut">{esc(summary)}</p>{filters}'
                  f"{_tickets_table(rows)}<p class=\"small mut\">Показано обращений: {len(rows)}</p></div>",
                  user, "/tickets")
@@ -2468,3 +2558,4 @@ async def api_health(request: Request):
         "sysadmins": len(config.SYSADMIN_IDS),
         "missing_schema": missing,
     })
+

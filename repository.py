@@ -358,6 +358,42 @@ async def log_ticket_event(ticket_id: int, actor_id: str, event: str, detail: st
     )
 
 
+async def add_internal_note(ticket_id: int, actor_id: str, text: str) -> int:
+    """Внутренняя заметка по обращению: её видит только сотрудник, студент - нет.
+
+    Хранится обычным событием, поэтому отдельная таблица не нужна: в истории
+    заметка видна как строка, но не отправляется в MAX.
+    """
+    return await db.run(
+        "INSERT INTO ticket_events(ticket_id, actor_id, event, detail) VALUES(?,?,'note',?)",
+        (int(ticket_id), as_str(actor_id).strip(), as_str(text).strip()[:200]),
+    )
+
+
+async def forward_ticket(ticket_id: int, new_admin_id: str, actor_id: str,
+                         comment: str = "") -> tuple[bool, str]:
+    """Передаёт обращение другому сотруднику. Возвращает (получилось, сообщение).
+
+    Студенту отправитель не меняется - он по-прежнему автор, но его сотрудник
+    теперь другой. Статус сохраняется: если обращение уже брали в работу,
+    новый сотрудник видит, что оно в работе.
+    """
+    admin = await get_admin(new_admin_id)
+    if not admin:
+        return False, "Сотрудник не найден"
+    if is_sysadmin_role(as_str(admin["role_type"])):
+        return False, "Сис-админ не принимает обращения - выдайте ему роль сотрудника"
+    changed = await db.run_count(   # run_count возвращает число строк, run - lastrowid
+        "UPDATE tickets SET target_admin_id=?, updated_at=datetime('now') WHERE ticket_id=?",
+        (as_str(new_admin_id), int(ticket_id)),
+    )
+    if not changed:
+        return False, f"Обращение №{ticket_id} не найдено"
+    detail = f"{new_admin_id}" + (f": {comment}" if comment else "")
+    await log_ticket_event(ticket_id, actor_id, "forward", detail)
+    return True, f"Обращение №{ticket_id} теперь у {admin['full_name']}"
+
+
 async def ticket_events(ticket_id: int, limit: int = 50) -> list:
     """Лента событий обращения: кто создал, отвечал, менял статус — с именами."""
     return await db.many(

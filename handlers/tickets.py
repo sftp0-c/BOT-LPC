@@ -131,6 +131,8 @@ def ticket_kb(t, staff_side: bool, can_delete: bool = False):
         tail.append(btn("🗑 Удалить", f"tdel:{tid}"))
     if staff_side:
         tail.insert(0, btn("⚡ Шаблоны", f"tpl:{tid}"))
+        tail.insert(1, btn("📝 Заметка", f"note:{tid}"))
+        tail.insert(2, btn("↪️ Переслать", f"fwd:{tid}"))
     return [*rows, tail]
 
 
@@ -173,7 +175,8 @@ async def cb_ticket_delete_yes(x, arg):
 
 MESSAGE_LABEL = {"student": "уточнение студента", "staff": "ответ сотрудника"}
 EVENT_LABEL = {"status": "статус", "ready": "документ готов", "created": "создано",
-               "message_student": "сообщение студента", "message_staff": "ответ сотрудника"}
+               "message_student": "сообщение студента", "message_staff": "ответ сотрудника",
+               "note": "заметка (внутренняя)", "forward": "передано другому сотруднику"}
 
 
 def message_author(m) -> str:
@@ -194,6 +197,10 @@ def event_text(row) -> str:
         return f"статус: {STATUS.get(detail, detail)}"
     if event == "ready":
         return f"документ готов: {detail}" if detail else "документ готов"
+    if event == "note":
+        return f"заметка: {detail}" if detail else "заметка"
+    if event == "forward":
+        return f"передано сотруднику {detail}" if detail else "передано другому сотруднику"
     label = EVENT_LABEL.get(event, event)
     return f"{label}: {detail}" if detail else label
 
@@ -219,8 +226,10 @@ async def ticket_text(t, staff_side: bool) -> str:
         label = "автор обращения" if role == "student" and index == 0 else MESSAGE_LABEL[role]
         lines.append(f"{icon} {message_author(m)} · {label} · {fmt_when(m['created_at'])}:")
         lines.append(f"   {short(m['text'], 700)}")
+    # заметки и передачи - внутренние: студенту их показывать нельзя
+    visible = ("status", "ready", "note", "forward") if staff_side else ("status", "ready")
     history = [e for e in await repo.ticket_events(t["ticket_id"], 20)
-               if _row_value(e, "event") in ("status", "ready")]
+               if _row_value(e, "event") in visible]
     if history:
         lines.append("")
         lines.append("📌 " + "; ".join(f"{fmt_when(e['created_at'])} — {event_text(e)}" for e in reversed(history[-4:])))
@@ -443,6 +452,114 @@ async def cb_reply(x, arg):
         return await api.send(x, "Обращение закрыто. Создайте новое через меню.", BACK)
     await db.set_state(x, "reply", {"tid": t["ticket_id"]})
     await api.send(x, f"Введите сообщение по обращению №{t['ticket_id']} (или /cancel).")
+
+
+@callback("note")
+async def cb_internal_note(x, arg):
+    """Внутренняя заметка: её видит команда, студент - нет."""
+    t, staff_side = await load_ticket(x, to_int(arg))
+    if not t or not staff_side:
+        return await api.send(x, "Заметки доступны сотруднику по его обращению.", BACK)
+    await db.set_state(x, "ticket_note", {"tid": t["ticket_id"]})
+    await api.send(x, f"Заметка по обращению №{t['ticket_id']} (её увидит только команда).\n"
+                      "Напишите текст или /cancel.")
+
+
+@state("ticket_note")
+async def st_internal_note(x, text, p):
+    t, staff_side = await load_ticket(x, to_int(p.get("tid")))
+    if not t or not staff_side:
+        await db.clear_state(x)
+        return await api.send(x, "Обращение недоступно.", BACK)
+    note = as_str(text).strip()[:200]
+    await db.clear_state(x)
+    if not note:
+        return await api.send(x, "Пустую заметку не сохраняем.", [[btn("↩️ К обращению", f"t:{t['ticket_id']}")]])
+    await repo.add_internal_note(t["ticket_id"], x, note)
+    await send_ticket(x, t, True)
+
+
+@callback("fwd")
+async def cb_forward(x, arg):
+    """Передача обращения другому сотруднику: пригодится, когда вопрос не его."""
+    t, staff_side = await load_ticket(x, to_int(arg))
+    if not t or not staff_side:
+        return await api.send(x, "Обращение не найдено.", BACK)
+    current = as_str(t["target_admin_id"])
+    rows = [row for row in await repo.staff_for_category(as_str(t["category"]), limit=50)
+            if as_str(row["user_id"]) != current]
+    if not rows:
+        return await api.send(
+            x, "Передавать некому: в этом разделе других сотрудников нет.",
+            [[btn("↩️ К обращению", f"t:{t['ticket_id']}")]])
+    keyboard = [[btn(short(staff_pick_label(row), 60), f"fwdto:{t['ticket_id']}:{row['user_id']}")]
+                for row in rows[:10]]
+    await api.send(x, "Кому передать обращение? Автор и переписка останутся прежними.",
+                   [*keyboard, [btn("↩️ К обращению", f"t:{t['ticket_id']}")]])
+
+
+@callback("fwdto")
+async def cb_forward_to(x, arg):
+    """Подтверждение передачи и уведомление нового исполнителя."""
+    tid, _, target = as_str(arg).partition(":")
+    t, staff_side = await load_ticket(x, to_int(tid))
+    if not t or not staff_side:
+        return await api.send(x, "Обращение не найдено.", BACK)
+    if not target.isdigit():
+        return await api.send(x, "Сотрудник не найден.", BACK)
+    await db.set_state(x, "forward_comment", {"tid": t["ticket_id"], "target": target})
+    a = await admin_of(target)
+    await api.send(
+        x,
+        f"Передать обращение №{t['ticket_id']} сотруднику {a['full_name'] if a else target}?\n"
+        "Можно добавить комментарий для него или передать сразу.",
+        [[btn("↪️ Передать", f"fwdok:{t['ticket_id']}:{target}"),
+          btn("💬 С комментарием", f"fwdok:{t['ticket_id']}:{target}:ask")],
+         [btn("✖️ Отмена", f"t:{t['ticket_id']}")]],
+    )
+
+
+@state("forward_comment")
+async def st_forward_comment(x, text, p):
+    """Комментарий при передаче сохраняется как заметка - её увидит новый сотрудник."""
+    t, staff_side = await load_ticket(x, to_int(p.get("tid")))
+    if not t or not staff_side:
+        await db.clear_state(x)
+        return await api.send(x, "Обращение недоступно.", BACK)
+    target = as_str(p.get("target", ""))
+    comment = as_str(text).strip()[:200]
+    await db.clear_state(x)
+    return await _do_forward(x, t, target, comment)
+
+
+@callback("fwdok")
+async def cb_forward_ok(x, arg):
+    """Передача без комментария."""
+    tid, _, rest = as_str(arg).partition(":")
+    target, _, _ask = rest.partition(":")
+    t, staff_side = await load_ticket(x, to_int(tid))
+    if not t or not staff_side:
+        return await api.send(x, "Обращение не найдено.", BACK)
+    await db.clear_state(x)
+    return await _do_forward(x, t, target, "")
+
+
+async def _do_forward(x, t, target: str, comment: str) -> None:
+    """Общая часть передачи: меняем исполнителя, пишем историю, уведомляем нового."""
+    done, message = await repo.forward_ticket(t["ticket_id"], target, x, comment)
+    if not done:
+        await db.clear_state(x)
+        return await api.send(x, f"❌ {message}", [[btn("↩️ К обращению", f"t:{t['ticket_id']}")]])
+    if comment:
+        await repo.add_internal_note(t["ticket_id"], x, f"Передано: {comment}")
+    fresh = await repo.get_ticket(t["ticket_id"])
+    text = (f"↪️ Вам передали обращение №{t['ticket_id']}\n{CATS.get(fresh['category'], '')}\n"
+            + (f"Комментарий: {comment}\n" if comment else "")
+            + f"\n{short(fresh['text_content'], 700)}")
+    delivered = await notify(target, text, ticket_kb(fresh, True, is_super(await admin_of(x))))
+    await repo.log_action(x, "обращение передано", f"№{t['ticket_id']} → ID {target}")
+    tail = "" if delivered else "\n⚠️ Новый сотрудник ещё не запускал бота - напишите ему лично."
+    await api.send(x, f"✅ {message}.{tail}", [[btn("👤 Открыть обращение", f"t:{t['ticket_id']}")]])
 
 
 @callback("tpl")
