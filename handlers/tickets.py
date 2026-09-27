@@ -11,6 +11,7 @@ from handlers import demo
 from handlers.common import BACK, admin_of, api, is_super, log, notify
 from handlers.menus import need_author
 from handlers.registry import callback, state
+import max_api
 from max_api import btn, link_btn
 from utils import (
     ACCEPT_ON_REPLY,
@@ -73,9 +74,13 @@ def role_label(person) -> str:
 
 
 def staff_pick_label(person) -> str:
-    name = _row_value(person, "full_name")
-    role = role_label(person)
-    return f"{name} · {role}" if name and role else name
+    """Подпись кнопки выбора сотрудника - только имя.
+
+    Должность в кнопку не влезает: MAX рисует подпись в одну строку и обрезает
+    многоточием, а «Петрова Мария Сергее…» не отличить ни от кого. Должность
+    показывается текстом над списком, там места хватает.
+    """
+    return short(_row_value(person, "full_name"), max_api.BUTTON_TEXT)
 
 
 async def ticket_people(t) -> dict:
@@ -140,7 +145,7 @@ def ticket_kb(t, staff_side: bool, can_delete: bool = False):
         tail.insert(1, btn("📝 Заметка", f"note:{tid}"))
         tail.insert(2, btn("↪️ Переслать", f"fwd:{tid}"))
         if as_str(t.get("pickup_place")).strip() != PICKUP_PLACE or status not in ("ready", "completed"):
-            tail.append(btn(f"✅ Готово ({PICKUP_PLACE})", f"tdready:{tid}"))
+            tail.append(btn(f"✅ Готово · {PICKUP_PLACE}", f"tdready:{tid}"))
     return [*rows, tail]
 
 
@@ -273,6 +278,18 @@ async def send_ticket(x: str, t, staff_side: bool):
     await api.send(x, await ticket_text(t, staff_side), ticket_kb(t, staff_side, can_delete))
 
 
+def staff_roster(rows) -> str:
+    """Кто принимает обращения: ФИО и должность текстом.
+
+    В кнопке помещается только имя, поэтому должности перечислены сверху -
+    так студент видит, к кому пишет, и не получает «Петрова Мария Сергее…».
+    """
+    lines = [f"· {short(_row_value(r, 'full_name'), 40)}"
+             + (f" — {short(role_label(r), 30)}" if role_label(r) else "")
+             for r in rows[:12]]
+    return "Кто принимает:\n" + "\n".join(lines) if lines else ""
+
+
 async def ticket_rows_kb(rows, staff_side: bool = False):
     """Кнопки списка обращений; помечает те, где последнее слово за сотрудником."""
     latest = await repo.latest_message_roles([row["ticket_id"] for row in rows])
@@ -280,11 +297,14 @@ async def ticket_rows_kb(rows, staff_side: bool = False):
     for r in rows:
         mark = ""
         last = latest.get(int(r["ticket_id"]))
+        # пометки короткие: в кнопке помещается «№12 · В работе · 🔔 ждёт»,
+        # а длинная формулировка обрезалась бы многоточием
         if last == "student":
-            mark = " · 🔔 ждёт ответа" if staff_side else ""
+            mark = " · 🔔 ждёт" if staff_side else ""
         elif last == "staff":
-            mark = " · 📌 ждёт вашего ответа" if not staff_side else ""
-        buttons.append(btn(f"№{r['ticket_id']} · {STATUS[r['status']]} · {CATS[r['category']]}{mark}",
+            mark = " · 📌 ждёте" if not staff_side else ""
+        # раздел в кнопку не влезает (MAX обрезает), он и так виден в карточке
+        buttons.append(btn(f"№{r['ticket_id']} · {STATUS[r['status']]}{mark}",
                            f"t:{r['ticket_id']}"))
     return [[item] for item in buttons]
 
@@ -345,7 +365,7 @@ async def send_staff_queue(x: str, view: str = "") -> None:
                  if code == "waiting"
                  else sum(1 for row in all_rows
                           if not code or as_str(row["status"]) == code))
-        views.append(btn(f"{'▸ ' if view == code else ''}{label} ({count})", f"staffv:{code}"))
+        views.append(btn(f"{'▸ ' if view == code else ''}{label} {count}", f"staffv:{code}"))
     keyboard = [views[0:2], views[2:4]]
     keyboard.append([btn("👥 По отделам", "staffcat"), btn("🔄 Обновить", f"staff:{view}")])
     if view:
@@ -353,7 +373,7 @@ async def send_staff_queue(x: str, view: str = "") -> None:
     if rows:
         keyboard += await ticket_rows_kb(rows[:15], True)
     else:
-        keyboard.append([btn("Под таким фильтром обращений нет", "noop")])
+        keyboard.append([btn("🔍 Ничего не найдено", "noop")])
     await api.send(x, "\n".join(lines), [*keyboard, *BACK])
 
 
@@ -400,14 +420,14 @@ async def cb_new_ticket_start(x, arg):
 # студент выбирает суть, а не «категорию вообще».
 SUBMENU_TOPICS = {
     "cert": ("certificates", (
-        ("place", "📍 Справка с места обучения"),
-        ("period", "🗓 Справка о периоде обучения"),
-        ("vacancies", "🎓 Справка о вакантных местах"),
+        ("place", "📍 Место обучения"),
+        ("period", "🗓 Период обучения"),
+        ("vacancies", "🎓 Вакантные места"),
     )),
     "acc": ("accounting", (
-        ("scholarship", "💰 О стипендии"),
-        ("payout", "🧾 Выплаты и документы"),
-        ("other", "❓ Другой вопрос по бухгалтерии"),
+        ("scholarship", "💰 Стипендия"),
+        ("payout", "🧾 Выплаты"),
+        ("other", "❓ Другой вопрос"),
     )),
 }
 
@@ -436,23 +456,45 @@ async def cb_submenu(x, arg):
 
 
 async def _feedback_menu(x: str) -> None:
-    """Обратная связь адресная: директор и замы по должностям."""
-    people: list[dict] = []
+    """Обратная связь адресная: сначала должность, потом человек этой должности.
+
+    Раньше в кнопке были «должность — фамилия», и MAX обрезал фамилию
+    многоточием. Теперь кнопка — это должность, а фамилии видно текстом.
+    """
+    rows = []
     for code, label in FEEDBACK_ROLES:
-        for row in await repo.staff_by_role(code):
-            person = dict(row)
-            people.append({"uid": as_str(person["user_id"]), "label": label,
-                           "name": as_str(person["full_name"])})
-    if not people:
+        people = await repo.staff_by_role(code)
+        if people:
+            rows.append({"code": code, "label": label, "people": [dict(p) for p in people]})
+    if not rows:
         await api.send(
             x, "👤 Обратная связь\n\nДолжности ещё не назначены в системе — напишите "
                 "любому сотруднику из общего списка.",
             [[btn("👥 Выбрать сотрудника", "new:feedback")], [btn("🏠 Меню", "home")]])
         return
-    keyboard = [[btn(f"{item['label']} — {short(item['name'], 28)}", f"pick:feedback:{item['uid']}")]
-                for item in people]
+    keyboard = [[btn(item["label"], f"fbrole:{item['code']}")] for item in rows]
     keyboard += [[btn("👥 Другой сотрудник", "new:feedback")], [btn("🏠 Меню", "home")]]
-    await api.send(x, "👤 Обратная связь — кому пишете?", keyboard)
+    lines = "\n".join(f"· {item['label']}: " + ", ".join(
+        short(as_str(p.get("full_name")), 30) for p in item["people"]) for item in rows)
+    await api.send(x, f"👤 Обратная связь — кому пишете?\n{lines}", keyboard)
+
+
+@callback("fbrole")
+async def cb_feedback_role(x, arg):
+    """Люди одной должности: выбираем конкретного."""
+    code = as_str(arg).strip()
+    title = dict(FEEDBACK_ROLES).get(code, code)
+    people = [dict(row) for row in await repo.staff_by_role(code)]
+    if not people:
+        return await api.send(x, f"{title}: сотрудник не назначен — напишите через общий список.",
+                              [[btn("👥 Выбрать сотрудника", "new:feedback")], *BACK])
+    keyboard = [[btn(short(as_str(p.get("full_name")), max_api.BUTTON_TEXT),
+                     f"pick:feedback:{as_str(p.get('user_id'))}")] for p in people]
+    keyboard += [[btn("👥 Другой сотрудник", "new:feedback")], *BACK]
+    who = "\n".join(f"· {short(as_str(p.get('full_name')), 34)}"
+                    + (f" — {short(position_of(p), 24)}" if position_of(p) else "")
+                    for p in people)
+    return await api.send(x, f"{title}\n{who}", keyboard)
 
 
 @callback("ask")
@@ -475,9 +517,10 @@ async def cb_ask(x, arg):
                                  "общий список.",
                               [[btn("👥 Выбрать сотрудника", f"new:{category}")],
                                [btn("🏠 Меню", "home")]])
-    keyboard = [[btn(short(staff_pick_label(r), 60), f"pick:{category}:{r['user_id']}:{code}")]
+    keyboard = [[btn(staff_pick_label(r), f"pick:{category}:{r['user_id']}:{code}")]
                 for r in rows]
-    await api.send(x, f"{title}\nКому пишете?", keyboard + [[btn("🏠 Меню", "home")]])
+    await api.send(x, f"{title}\n{staff_roster(rows)}\nКому пишете?",
+                   keyboard + [[btn("🏠 Меню", "home")]])
 
 
 # Категории для кнопок меню: студент сразу выбирает, что его волнует,
@@ -498,8 +541,8 @@ async def cb_new_ticket(x, cat):
     rows = await repo.staff_for_category(cat)
     if not rows:
         return await api.send(x, "Сотрудники для этого раздела пока не назначены. Обратитесь в учебную часть.", BACK)
-    kb = [[btn(short(staff_pick_label(r), 60), f"pick:{cat}:{r['user_id']}")] for r in rows]
-    await api.send(x, f"{CATS[cat]}\nВыберите сотрудника:", kb + BACK)
+    kb = [[btn(staff_pick_label(r), f"pick:{cat}:{r['user_id']}")] for r in rows]
+    await api.send(x, f"{CATS[cat]}\n{staff_roster(rows)}\nВыберите сотрудника:", kb + BACK)
 
 
 @callback("topic")
@@ -514,7 +557,7 @@ async def cb_ticket_topic(x, arg):
     if not rows:
         return await api.send(x, "Сотрудники для этого раздела пока не назначены. Обратитесь в учебную часть.", BACK)
     await db.set_state(x, "ticket", {"cat": cat, "topic": title})
-    kb = [[btn(short(staff_pick_label(r), 60), f"pick:{cat}:{r['user_id']}:{code}")] for r in rows]
+    kb = [[btn(staff_pick_label(r), f"pick:{cat}:{r['user_id']}:{code}")] for r in rows]
     await api.send(x, f"{CATS[cat]} · {title}\nВыберите сотрудника:", kb + BACK)
 
 
@@ -814,9 +857,9 @@ async def cb_forward(x, arg):
         return await api.send(
             x, "Передавать некому: в этом разделе других сотрудников нет.",
             [[btn("↩️ К обращению", f"t:{t['ticket_id']}")]])
-    keyboard = [[btn(short(staff_pick_label(row), 60), f"fwdto:{t['ticket_id']}:{row['user_id']}")]
+    keyboard = [[btn(staff_pick_label(row), f"fwdto:{t['ticket_id']}:{row['user_id']}")]
                 for row in rows[:10]]
-    await api.send(x, "Кому передать обращение? Автор и переписка останутся прежними.",
+    await api.send(x, "Кому передать обращение? Автор и переписка останутся прежними.\n" + staff_roster(rows),
                    [*keyboard, [btn("↩️ К обращению", f"t:{t['ticket_id']}")]])
 
 

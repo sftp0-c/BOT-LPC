@@ -193,7 +193,14 @@ nav a.on{background:var(--acc);color:#fff;font-weight:600;box-shadow:var(--sh-sm
 main{margin-left:var(--sb);padding:22px 26px 48px;max-width:1280px}
 .page-title{margin:0 0 18px;font-size:22px;font-weight:700;letter-spacing:-.2px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
-      padding:18px 20px;margin-bottom:18px;box-shadow:var(--sh)}
+      padding:18px 20px;margin-bottom:18px;box-shadow:var(--sh);
+      overflow-x:auto;overscroll-behavior-x:contain}          /* широкая таблица
+      прокручивается внутри карточки, а не растягивает всю страницу */
+.chart-box,.workbench,.wb-queue,.wb-card,.kpi,.cards{min-width:0}
+td.num{text-align:right;white-space:nowrap}
+th.col-key{width:260px}
+/* на телефоне фиксированная ширина колонки только мешает: текст переносится */
+@media (max-width:640px){th.col-key{width:auto}}
 .card h2{margin:0 0 14px;font-size:15px;font-weight:650;color:#20304a;
       display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .card h2 .pill,.card h2 .btn{font-size:12px}
@@ -201,6 +208,7 @@ h3{margin:20px 0 8px;font-size:12px;color:var(--mut);text-transform:uppercase;le
 
 /* ── таблицы ───────────────────────────────────────────────────────────── */
 table{width:100%;border-collapse:separate;border-spacing:0;font-size:14px}
+td{word-break:break-word;overflow-wrap:anywhere}
 th,td{text-align:left;padding:10px 10px;border-bottom:1px solid var(--line-2);vertical-align:top}
 th{position:sticky;top:0;background:#f8fafc;color:var(--mut);font-weight:600;font-size:12px;
    text-transform:uppercase;letter-spacing:.4px;white-space:nowrap;border-bottom:1px solid var(--line);
@@ -314,25 +322,25 @@ footer{color:var(--mut);font-size:12px;padding:14px 26px 30px;margin-left:var(--
 .wb-item{display:grid;grid-template-columns:18px 1fr;gap:8px;align-items:start;
          padding:8px;border-radius:8px;border:1px solid transparent;cursor:pointer}
 .wb-item:hover{background:var(--bg)}
-.wb-item.wb-on{background:var(--bg);border-color:var(--accent)}
+.wb-item.wb-on{background:var(--bg);border-color:var(--acc)}
 .wb-item input{margin:3px 0 0;flex:0 0 auto}
 .wb-item a{min-width:0;color:inherit;text-decoration:none;font-size:13px;line-height:1.4}
 /* номер, статус и дата - в одну строку, текст обрезается многоточием */
 .wb-head{display:flex;align-items:baseline;gap:6px;white-space:nowrap}
 .wb-head b{font-weight:650;flex:0 0 auto}
-.wb-status{color:var(--muted);overflow:hidden;text-overflow:ellipsis;flex:1 1 auto;
+.wb-status{color:var(--mut);overflow:hidden;text-overflow:ellipsis;flex:1 1 auto;
            min-width:0}
-.wb-date{color:var(--muted);font-size:12px;flex:0 0 auto;margin-left:auto}
+.wb-date{color:var(--mut);font-size:12px;flex:0 0 auto;margin-left:auto}
 .wb-text{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-         color:var(--muted);margin-top:1px}
+         color:var(--mut);margin-top:1px}
 .wb-bulk{margin-top:10px;padding-top:8px;border-top:1px solid var(--line);font-size:13px}
-.wb-bulk summary{cursor:pointer;color:var(--muted)}
+.wb-bulk summary{cursor:pointer;color:var(--mut)}
 /* карточка: таблицы с ровными колонками и обрезкой длинных текстов */
 .wb-card table{table-layout:fixed}
 .wb-card table td,.wb-card table th{vertical-align:top;word-break:break-word}
 .wb-card table td:nth-child(1){width:130px}
 .wb-card table td:nth-child(2){width:180px}
-.wb-card table td small{color:var(--muted)}
+.wb-card table td small{color:var(--mut)}
 @media (max-width:1000px){
   .workbench{grid-template-columns:1fr}
   .wb-queue{position:static}
@@ -343,15 +351,63 @@ footer{color:var(--mut);font-size:12px;padding:14px 26px 30px;margin-left:var(--
   header{flex-wrap:wrap;padding:10px 14px;gap:10px}
   .brand{min-width:0}
   .gsearch{order:3;flex:1 1 100%;max-width:none}
-  nav{position:static;top:0;width:auto;height:auto;display:flex;flex-wrap:wrap;gap:6px;
-      border-right:0;border-bottom:1px solid var(--line);padding:10px 12px}
-  nav a{margin:0;padding:6px 10px;font-size:13px}
+  /* меню: одна строка с прокруткой, а не пятнадцать плиток во весь экран.
+     Плитки съедали пол-экрана, и до содержимого приходилось долистывать. */
+  nav{position:sticky;top:0;width:auto;height:auto;display:flex;flex-wrap:nowrap;gap:6px;
+      overflow-x:auto;overflow-y:hidden;scroll-snap-type:x proximity;
+      -webkit-overflow-scrolling:touch;border-right:0;border-bottom:1px solid var(--line);
+      padding:8px 12px;scrollbar-width:none}
+  nav::-webkit-scrollbar{display:none}
+  nav a{margin:0;padding:9px 12px;font-size:13.5px;white-space:nowrap;flex:0 0 auto;
+        scroll-snap-align:start}
   .nav-txt{white-space:nowrap}
   main{margin-left:0;padding:16px 12px 40px}
   footer{margin-left:0;padding:12px}
   .page-title{font-size:19px}
   .stat,.kpi div{flex:1 1 44%}
   .charts{grid-template-columns:1fr}
+  .card{padding:16px 16px}
+}
+
+/* ── телефон: всё, до чего дотягиваются пальцем ──────────────────────────── */
+@media (max-width:640px){
+  body{font-size:15px}
+  header{padding:8px 12px;gap:8px}
+  .brand .logo{font-size:19px}
+  .brand b{font-size:14px}
+  .brand small{display:none}                 /* «панель сис-админа» - лишняя строка */
+  .who{display:none}                         /* вход виден в подвале страницы */
+  .gsearch input,.gsearch button{padding:9px 12px}
+  nav{padding:7px 10px;gap:5px}
+  nav a{padding:11px 13px;font-size:14px;min-height:44px}   /* палец, а не курсор */
+  main{padding:12px 10px 44px}
+  .page-title{font-size:18px;margin-bottom:12px}
+  .card{padding:13px 12px;margin-bottom:12px;border-radius:12px}
+  .card h2{font-size:14.5px;margin-bottom:10px}
+  /* таблицы: плотнее, чтобы в экран влезало больше строк */
+  table{font-size:13px}
+  th,td{padding:8px 7px}
+  th{font-size:11px;white-space:normal}
+  /* поля формы: два коротких поля рядом, длинные - во всю ширину */
+  .grid{gap:10px}
+  .grid>*{flex:1 1 calc(50% - 5px)}
+  .grid .full{flex:1 1 100%}
+  button,.btn{padding:11px 14px}              /* крупная цель нажатия */
+  .btn-sm{padding:8px 11px}
+  input,select,textarea{padding:11px 12px;font-size:16px}  /* 16px - iOS не зумит страницу */
+  textarea{min-height:96px}
+  label{margin-top:12px}
+  .stat,.kpi div{flex:1 1 calc(50% - 6px);padding:12px 13px}
+  .stat b{font-size:23px}
+  .kpi b{font-size:21px}
+  .wb-list{max-height:none}                  /* очередь целиком: на телефоне скролл не нужен */
+  .wb-item{padding:11px 9px}
+  .wb-head{white-space:normal;flex-wrap:wrap}
+  .wb-card table td:nth-child(1),.wb-card table td:nth-child(2){width:auto}
+  .donut{width:130px;height:130px;flex:0 0 130px}
+  pre{font-size:11.5px;padding:12px;max-height:none}
+  footer{padding:14px 12px 30px;text-align:center}
+  .msg{padding:11px 12px}
 }
 @media print{
   header,nav,footer,.gsearch{display:none}
@@ -644,7 +700,7 @@ async def overview(request: Request):
     gaps_block = "".join(
         f"<tr><td><a href='{esc(row['link'])}'>{esc(row['title'])}</a>"
         f"<div class='small mut'>{esc(row['hint'])}</div></td>"
-        f"<td style='text-align:right'><b>{esc(row['count'])}</b></td></tr>"
+        f"<td class='num'><b>{esc(row['count'])}</b></td></tr>"
         for row in gaps
     ) or "<tr><td class='mut'>Все данные заполнены</td></tr>"
     ticket_rows = _tickets_table(tickets)
@@ -1437,7 +1493,7 @@ async def college_page(request: Request):
     rows, faq_rows = [], []
     for key, val in (await college.contacts()).items():
         mark = "изменено" if await college.is_overridden(key) else "с сайта"
-        rows.append(f"<tr><th style='width:260px'>{esc(key.replace('_', ' '))}</th>"
+        rows.append(f"<tr><th class='col-key'>{esc(key.replace('_', ' '))}</th>"
                     f"<td><input name='{esc(college.setting_key(key))}' value='{esc(val)}'></td>"
                     f"<td class='small mut'>{mark}</td></tr>")
     enabled = await faq.ask_enabled()
@@ -3038,7 +3094,7 @@ async def settings_page(request: Request):
 <div class="card"><h2>Прочие настройки (ключ → значение)</h2>
 <form method="post" action="/panel/settings/raw">{csrf(request)}<table>"""
     for row in rows:
-        body += (f"<tr><td style='width:200px'><input name='key' value='{esc(row['key'])}'></td>"
+        body += (f"<tr><td class='col-key'><input name='key' value='{esc(row['key'])}'></td>"
                  f"<td><input name='value' value='{esc(row['value'])}'></td></tr>")
     body += f"""</table>
 <div class="grid" style="margin-top:10px"><button>Сохранить</button>

@@ -195,7 +195,7 @@ async def _consent_ok(x: str, fio: str, group: str) -> bool:
     await db.set_state(x, "consent", {"fio": fio, "group": group})
     await api.send(
         x, f"📄 Согласие на обработку данных\n\n{await consent_text()}",
-        [[btn("✅ Согласен, зарегистрировать", "consentyes")],
+        [[btn("✅ Согласиться", "consentyes")],
          [btn("❌ Не согласен", "consentno")]])
     return False
 
@@ -657,7 +657,7 @@ async def _ask_group(x: str, name: str = "", typed: str = "", suggestions=None) 
     keyboard = [[btn(group["code"], f"regpick:{group['code']}")]
                 for group in suggestions[:8] if group.get("active")]
     if typed and not keyboard:
-        keyboard.append([btn(f"✍️ Создать группу {group_code(typed)}", f"regnew:{group_code(typed)}")])
+        keyboard.append([btn(f"✍️ Создать {short(group_code(typed), 12)}", f"regnew:{group_code(typed)}")])
     keyboard.append([btn("🔤 Введу код вручную", "regpick:")])
     head = (f"{name}, группа «{typed}» в списке не найдена. Похожее — проверьте и выберите:"
             if typed else
@@ -687,7 +687,7 @@ async def _ask_staff_code(x: str):
     await api.send(
         x,
         f"🗝 Введите код, который выдал сотрудник или сис-админ ({config.STAFF_CODE_ATTEMPTS} попытки в час).",
-        [[btn("📥 Нет кода — подать заявку", "staffreq")], *BACK],
+        [[btn("📥 Подать заявку", "staffreq")], *BACK],
     )
 
 
@@ -933,7 +933,7 @@ async def cb_college(x, arg):
     await api.send(
         x, await college.text(),
         [[btn("❓ Частые вопросы", "faq")],
-         [btn("✍️ Написать в учебную часть", "new:certificates"), btn("🏠 Меню", "home")]],
+         [btn("✍️ В учебную часть", "new:certificates"), btn("🏠 Меню", "home")]],
     )
 
 

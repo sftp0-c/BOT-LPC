@@ -34,13 +34,35 @@ MAX_ROWS = 30       # строк клавиатуры в одном сообще
                     # errors.maxRows (предел проверен запросами к API)
 
 
+# MAX показывает подпись кнопки в одну строку и обрезает её многоточием: на
+# телефоне половина кнопок превращалась в «Должность изме…». Держим подпись
+# короче, чем обрезка, и режем сами - по границе слова, чтобы не отрезать смысл.
+BUTTON_TEXT = 24
+
+
+def short_label(text: str, limit: int = BUTTON_TEXT) -> str:
+    """Подпись кнопки в пределах того, что MAX показывает целиком.
+
+    Обрезает по последнему пробелу и ставит многоточие. Если обрезать нечего
+    (строка из одного длинного слова) - режем жёстко, но многоточие оставляем.
+    """
+    value = " ".join(str(text or "").split())
+    if len(value) <= limit:
+        return value
+    cut = value[:limit - 1].rstrip()
+    space = cut.rfind(" ")
+    if space >= limit // 2:                      # не отбрасываем полслова ради пары букв
+        cut = cut[:space]
+    return cut.rstrip(" ,.;:—-") + "…"
+
+
 def btn(text: str, payload: str) -> dict:
     """Callback-кнопка (payload ≤ 1024 символов — усекается при превышении)."""
-    return {"type": "callback", "text": text[:128], "payload": payload[:MAX_PAYLOAD]}
+    return {"type": "callback", "text": short_label(text), "payload": payload[:MAX_PAYLOAD]}
 
 
 def link_btn(text: str, url: str) -> dict:
-    return {"type": "link", "text": text[:128], "url": url}
+    return {"type": "link", "text": short_label(text), "url": url}
 
 
 def split_keyboard(keyboard: list | None, limit: int = MAX_ROWS) -> list[list[list]]:

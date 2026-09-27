@@ -214,7 +214,8 @@ async def test_staff_picker_shows_role(api, fake_repo):
     await repository.set_admin_profile(STAFF, role="director", office="каб. 204")
     await press(STUDENT, "new:certificates")
     buttons = [b for row in (api.last(STUDENT)[2] or []) for b in row]
-    assert any("Петрова Анна" in b["text"] and "Директор" in b["text"] for b in buttons)
+    assert any("Петрова Анна" in b["text"] for b in buttons)
+    assert "Директор" in api.last(STUDENT)[1]      # должность - текстом
 
 
 async def test_ready_quick_choice_sets_status_and_notifies(api, fake_repo):

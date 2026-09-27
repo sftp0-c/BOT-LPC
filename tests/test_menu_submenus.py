@@ -53,22 +53,24 @@ async def test_certificates_submenu_lists_three_kinds(api, student):
     assert "ask:certificates:period" in payloads
     assert "ask:certificates:vacancies" in payloads
     text = " ".join(labels(api, STUDENT)).lower()
-    assert "с места обучения" in text
-    assert "периоде обучения" in text
-    assert "вакантных местах" in text
+    assert "место обучения" in text
+    assert "период обучения" in text
+    assert "вакантные места" in text
 
 
 async def test_accounting_submenu_mentions_scholarship(api, student):
     await press(STUDENT, "sub:acc")
     assert "ask:accounting:scholarship" in api.payloads(STUDENT)
-    assert "О стипендии" in " ".join(labels(api, STUDENT))
+    assert "Стипендия" in " ".join(labels(api, STUDENT))
 
 
 async def test_choosing_a_kind_asks_who_to_write(api, student):
     await press(STUDENT, "ask:certificates:place")
     assert f"pick:certificates:{STAFF}:place" in api.payloads(STUDENT)
     state = await db.get_state(STUDENT)
-    assert state and state["payload"]["topic"] == "📍 Справка с места обучения"
+    assert state and state["payload"]["topic"] == "📍 Место обучения"
+    # должность сотрудника видна текстом, а не обрезанной кнопкой
+    assert "Кто принимает" in api.last(STUDENT)[1]
 
 
 async def test_topic_reaches_the_ticket(api, student):
@@ -78,17 +80,20 @@ async def test_topic_reaches_the_ticket(api, student):
     await press(STUDENT, "ticketsend")
     row = await db.one("SELECT * FROM tickets")
     assert row["category"] == "certificates"
-    assert "вакантных местах" in row["topic"]
+    assert "Вакантные места" in row["topic"]
 
 
 # ── обратная связь: адресная ─────────────────────────────────────────────────
 async def test_feedback_menu_lists_officials_by_position(api, student):
     await set_role(DIRECTOR, "director", "Сидоров Пётр Петрович")
     await press(STUDENT, "sub:fb")
-    payloads = api.payloads(STUDENT)
-    assert f"pick:feedback:{DIRECTOR}" in payloads
+    # кнопка - должность, фамилия видна текстом: так подпись не обрезается
+    assert "fbrole:director" in api.payloads(STUDENT)
     text = " ".join(labels(api, STUDENT))
-    assert "Директор" in text and "Сидоров" in text
+    assert "Директор" in text
+    assert "Сидоров" in api.last(STUDENT)[1]
+    await press(STUDENT, "fbrole:director")
+    assert f"pick:feedback:{DIRECTOR}" in api.payloads(STUDENT)
 
 
 async def test_feedback_lists_all_four_positions(api, student):

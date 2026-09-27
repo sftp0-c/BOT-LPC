@@ -157,13 +157,15 @@ async def test_student_menu_contract(api):
                                       "ask:accounting:other", "new:accounting", "home"}
     assert "Выберите, что именно" in api.last(USER)[1]
 
-    # обратная связь адресная: кнопка ведёт сразу к директору, а не к разделу
+    # обратная связь адресная: сначала должность, потом человек этой должности
     await press(USER, "sub:fb")
     payloads = set(api.payloads(USER))
-    assert f"pick:feedback:{DIRECTOR}" in payloads
+    assert "fbrole:director" in payloads
     assert "new:feedback" in payloads and "home" in payloads
-    assert "Директор — Сидоров" in " ".join(
-        button["text"] for row in api.last(USER)[2] for button in row)
+    assert "Директор" in " ".join(button["text"] for row in api.last(USER)[2] for button in row)
+    assert "Сидоров" in api.last(USER)[1]
+    await press(USER, "fbrole:director")
+    assert f"pick:feedback:{DIRECTOR}" in api.payloads(USER)
 
 
 def test_student_menu_fits_max_keyboard_limit():

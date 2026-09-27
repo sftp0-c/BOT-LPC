@@ -284,9 +284,11 @@ async def test_staff_card_saves_position_and_department(api):
     assert "Учебная часть" in api.last(SYS)[1]
 
     await press(SYS, "admins")
+    message = api.last(SYS)[1]
     buttons = [b["text"] for row in api.last(SYS)[2] for b in row]
-    assert any("Учебная часть" in text for text in buttons)
-    assert any("Преподаватель математики" in text for text in buttons)
+    assert "Соколова Мария" in " ".join(buttons)      # в кнопке - имя
+    assert "Учебная часть" in message                # должность и отдел - текстом
+    assert "Преподаватель математики" in message
 
 
 async def test_position_is_cleared_with_dash(api):
@@ -312,7 +314,9 @@ async def test_staff_picker_shows_position(api):
 
     await press(STUDENT, "new:feedback")
     labels = [b["text"] for row in api.last(STUDENT)[2] for b in row]
-    assert any("Соколова Мария" in text and "Методист учебной части" in text for text in labels)
+    message = api.last(STUDENT)[1]
+    assert "Соколова Мария" in " ".join(labels)       # кнопка - имя
+    assert "Методист учебной части" in message        # должность - текстом
 
 
 # ── лента событий обращения ───────────────────────────────────────────────────
@@ -364,13 +368,13 @@ async def test_ticket_list_marks_who_waits_for_answer(api):
 
     await press(NEWSTAFF, "staff")
     labels = [b["text"] for row in api.last(NEWSTAFF)[2] for b in row]
-    assert any(f"№{tid}" in text and "🔔 ждёт ответа" in text for text in labels)
+    assert any(f"№{tid}" in text and "🔔 ждёт" in text for text in labels)
 
     await press(NEWSTAFF, f"rp:{tid}")
     await say(NEWSTAFF, "Готовим")
     await press(NEWSTAFF, "staff")
     labels = [b["text"] for row in api.last(NEWSTAFF)[2] for b in row]
-    assert all("🔔 ждёт ответа" not in text for text in labels)
+    assert all("🔔 ждёт" not in text for text in labels)
 
 
 # ── удаление пользователя ─────────────────────────────────────────────────────

@@ -3,6 +3,7 @@ import json
 import httpx
 import pytest
 
+import max_api
 from max_api import MAX_PAYLOAD, MaxAPI, MaxAPIError, btn, split_text
 
 
@@ -173,13 +174,14 @@ async def test_send_with_empty_user_id_is_sent_as_is():
 # ── регрессии: усечение кнопок до лимитов MAX API ─────────────────────────────
 
 
-def test_btn_truncates_payload_to_1024_and_text_to_128():
+def test_btn_truncates_payload_to_1024_and_label_to_one_line():
+    """MAX рисует подпись в одну строку и обрезает многоточием - режем сами."""
     button = btn("т" * 200, "p" * 2000)
     assert button["type"] == "callback"
     assert len(button["payload"]) == MAX_PAYLOAD == 1024
     assert button["payload"] == "p" * 1024  # усечение, а не потеря payload целиком
-    assert len(button["text"]) == 128
-    assert button["text"] == "т" * 128
+    assert len(button["text"]) == max_api.BUTTON_TEXT == 24
+    assert button["text"].endswith("…")
 
 
 def test_btn_keeps_short_values_untouched():

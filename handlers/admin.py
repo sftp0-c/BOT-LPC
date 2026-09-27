@@ -138,6 +138,23 @@ async def cb_staff_stats(x, arg):
 
 
 # ── сотрудники ────────────────────────────────────────────────────────────────
+def staff_roster_text(rows, limit: int = 12) -> str:
+    """Список сотрудников текстом: ФИО, должность, отдел.
+
+    В кнопке помещается только имя, поэтому всё остальное - здесь.
+    """
+    lines = []
+    for row in list(rows)[:limit]:
+        parts = [f"· {short(_field(row, 'full_name'), 34)}"]
+        position, department = position_text(row), _field(row, "department")
+        if position:
+            parts.append(f"— {short(position, 26)}")
+        if department and department != position:
+            parts.append(f"[{short(department, 22)}]")
+        lines.append(" ".join(parts))
+    return "\n".join(lines)
+
+
 def staff_list_kb(rows) -> list:
     """Кнопки списка сотрудников, сгруппированные по отделам: заголовок отдела, потом люди."""
     departments: dict[str, list] = {}
@@ -146,11 +163,12 @@ def staff_list_kb(rows) -> list:
     keyboard: list = []
     for department in sorted(departments, key=lambda name: (name == "Без отдела", name)):
         members = departments[department]
-        keyboard.append([btn(f"🏛 {department} — {len(members)}", f"sdep:{short(department, 30)}")])
+        keyboard.append([btn(f"🏛 {short(department, 16)} · {len(members)}", f"sdep:{short(department, 30)}")])
         for row in members:
             sid = _field(row, "user_id")
             cat = _field(row, "ticket_category", default="all") or "all"
-            label = f"{short(_field(row, 'full_name'), 24)} · {short(position_text(row), 24)}"
+            # в кнопке только имя: «ФИО · должность» не влезает в строку MAX
+            label = short(_field(row, "full_name"), 22)
             keyboard.append([btn(label, f"sf:{sid}"), btn(short(STAFF_CATS.get(cat, cat), 16), f"sf:{sid}")])
     return keyboard
 
@@ -160,7 +178,10 @@ async def cb_admins(x, arg):
     if not await need_super(x):
         return
     rows = await repo.list_staff()
-    text = "👥 Сотрудники колледжа" if rows else "👥 Сотрудников пока нет. Добавьте первого."
+    if rows:
+        text = f"👥 Сотрудники колледжа: {len(rows)}\n{staff_roster_text(rows)}"
+    else:
+        text = "👥 Сотрудников пока нет. Добавьте первого."
     kb = staff_list_kb(rows)
     await api.send(
         x, text,
@@ -181,9 +202,8 @@ async def cb_staff_department_view(x, arg):
     if not rows:
         return await api.send(x, f"В отделе «{short(department, 30)}» сотрудников не нашлось.",
                               [[btn("↩️ К сотрудникам", "admins")]])
-    keyboard = [[btn(f"{short(_field(r, 'full_name'), 26)} · {short(position_text(r), 22)}", f"sf:{_field(r, 'user_id')}")]
-                for r in rows]
-    await api.send(x, f"🏛 {short(department, 60)}: {len(rows)}",
+    keyboard = [[btn(short(_field(r, "full_name"), 22), f"sf:{_field(r, 'user_id')}")] for r in rows]
+    await api.send(x, f"🏛 {short(department, 60)}: {len(rows)}\n{staff_roster_text(rows)}",
                    [*keyboard, [btn("↩️ К сотрудникам", "admins")]])
 
 
@@ -710,7 +730,7 @@ async def cb_person(x, arg):
     if not is_sysadmin_role(as_str(card["role_type"])):
         opened = await repo.student_open_tickets_count(card["user_id"])
         if opened:
-            keyboard.append([btn(f"🗑 Удалить вместе с обращениями ({card['tickets']})", f"persondel:{card['user_id']}:1")])
+            keyboard.append([btn(f"🗑 Удалить всё ({card['tickets']})", f"persondel:{card['user_id']}:1")])
         else:
             keyboard.append([btn("🗑 Удалить пользователя", f"persondel:{card['user_id']}")])
     await api.send(x, "\n".join(lines), keyboard)
@@ -733,7 +753,7 @@ async def cb_person_delete(x, arg):
             x,
             f"У {name} {opened} открытых обращений. Чтобы удалить, нажмите кнопку "
             f"«Удалить вместе с обращениями» — переписка тоже исчезнет.",
-            [[btn(f"🗑 Удалить {name} вместе с обращениями", f"persondely:{uid}:1")],
+            [[btn("🗑 Удалить вместе с ними", f"persondely:{uid}:1")],
              [btn("↩️ К пользователям", "people")]],
         )
     done, message = await repo.delete_user(uid, with_tickets=with_tickets)
@@ -900,7 +920,7 @@ async def send_codes(x: str):
         lines.append(f"📥 Необработанных заявок: {len(pending)}")
     keyboard = [[btn("🎟 Новый код", "codegen"), btn("✉️ Пригласить по ID", "codeinv")]]
     if pending:
-        keyboard.append([btn(f"📥 Заявки ({len(pending)})", "requests")])
+        keyboard.append([btn(f"📥 Заявки · {len(pending)}", "requests")])
     keyboard.append([btn("↩️ К сотрудникам", "admins")])
     await api.send(x, "\n".join(lines), keyboard)
 
@@ -1172,7 +1192,7 @@ async def cb_request_card(x, arg):
     )
     await api.send(
         x, text,
-        [[btn("✅ Одобрить — сделать сотрудником", f"reqok:{uid}"), btn("✏️ Должность изменить", f"reqpos:{uid}")],
+        [[btn("✅ Одобрить", f"reqok:{uid}"), btn("✏️ Должность", f"reqpos:{uid}")],
          [btn("❌ Отклонить", f"reqno:{uid}"), btn("↩️ К заявкам", "requests")]],
     )
 

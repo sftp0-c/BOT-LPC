@@ -49,10 +49,10 @@ async def test_queue_shows_counters_and_filters(api):
     assert {f"t:{first}", f"t:{second}"} <= payloads
 
     counters = {b["payload"]: b["text"] for row in api.last(STAFF)[2] for b in row}
-    assert counters["staffv:waiting"].endswith("(2)")        # оба ждут ответа
-    assert counters["staffv:in_progress"].endswith("(0)")
-    assert counters["staffv:ready"].endswith("(0)")
-    assert counters["staffv:"].endswith("(2)")              # все обращения
+    assert counters["staffv:waiting"].endswith("2")          # оба ждут ответа
+    assert counters["staffv:in_progress"].endswith("0")
+    assert counters["staffv:ready"].endswith("0")
+    assert counters["staffv:"].endswith("2")                # все обращения
 
     # счётчик работает как фильтр: ответили на один - он из «ждут ответа» ушёл
     await press(STAFF, f"rp:{first}")
