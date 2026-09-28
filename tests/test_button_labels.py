@@ -55,12 +55,13 @@ def test_short_label_keeps_short_text():
 
 
 def test_short_label_cuts_by_word():
-    assert max_api.short_label("🗑 Удалить вместе с обращениями") == "🗑 Удалить вместе с…"
+    # обрезка идёт по границе слова и считается в ячейках: «🗑» занимает две
+    assert max_api.short_label("🗑 Удалить вместе с обращениями") == "🗑 Удалить вместе…"
 
 
 def test_short_label_cuts_long_word_too():
     label = max_api.short_label("а" * 50)
-    assert len(label) == max_api.BUTTON_TEXT and label.endswith("…")
+    assert max_api.display_width(label) == max_api.BUTTON_TEXT and label.endswith("…")
 
 
 def test_short_label_trims_spaces():
@@ -68,8 +69,9 @@ def test_short_label_trims_spaces():
 
 
 def test_btn_and_link_btn_both_cut():
-    assert len(max_api.btn("б" * 80, "x")["text"]) <= max_api.BUTTON_TEXT
-    assert len(max_api.link_btn("б" * 80, "https://example.org")["text"]) <= max_api.BUTTON_TEXT
+    assert max_api.display_width(max_api.btn("б" * 80, "x")["text"]) <= max_api.BUTTON_TEXT
+    assert (max_api.display_width(
+        max_api.link_btn("б" * 80, "https://example.org")["text"]) <= max_api.BUTTON_TEXT)
 
 
 # ── длинные ФИО в кнопках ───────────────────────────────────────────────────
@@ -98,7 +100,7 @@ def test_short_name_never_ends_with_dots():
     for name in (LONG_NAME, "Иванов", "Иванов Иван Иванович", "Ф" * 40, ""):
         label = short_name(name)
         assert not label.endswith("…"), f"многоточие в подписи: «{label}»"
-        assert len(label) <= max_api.BUTTON_TEXT
+        assert max_api.display_width(label) <= max_api.BUTTON_TEXT
 
 
 def test_short_name_keeps_surname_even_when_it_alone_is_long():
@@ -123,7 +125,7 @@ def test_no_button_label_longer_than_the_limit(source: Path):
             label = match.group(1)
             if "{" in label:          # f-строка: длину узнать нельзя
                 continue
-            if len(label) > max_api.BUTTON_TEXT:
+            if max_api.display_width(label) > max_api.BUTTON_TEXT:
                 long_ones.append(f"{source.name}:{number} «{label}»")
     assert not long_ones, "подписи длиннее предела: " + ", ".join(long_ones)
 
@@ -137,7 +139,7 @@ async def test_student_screens_have_short_labels(api):
                     "profile", "myall", "tickets", "new:certificates", "sched"):
         await press(STUDENT, payload)
     for label in all_labels(api):
-        assert len(label) <= max_api.BUTTON_TEXT, f"длинная подпись: «{label}»"
+        assert max_api.display_width(label) <= max_api.BUTTON_TEXT, f"длинная подпись: «{label}»"
 
 
 async def test_staff_screens_have_short_labels(api):
@@ -150,7 +152,7 @@ async def test_staff_screens_have_short_labels(api):
     for payload in ("home", "staff", "staffcat", "staffstats", "tickets", "profile"):
         await press(STAFF, payload)
     for label in all_labels(api):
-        assert len(label) <= max_api.BUTTON_TEXT, f"длинная подпись: «{label}»"
+        assert max_api.display_width(label) <= max_api.BUTTON_TEXT, f"длинная подпись: «{label}»"
 
 
 async def test_sysadmin_screens_have_short_labels(api):
@@ -159,7 +161,7 @@ async def test_sysadmin_screens_have_short_labels(api):
                     "nostaff", "syslist", "more", "broadcast"):
         await press(SYS, payload)
     for label in all_labels(api):
-        assert len(label) <= max_api.BUTTON_TEXT, f"длинная подпись: «{label}»"
+        assert max_api.display_width(label) <= max_api.BUTTON_TEXT, f"длинная подпись: «{label}»"
 
 
 async def test_schedule_screens_have_short_labels(api):
@@ -167,7 +169,7 @@ async def test_schedule_screens_have_short_labels(api):
     for payload in ("sched", "teacher", "view_schedules", "groups"):
         await press(STUDENT, payload)
     for label in all_labels(api):
-        assert len(label) <= max_api.BUTTON_TEXT, f"длинная подпись: «{label}»"
+        assert max_api.display_width(label) <= max_api.BUTTON_TEXT, f"длинная подпись: «{label}»"
 
 
 def fitted_labels(api) -> list[str]:
@@ -186,7 +188,7 @@ def fitted_labels(api) -> list[str]:
 def assert_no_cut_labels(api, where: str = "") -> None:
     """Ни одна подпись на экране не обрезана и не длиннее предела MAX."""
     for label in fitted_labels(api):
-        assert len(label) <= max_api.BUTTON_TEXT, f"{where}: длинная подпись «{label}»"
+        assert max_api.display_width(label) <= max_api.BUTTON_TEXT, f"{where}: длинная подпись «{label}»"
         assert not label.endswith("…"), f"{where}: обрезанная подпись «{label}»"
 
 
@@ -258,7 +260,7 @@ async def test_queue_rows_stay_short_with_long_statuses(env, api):
     labels = [b["text"] for row in keyboard for b in row]
     assert "№1234 · ✅ Завершено" in labels
     for label in labels:
-        assert len(label) <= max_api.BUTTON_TEXT
+        assert max_api.display_width(label) <= max_api.BUTTON_TEXT
         assert not label.endswith("…")
 
 

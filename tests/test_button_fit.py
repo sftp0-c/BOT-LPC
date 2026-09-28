@@ -1,4 +1,4 @@
-"""Подпись кнопки подгоняется под ширину ряда: 2 кнопки — 16 символов, 1 — 26.
+"""Подпись кнопки подгоняется под ширину ряда в ячейках: 2 кнопки — 16, 1 — 20.
 
 Замер калибровочным сообщением в MAX: в ряду из двух кнопок на компьютере целиком
 видно 16 символов, третья подпись в 18 символов уже обрезается многоточием.
@@ -13,16 +13,22 @@ def buttons_of(keyboard):
 
 # ── пределы ─────────────────────────────────────────────────────────────────
 def test_row_limits_follow_the_measurement():
-    assert max_api.row_limit(1) == max_api.BUTTON_TEXT == 26
+    """Пределы в ячейках, взятые из измерений, а не из символов.
+
+    Одна кнопка: на скриншоте из MAX «💬 Обратная связь» - 18 ячеек - помещается
+    целиком, значит 20 с запасом. Две кнопки: 16 - это калибровочное сообщение
+    пользователя. Три и более: на скриншоте 10 ячеек уже режутся, поэтому 9.
+    """
+    assert max_api.row_limit(1) == max_api.BUTTON_TEXT == 20
     assert max_api.row_limit(2) == 16
-    assert max_api.row_limit(3) == 14
-    assert max_api.row_limit(7) == 12
+    assert max_api.row_limit(3) == 9
+    assert max_api.row_limit(7) == 9
 
 
 def test_one_button_row_keeps_long_label():
-    """Одна кнопка в ряду получает максимум: 26 символов показываются целиком."""
-    label = "🗑 Удалить вместе с обращ.."     # ровно 26 символов
-    assert len(label) == max_api.BUTTON_TEXT, len(label)
+    """Одна кнопка в ряду получает максимум: 20 ячеек показываются целиком."""
+    label = "🗑 Удалить обращения"           # ровно 20 ячеек: 2 + 1 + 17
+    assert max_api.display_width(label) == max_api.BUTTON_TEXT, label
     row = max_api.fit_keyboard([[max_api.btn(label, "x")]])
     assert row[0][0]["text"] == label
 
@@ -33,7 +39,7 @@ def test_names_need_single_button_rows():
     Именно поэтому списки людей в боте будут по одной кнопке на ряд, а не по три.
     """
     name = "Ковалевский К. П."
-    assert len(name) > max_api.row_limit(2)
+    assert max_api.display_width(name) > max_api.row_limit(2)
     tight = max_api.fit_keyboard([[max_api.btn(name, "a"), max_api.btn("Вперёд", "b")]])
     assert tight[0][0]["text"].endswith("…")
     roomy = max_api.fit_keyboard([[max_api.btn(name, "a")]])
@@ -45,7 +51,7 @@ def test_two_buttons_row_is_cut():
         max_api.btn("Ковалевский Константин Петрович", "a"),
         max_api.btn("Соколова Мария Сергеевна", "b"),
     ]])
-    assert all(len(b["text"]) <= 16 for b in row[0])
+    assert all(max_api.display_width(b["text"]) <= 16 for b in row[0])
 
 
 def test_short_labels_fit_two_button_row():
@@ -60,7 +66,7 @@ def test_short_labels_fit_two_button_row():
 def test_seven_buttons_row_is_strict():
     row = max_api.fit_keyboard([[max_api.btn("Очень длинная подпись кнопки", str(i))
                                 for i in range(7)]])
-    assert all(len(b["text"]) <= 12 for b in row[0])
+    assert all(max_api.display_width(b["text"]) <= 12 for b in row[0])
 
 
 def test_payload_and_type_are_preserved():
@@ -74,10 +80,13 @@ def test_payload_and_type_are_preserved():
 
 def test_original_keyboard_is_not_mutated():
     """Подгонка не трогает исходный список: им пользуются тесты и вызовы кода."""
-    before = max_api.btn("Длинная подпись для кнопки", "a")
+    # подпись берём ту, что переживает даже одиночную кнопку, - иначе проверка
+    # ловила бы не мутацию, а обрезку в самом btn()
+    before = max_api.btn("🗑 Удалить обращения", "a")
+    snapshot = before["text"]
     original = [[before]]
     max_api.fit_keyboard(original)
-    assert before["text"] == "Длинная подпись для кнопки"
+    assert before["text"] == snapshot
     assert original[0][0] is before
 
 

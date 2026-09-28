@@ -30,7 +30,7 @@ def test_student_menu_is_three_submenus():
     меню студента не должно быть россыпью второстепенных кнопок.
     """
     rows = menus.student_menu()
-    assert len(rows) == 3
+    assert len(rows) == 4
     payloads = [b["payload"] for row in rows for b in row]
     assert payloads == ["sub:cert", "sub:acc", "sub:fb",
                         "sched", "tickets", "profile", "faq"]

@@ -166,7 +166,8 @@ def staff_list_kb(rows) -> list:
         members = departments[department]
         # отдел бывает «Учебно-производственный» - в кнопку влезает 12 символов,
         # поэтому сокращаем, а полное название идёт строкой текстом выше
-        keyboard.append([btn(f"🏛 {cut_plain(department, 20)} {len(members)}",
+        # значок (2 ячейки) + 14 символов отдела + счётчик = 20 ячеек ровно
+        keyboard.append([btn(f"🏛 {cut_plain(department, 14)} {len(members)}",
                              f"sdep:{short(department, 30)}")])
         for row in members:
             sid = _field(row, "user_id")
@@ -688,7 +689,7 @@ async def cb_clean_dialogs(x, arg):
         return
     removed = await db.prune("user_states", 1)
     await repo.log_action(x, "очищены зависшие диалоги", f"удалено состояний: {removed}")
-    await api.send(x, f"🧹 Удалено зависших состояний: {removed}.", [[btn("🔔 Что сделать сегодня", "today")]])
+    await api.send(x, f"🧹 Удалено зависших состояний: {removed}.", [[btn("🔔 Сегодня", "today")]])
 
 
 @callback("people")
@@ -742,9 +743,9 @@ async def cb_person(x, arg):
     if not is_sysadmin_role(as_str(card["role_type"])):
         opened = await repo.student_open_tickets_count(card["user_id"])
         if opened:
-            keyboard.append([btn("🗑 Удалить и обращения", f"persondel:{card['user_id']}:1")])
+            keyboard.append([btn("🗑 Удалить всё", f"persondel:{card['user_id']}:1")])
         else:
-            keyboard.append([btn("🗑 Удалить пользователя", f"persondel:{card['user_id']}")])
+            keyboard.append([btn("🗑 Удалить", f"persondel:{card['user_id']}")])
     await api.send(x, "\n".join(lines), keyboard)
 
 
@@ -765,7 +766,7 @@ async def cb_person_delete(x, arg):
             x,
             f"У {name} {opened} открытых обращений. Чтобы удалить, нажмите кнопку "
             f"«Удалить вместе с обращениями» — переписка тоже исчезнет.",
-            [[btn("🗑 Удалить вместе с ними", f"persondely:{uid}:1")],
+            [[btn("🗑 Удалить всех", f"persondely:{uid}:1")],
              [btn("↩️ К пользователям", "people")]],
         )
     done, message = await repo.delete_user(uid, with_tickets=with_tickets)
@@ -1315,9 +1316,13 @@ async def all_groups() -> list[tuple[str, bool]]:
 
 async def send_groups(x: str, note: str = ""):
     rows = await all_groups()
-    kb = [[btn(f"{'🟢' if active else '⚪'} {cut_plain(code, 11)}", f"groupedit:{code}"),
-           btn("🔄 Скрыть" if active else "👁 Показать", f"grouptoggle:{code}"),
-           btn("🗑 Удалить", f"groupdel:{code}")] for code, active in rows]
+    # по две кнопки в ряду: три в ряд обрезаются на телефоне, а код группы
+    # сам по себе широкий
+    kb = []
+    for code, active in rows:
+        kb.append([btn(f"{'🟢' if active else '⚪'} {cut_plain(code, 9)}", f"groupedit:{code}"),
+                   btn("🔄 Скрыть" if active else "👁 Показать", f"grouptoggle:{code}")])
+        kb.append([btn("🗑 Удалить", f"groupdel:{code}")])
     text = f"👥 Группы в справочнике: {len(rows)}" if rows else "👥 Справочник групп пуст. Добавьте первую группу."
     await api.send(x, "\n".join(part for part in (text, note) if part),
                    [*kb, [btn("➕ Добавить группу", "groupadd")], *BACK])
@@ -1500,7 +1505,7 @@ async def cb_schedules(x, arg):
     await api.send(x, text, [*kb,
                             [btn("➕ Добавить", "scadd"),
                              btn("⬇️ Импорт", "scimport")],
-                            [btn("📱 Обновить нижнее меню", "scmenu")],
+                            [btn("📱 Обновить меню", "scmenu")],
                             *BACK])
 
 
@@ -1520,7 +1525,7 @@ async def cb_schedule_card(x, group):
     await api.send(
         x,
         f"📅 {code}{state_line}\n{_field(row, 'pdf_url')}",
-        [[btn("👀 Открыть расписание", f"scview:{code}")],
+        [[btn("👀 Открыть", f"scview:{code}")],
          [btn("✏️ Сменить", f"scedit:{code}"), btn("🗑 Удалить", f"scdel:{code}")],
          [btn("↩️ К списку", "schedules")]],
     )
@@ -1562,10 +1567,11 @@ async def cb_schedule_view(x, arg):
         text = tt.format_upcoming(schedule) or "📅 Ближайших пар нет"
     else:
         text = tt.format_schedule(schedule)
+    # по две кнопки в ряду: три в ряд обрезаются на телефоне
     keyboard = [
         [btn("📆 Сегодня", f"scview:{code}:day"),
-         btn("🕐 Ближайшие", f"scview:{code}:next"),
-         btn("📅 Вся неделя", f"scview:{code}")],
+         btn("🕐 Ближайшие", f"scview:{code}:next")],
+        [btn("📅 Вся неделя", f"scview:{code}")],
         *back,
     ]
     await api.send(x, text, keyboard)
@@ -1716,8 +1722,10 @@ async def send_settings(x: str):
         f"⚙️ Настройки\n\nПриём обращений: {'включён' if enabled else 'выключен'}\n"
         f"Приветствие студентов:\n{welcome}",
         [
-            [btn("📥 Обращения: " + ("выключить" if enabled else "включить"), "set:tickets")],
-            [btn("✏️ Изменить приветствие", "set:welcome")],
+            # 2 + 1 + 9 + 1 + 9 = 22 ячейки, а предел в ряду из одной кнопки - 20,
+# поэтому действие короткое, а «Приём обращений: включён» стоит текстом выше
+[btn("📥 " + ("Выключить" if enabled else "Включить"), "set:tickets")],
+            [btn("✏️ Приветствие", "set:welcome")],
             *BACK,
         ],
     )

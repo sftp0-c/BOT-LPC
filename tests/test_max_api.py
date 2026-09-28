@@ -180,7 +180,7 @@ def test_btn_truncates_payload_to_1024_and_label_to_one_line():
     assert button["type"] == "callback"
     assert len(button["payload"]) == MAX_PAYLOAD == 1024
     assert button["payload"] == "p" * 1024  # усечение, а не потеря payload целиком
-    assert len(button["text"]) == max_api.BUTTON_TEXT == 26
+    assert max_api.display_width(button["text"]) == max_api.BUTTON_TEXT == 20
     assert button["text"].endswith("…")
 
 

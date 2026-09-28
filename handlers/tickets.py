@@ -1,4 +1,4 @@
-﻿"""Обращения студентов: создание, переписка, статусы, списки."""
+"""Обращения студентов: создание, переписка, статусы, списки."""
 from datetime import datetime, timedelta
 import re
 
@@ -23,6 +23,7 @@ from utils import (
     STATUS,
     STATUS_SHORT,
     TOPIC_CATS,
+    TOPIC_CATS_BTN,
     as_str,
     cut_plain,
     fmt_when,
@@ -47,7 +48,9 @@ PICKUP_FALLBACK = "кабинет не указан"
 OFFICE_REQUIRED = "Сначала укажите кабинет в карточке сотрудника"
 LEGACY_COMPLETED_FROM = ("new", "accepted", "in_progress")
 CLOSED_STATUSES = ("completed", "rejected")   # дела закрыты: отвечать и закрывать уже нечего
-CLOSE_BTN = "✅ Ответить и закрыть"           # ответ шаблоном и статус «завершено» сразу
+# 16 ячеек, чтобы влезало и в ряд из двух кнопок: «✅ Ответить и закрыть»
+# (21 ячейка) обрезалось до «✅ Ответить и…»
+CLOSE_BTN = "✅ Ответ и закрыть"             # ответ шаблоном и статус «завершено» сразу
 ARCHIVE_VIEW = "archive"        # значение фильтра очереди: архив обращений
 ARCHIVE_LIMIT = 200             # сколько архивных обращений держим в одном экране
 ARCHIVE_BTN = "🗄 В архив"      # закрытое дело - в архив
@@ -177,7 +180,7 @@ def ticket_kb(t, staff_side: bool, can_delete: bool = False, can_archive: bool =
     """
     tid, status = t["ticket_id"], t["status"]
     if not staff_side:
-        rows = [[btn("✍️ Написать сотруднику", f"rp:{tid}")]] if status in OPEN_STATUSES else []
+        rows = [[btn("✍️ Написать", f"rp:{tid}")]] if status in OPEN_STATUSES else []
         return [*rows, [btn("↩️ К списку", "tickets")]]
     if is_archived(t):
         # архивное дело закрыто: ответить и сменить статус уже нельзя,
@@ -196,6 +199,8 @@ def ticket_kb(t, staff_side: bool, can_delete: bool = False, can_archive: bool =
     # а «📄 Готово к выдаче» обрезалось бы многоточием (полный - в тексте карточки)
     changes = [btn(STATUS_SHORT[code], f"st:{tid}:{code}") for code in NEXT_STATUSES.get(status, ())]
     rows += [changes[i : i + 2] for i in range(0, len(changes), 2)]
+    # по две кнопки в ряду: в ряду из четырёх подписи режутся на телефоне,
+    # поэтому дальше этот список нарезается парами
     tail = [btn("↩️ К списку", "staff"), btn("⚡ Шаблоны", f"tpl:{tid}"),
             btn("📝 Заметка", f"note:{tid}"), btn("↪️ Переслать", f"fwd:{tid}")]
     if as_str(t.get("pickup_place")).strip() != PICKUP_PLACE or status not in ("ready", "completed"):
@@ -614,7 +619,7 @@ async def _feedback_menu(x: str) -> None:
         await api.send(
             x, "👤 Обратная связь\n\nДолжности ещё не назначены в системе — напишите "
                 "любому сотруднику из общего списка.",
-            [[btn("👥 Выбрать сотрудника", "new:feedback")], *tail])
+            [[btn("👥 Выбрать", "new:feedback")], *tail])
         return
     keyboard = [[btn(item["label"], f"fbrole:{item['code']}")] for item in rows]
     keyboard += tail
@@ -631,7 +636,7 @@ async def cb_feedback_role(x, arg):
     people = [dict(row) for row in await repo.staff_by_role(code)]
     if not people:
         return await api.send(x, f"{title}: сотрудник не назначен — напишите через общий список.",
-                              [[btn("👥 Выбрать сотрудника", "new:feedback")], *BACK])
+                              [[btn("👥 Выбрать", "new:feedback")], *BACK])
     keyboard = [[btn(staff_pick_label(p), f"pick:feedback:{as_str(p.get('user_id'))}")]
                 for p in people]
     keyboard += [[btn("👥 Другой сотрудник", "new:feedback")], *BACK]
@@ -659,7 +664,7 @@ async def cb_ask(x, arg):
     if not rows:
         return await api.send(x, "Сотрудник по этому вопросу ещё не назначен — напишите через "
                                  "общий список.",
-                              [[btn("👥 Выбрать сотрудника", f"new:{category}")],
+                              [[btn("👥 Выбрать", f"new:{category}")],
                                [btn("🏠 Меню", "home")]])
     keyboard = [[btn(staff_pick_label(r), f"pick:{category}:{r['user_id']}:{code}")]
                 for r in rows]
@@ -680,8 +685,11 @@ async def cb_new_ticket(x, cat):
     if await db.get_setting("tickets_enabled", "1") != "1":
         return await api.send(x, "Приём обращений временно отключён. Попробуйте позже.", BACK)
     if cat in TOPIC_CATS:
+        # в кнопке - короткая подпись (предел 20 ячеек), в заголовке и в тексте
+        # обращения - полная, она и объясняет, о чём тема
         return await api.send(x, f"{CATS[cat]}\nВыберите тему обращения:",
-                              [[btn(label, f"topic:{cat}:{code}")] for code, label in TOPIC_CATS[cat].items()] + BACK)
+                              [[btn(label, f"topic:{cat}:{code}")]
+                               for code, label in TOPIC_CATS_BTN[cat].items()] + BACK)
     rows = await repo.staff_for_category(cat)
     if not rows:
         return await api.send(x, "Сотрудники для этого раздела пока не назначены. Обратитесь в учебную часть.", BACK)
@@ -814,7 +822,7 @@ def draft_keyboard(x: str) -> list:
 
     По одной в ряду: в двух кнопках под длинную подпись места нет (16 символов).
     """
-    return [[btn("✉️ Отправить обращение", "ticketsend")],
+    return [[btn("✉️ Отправить", "ticketsend")],
             [btn("🗑 Очистить черновик", "draftclr")],
             [btn("↩️ В меню", "home")]]
 
@@ -1032,7 +1040,7 @@ async def cb_forward_to(x, arg):
         f"Передать обращение №{t['ticket_id']} сотруднику {a['full_name'] if a else target}?\n"
         "Можно добавить комментарий для него или передать сразу.",
         [[btn("↪️ Передать", f"fwdok:{t['ticket_id']}:{target}"),
-          btn("💬 С комментарием", f"fwdok:{t['ticket_id']}:{target}:ask")],
+          btn("💬 Комментом", f"fwdok:{t['ticket_id']}:{target}:ask")],
          [btn("✖️ Отмена", f"t:{t['ticket_id']}")]],
     )
 
@@ -1258,7 +1266,7 @@ async def cb_template_use(x, arg):
         f"{short(draft, 1200)}\n\n"
         f"{placeholder_help(unknown)}\n\n"
         "Отправить как есть, дописать своё или отменить?",
-        [[btn("📤 Отправить как есть", f"tplsend:{t['ticket_id']}")],
+        [[btn("📤 Отправить", f"tplsend:{t['ticket_id']}")],
          [btn("✏️ Дописать", f"tplmore:{t['ticket_id']}")],
          [btn("⭐ Убрать из моих" if own else "⭐ Сделать личным",
               f"tplmy:{t['ticket_id']}:{template_id}:{0 if own else 1}")],

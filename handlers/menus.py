@@ -1,4 +1,4 @@
-﻿"""Главное меню и точки входа (/start, home)."""
+"""Главное меню и точки входа (/start, home)."""
 
 import clock
 import config
@@ -83,14 +83,16 @@ def student_menu():
     # «Ошибка в боте» живёт внутри «Обратной связи», а контакты - внутри
     # частых вопросов: меню студента не должно быть россыпью второстепенных
     # кнопок ради одной жалобы.
-    # Подпись в ряду из четырёх кнопок умещается в 12 символов, из двух - в 16
-    # (max_api.row_limit), поэтому «Обратная связь» стоит в своём ряду, а частые
-    # кнопки названы коротко. Полное название экрана остаётся в тексте.
+    # Ряды строим по две кнопки. В ряду из трёх и более на телефоне подпись
+    # режется многоточием - это видно на скриншоте из MAX: «📅 Расписание» и
+    # «📋 Обращения» превращались в «Расп...» и «Обр...». В двух кнопках
+    # помещается 16 ячеек, и это единственная измеренная величина.
+    # «Обратная связь» - длинная, поэтому стоит в своём ряду.
     return [
         [btn("📄 Справка", "sub:cert"), btn("💰 Бухгалтерия", "sub:acc")],
         [btn("💬 Обратная связь", "sub:fb")],
-        [btn("📅 Расписание", "sched"), btn("📋 Обращения", "tickets"),
-         btn("👤 Профиль", "profile"), btn("❓ Вопросы", "faq")],
+        [btn("📅 Расписание", "sched"), btn("📋 Обращения", "tickets")],
+        [btn("👤 Профиль", "profile"), btn("❓ Вопросы", "faq")],
     ]
 
 
@@ -281,7 +283,7 @@ async def _registration_saved(x: str, fio: str, group: str) -> None:
 
 
 def staff_menu(a):
-    rows = [[btn("📬 Мои обращения", "staff"), btn("📊 Статистика", "staffstats")]]
+    rows = [[btn("📬 Обращения", "staff"), btn("📊 Статистика", "staffstats")]]
     if can_broadcast(a):
         rows.append([btn("📢 Рассылка", "broadcast")])
     if is_super(a):  # переход в панель сис-админа — кнопкой, для тех, кто вписан в .env
@@ -295,7 +297,7 @@ async def sysadmin_menu(x: str):
     await db.clear_state(x)
     await api.send(x, "🔐 Панель сис-админа\n"
                  + MENU_VIEW_HINT["admin"],
-                 [*await super_menu(x), await view_switcher(x)])
+                 [*await super_menu(x), *await view_switcher(x)])
 
 
 MENU_VIEWS = {"admin": "⚙️ Сис-админ", "staff": "🏫 Сотрудник", "student": "🎓 Студент"}
@@ -359,18 +361,20 @@ async def view_switcher(x: str) -> list:
     if not is_super(await admin_of(x)):
         return []                 # у сотрудника переключателя нет вовсе
     current = await menu_view(x)
-    return [btn(f"✅ {MENU_VIEWS[code]}" if code == current else MENU_VIEWS[code],
-                f"view:{code}") for code in MENU_VIEWS]
+    # по две кнопки в ряду: три в ряд на телефоне обрезаются («Сис-адм...»)
+    switcher = [btn(f"✅ {MENU_VIEWS[code]}" if code == current else MENU_VIEWS[code],
+                    f"view:{code}") for code in MENU_VIEWS]
+    return [switcher[0:2], switcher[2:3]]
 
 
 async def super_menu(user_id: str) -> list:
     """Главное меню сис-админа: три блока и «ещё», чтобы не было простыни кнопок."""
     return [
-        [btn("🔔 Что сделать сегодня", "today")],
-        [btn("✍️ Создать обращение", "snew")],
+        [btn("🔔 Сегодня", "today")],
+        [btn("✍️ Создать", "snew")],
         [btn("📋 Обращения", "staff"), btn("👥 Расписания", "view_schedules")],
         [btn("👥 Пользователи", "people"), btn("👥 Сотрудники", "admins")],
-        [btn("🗝 Коды и заявки", "codes"), btn("👤 Кто без прав", "nostaff")],
+        [btn("🗝 Коды", "codes"), btn("👤 Без прав", "nostaff")],
         [btn("⚙️ Ещё", "more")],
         [btn("↩️ Кабинет сотрудника", "home")],
     ]
@@ -386,7 +390,8 @@ async def cb_more(x, arg):
         [btn("📅 Расписания (PDF)", "schedules")],
         [btn("👥 Группы", "groups"), btn("⚙️ Настройки", "settings")],
         [btn("🧪 Тест и журнал", "diag")],
-        await view_switcher(x),
+        # переключатель возвращает два ряда - разворачиваем, а не вкладываем
+        *await view_switcher(x),
         [btn("🔐 Панель сис-админа", "sysadm")],
     ]
     await api.send(x, "⚙️ Ещё", [*keyboard, [btn("↩️ В меню", "home")]])
@@ -405,11 +410,11 @@ async def show_home(x: str):
                        + ("" if await repo.get_user(x)
                           else "Профиля студента у вас нет, поэтому расписание и обращения "
                                "покажутся общими списками.\n"),
-                    [*student_menu(), await view_switcher(x), [btn("↩️ В меню", "home")]])
+                    [*student_menu(), *await view_switcher(x), [btn("↩️ В меню", "home")]])
             if view == "staff":
                 return await api.send(
                     x, f"🏫 {MENU_VIEW_HINT['staff']}",
-                    [*staff_menu(a), await view_switcher(x), [btn("↩️ В меню", "home")]])
+                    [*staff_menu(a), *await view_switcher(x), [btn("↩️ В меню", "home")]])
             return await sysadmin_menu(x)      # режим «сис-админ» - свой кабинет
         # обычный сотрудник: кабинет сотрудника, без системных кнопок и без
         # переключателя режима. Если режим был включён раньше - сбрасываем,
@@ -465,8 +470,8 @@ async def st_reg_group(x, text, p):
     return await api.send(
         x,
         f"Проверьте данные:\n\n👤 {fio}\n🎓 {group}\n\nВсё верно?",
-        [[btn("✅ Всё верно, завершить", "regyes")],
-         [btn("✏️ ФИО", "regname:"), btn("🔤 Другая группа", "regpick:")], *BACK],
+        [[btn("✅ Всё верно", "regyes")],
+         [btn("✏️ ФИО", "regname:"), btn("🔤 Другая", "regpick:")], *BACK],
     )
 
 
@@ -492,7 +497,7 @@ async def st_reg_confirm(x, text, p):
     if _valid_fio(_clean_fio(text)):
         return await _finish_registration(x, _clean_fio(text), as_str(payload.get("group", "")))
     return await api.send(x, "Нажмите «✅ Всё верно» или пришлите исправленное ФИО.",
-                          [[btn("✅ Всё верно, завершить", "regyes")], *BACK])
+                          [[btn("✅ Всё верно", "regyes")], *BACK])
 
 
 @state("registration_name")
@@ -685,10 +690,11 @@ async def _ask_group(x: str, name: str = "", typed: str = "", suggestions=None) 
     keyboard = [[btn(group["code"], f"regpick:{group['code']}")]
                 for group in suggestions[:8] if group.get("active")]
     if typed and not keyboard:
-        # код группы режем без многоточия: в кнопке он и так не помещается целиком
-        keyboard.append([btn(f"✍️ Создать {cut_plain(group_code(typed), 12)}",
+        # Код группы в кнопку не влезает рядом со словом, поэтому коротко, а сам
+        # код идёт строкой текстом в заголовке экрана.
+        keyboard.append([btn(f"✍️ Создать {cut_plain(group_code(typed), 4)}",
                              f"regnew:{group_code(typed)}")])
-    keyboard.append([btn("🔤 Введу код вручную", "regpick:")])
+    keyboard.append([btn("🔤 Введу код", "regpick:")])
     head = (f"{name}, группа «{typed}» в списке не найдена. Похожее — проверьте и выберите:"
             if typed else
             f"{name}, укажите код группы. Можно выбрать кнопкой или написать: «24-23 (П)» "
@@ -707,7 +713,7 @@ async def _guest_home(x: str):
         "Позже сможете зарегистрироваться как студент.",
         [
             [btn("📚 Все расписания", "view_schedules")],
-            [btn("🎓 Я всё-таки студент", "who:student")],
+            [btn("🎓 Я студент", "who:student")],
             [btn("👔 Я сотрудник", "who:staff")],
         ],
     )
@@ -883,7 +889,7 @@ async def cb_academic(x, arg):
         [
             [btn("📚 Учёба", "topic:academic:study")],
             [btn("🗓 Период обучения", "topic:academic:period")],
-            [btn("💼 Вакансии", "topic:academic:vacancies"), btn("✍️ Подать заявку", "new:academic")],
+            [btn("💼 Вакансии", "topic:academic:vacancies"), btn("✍️ Заявка", "new:academic")],
             [btn("⬅️ Назад", "back")],
         ],
     )
@@ -897,7 +903,7 @@ async def cb_accounting(x, arg):
         x,
         "💰 Бухгалтерия\nВыберите тему обращения:",
         [
-            [btn("🎓 Стипендия", "topic:accounting:scholarship"), btn("✍️ Подать заявку", "new:accounting")],
+            [btn("🎓 Стипендия", "topic:accounting:scholarship"), btn("✍️ Заявка", "new:accounting")],
             [btn("⬅️ Назад", "back")],
         ],
     )
@@ -1061,7 +1067,7 @@ async def cb_my_all(x, arg):
                 for row in rows[:MY_TICKETS_PREVIEW]]
     keyboard += [
         [btn("↩️ В меню", "home")],
-        [btn("🗂 Мои обращения", "tickets"), btn("📅 Моё расписание", "sched")],
+        [btn("🗂 Обращения", "tickets"), btn("📅 Расписание", "sched")],
         [btn("👤 Профиль", "profile")],
     ]
     if len(keyboard) > MAX_ROWS:   # страховка: MAX не принимает больше 30 строк

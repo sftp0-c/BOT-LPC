@@ -150,7 +150,8 @@ async def test_close_button_is_in_the_ticket_card(api):
     await press(STAFF, f"t:{tid}")
     assert f"tplclose:{tid}" in api.payloads(STAFF)
     labels = [b["text"] for row in api.last(STAFF)[2] for b in row]
-    assert "✅ Ответить и закрыть" in labels
+    # 16 ячеек, чтобы влезало в пару с «💬 Ответить»
+    assert "✅ Ответ и закрыть" in labels
 
 
 async def test_close_button_is_not_shown_for_closed_ticket(api):

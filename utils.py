@@ -4,6 +4,7 @@ import os
 import re
 
 import clock
+import max_api
 import secrets
 from datetime import timedelta
 
@@ -85,7 +86,7 @@ def cut_plain(text: str, n: int) -> str:
     return cut.rstrip(" ,.;:—-") or text[:n]
 
 
-def short_name(value, n: int = 26) -> str:
+def short_name(value, n: int = 0) -> str:
     """ФИО для кнопки: целиком, если влезает, иначе фамилия с инициалами.
 
     «Соколова Мария» кнопка вмещает целиком, а «Ковалевский Константин Юрьевич»
@@ -94,6 +95,7 @@ def short_name(value, n: int = 26) -> str:
     списком, так что в кнопке имени хватает.
     Предел по умолчанию - ширина кнопки MAX (max_api.BUTTON_TEXT).
     """
+    n = n or max_api.BUTTON_TEXT
     parts = [part for part in as_str(value).split() if part]
     if not parts:
         return ""
@@ -320,6 +322,8 @@ STAFF_CATS_BTN = {
     "accounting": "💰 Деньги",
     "all": "🔁 Всё",
 }
+# Полные названия тем. Они попадают в текст обращения, в уведомление
+# сотруднику и в карточку дела - там места хватает и смысл важен.
 TOPIC_CATS = {
     "academic": {
         "study": "Учёба и оценки",
@@ -328,6 +332,19 @@ TOPIC_CATS = {
     },
     "accounting": {
         "scholarship": "Стипендия и выплаты",
+    },
+}
+# Короткие подписи тех же тем для кнопок: предел в ряду из одной кнопки -
+# 20 ячеек, а «Сроки, сессии и пересдачи» это 25. Полное название остаётся
+# в заголовке и в тексте обращения.
+TOPIC_CATS_BTN = {
+    "academic": {
+        "study": "Учёба и оценки",
+        "period": "Сроки и сессии",
+        "vacancies": "Вакансии",
+    },
+    "accounting": {
+        "scholarship": "Стипендия",
     },
 }
 
