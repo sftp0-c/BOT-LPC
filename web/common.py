@@ -172,7 +172,19 @@ async def require_form(request: Request) -> str:
 
 
 # ── HTML ──────────────────────────────────────────────────────────────────────
-STYLE = STYLESHEET   # токены, тёмная тема по умолчанию, светлая по переключателю
+# Стили раздела «Данные»: там в таблицах произвольные колонки базы, и их вид
+# задаёт не тема, а сам раздел. Лежат здесь, а не в panel_theme, потому что
+# тема - общая для всех разделов, а эти правила - только для одного.
+DATA_STYLE = """
+.data-table{width:100%;table-layout:auto}
+.data-table th a{color:inherit}
+.data-table td{max-width:340px}
+.data-table .data-key{white-space:nowrap}
+.data-table summary{cursor:pointer;padding:2px 0}
+"""
+
+
+STYLE = STYLESHEET + DATA_STYLE   # токены темы + стили раздела «Данные»
 
 
 def esc(value) -> str:
@@ -288,8 +300,11 @@ NAV_GROUPS: tuple[tuple[str, tuple[tuple[str, str, str], ...]], ...] = (
                      ("/groups", "Группы", "groups"),
                      ("/schedules", "Расписания", "schedules"),
                      ("/broadcasts", "Рассылки", "broadcasts"))),
+    # «Данные» — раздел только для владельца бота (config.ROOT_IDS): ссылка
+    # в меню общая, а открыть его может лишь владелец, остальным приходит 404.
     ("Система", (("/settings", "Настройки", "settings"),
                   ("/database", "База данных", "database"),
+                  ("/data", "Данные", "archive"),
                   ("/logs", "Журнал", "logs"))),
 )
 

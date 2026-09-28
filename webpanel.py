@@ -28,6 +28,7 @@ from panel_theme import actions_script, hotkeys_script
 from utils import person_label
 
 from web.access import _join_page_html
+from web import data  # noqa: F401  - раздел «Данные» подключается к общему роутеру панели
 from web.common import (COOKIE, JOIN_STYLE, NAV_GROUPS, NAV_SECTIONS, STYLE, _csrf, _flashes,
                         _sessions, is_sysadmin, nice_max, page, panel_link)
 from web.database import schema_broken_page

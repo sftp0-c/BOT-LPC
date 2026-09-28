@@ -42,7 +42,7 @@ RUN pip install -r requirements.txt
 # Модули верхнего уровня. Список полный: bot.py импортирует webpanel, а тот -
 # repository, timetable, charts, handlers. Забытый здесь модуль = падение на старте.
 COPY config.py database.py max_api.py repository.py updates.py utils.py college.py \
-     timetable.py charts.py schedule_import.py schedule_watch.py attachments.py \
+     timetable.py charts.py schedule_import.py schedule_watch.py attachments.py version.py \
      panel_theme.py tunnel.py clock.py bot_commands.py webpanel.py bot.py ./
 COPY handlers ./handlers
 # Слои данных и панели разложены по папкам: store/ - SQL, web/ - маршруты.
