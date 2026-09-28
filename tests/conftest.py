@@ -5,10 +5,11 @@ from logging.handlers import RotatingFileHandler
 import pytest
 
 import bot
+import clock
 import config
 import database as db
 import webpanel
-from handlers import admin, broadcast, common, demo, faq, menus, schedules, tickets
+from handlers import admin, broadcast, common, faq, menus, schedules, tickets
 
 BOT_ID = 999
 PANEL_PASSWORD = "test-panel-pass"
@@ -48,6 +49,11 @@ class FakeAPI:
 
 
 
+def _clear_flashes() -> None:
+    """Очередь сообщений панели: одна теста не должна всплывать в другой."""
+    getattr(webpanel, "_flashes", {}).clear()
+
+
 def login_panel(client, user_id: str = "1", password: str = PANEL_PASSWORD) -> bool:
     return client.post("/panel/login", data={"user_id": user_id, "password": password},
                        follow_redirects=False).status_code == 303
@@ -70,6 +76,7 @@ def panel_client(monkeypatch, env):
     monkeypatch.setattr(config, "WEB_PANEL_PASSWORD", PANEL_PASSWORD)
     monkeypatch.setattr(config, "WEB_PANEL_HOURS", 12)
     webpanel._sessions.clear()
+    _clear_flashes()            # сообщения прошлого теста не должны всплыть в этом
     webpanel._flash = ""
     return TestClient(bot.app)
 
@@ -125,6 +132,13 @@ def click(user, payload):
 
 @pytest.fixture(autouse=True)
 async def env(tmp_path, monkeypatch):
+    # Время в проекте одно — локальное время колледжа (см. clock). Фиксируем
+    # зону явно: без неё тесты зависят от машины (на Windows базы часовых
+    # поясов нет, clock берёт запасной UTC+5, а в контейнере TZ не задан —
+    # и время в базе уехало бы на 5 часов назад). clock.reset() — зона
+    # читается один раз, тестам нужен чистый старт.
+    monkeypatch.setenv("TZ", "Asia/Yekaterinburg")
+    clock.reset()
     monkeypatch.setattr(config, "DATABASE_PATH", str(tmp_path / "test.db"))
     monkeypatch.setattr(config, "SYSADMIN_IDS", ["1"])
     # владелец в тестах появляется только там, где это проверяется явно
@@ -135,9 +149,10 @@ async def env(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "BACKUP_DIR", str(tmp_path / "backups"))
     _retarget_log_file()
     fake = FakeAPI()
-    for module in (bot, common, admin, broadcast, menus, tickets, schedules, demo, faq):
+    for module in (bot, common, admin, broadcast, menus, tickets, schedules, faq):
         monkeypatch.setattr(module, "api", fake)
     bot._locks.clear()
+    _clear_flashes()
     await db.init_db()
     return fake
 

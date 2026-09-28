@@ -1,14 +1,17 @@
 """SQLite-слой: схема, простые запросы, состояния диалога, настройки."""
 import json
+import logging
 import os
 import re
-import time
 from contextlib import asynccontextmanager
 
 import aiosqlite
 
+import clock
 import config
 from utils import as_str, norm_group
+
+log = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users(
@@ -244,8 +247,8 @@ TOPIC_SOURCES: tuple[str, ...] = GROUP_SOURCES
 # ни названия, ни created_at уже заведённых групп. Коды копируются как есть:
 # приводит их к общему виду _fix_group_codes.
 GROUP_BACKFILL: tuple[str, ...] = tuple(
-    f"INSERT OR IGNORE INTO groups(group_code) "
-    f'SELECT DISTINCT group_code FROM "{table}" WHERE TRIM(group_code) <> \'\''
+    f"INSERT OR IGNORE INTO groups(group_code, created_at) "
+    f'SELECT DISTINCT group_code, ? FROM "{table}" WHERE TRIM(group_code) <> \'\''
     for table in GROUP_SOURCES
 )
 GROUP_BACKFILL_MARKER = "groups_backfill_v1"
@@ -310,8 +313,114 @@ async def _fix_group_codes(c) -> None:
             code = norm_group(as_str(raw))
             if code == raw:
                 continue
-            await c.execute("INSERT OR IGNORE INTO groups(group_code) VALUES(?)", (code,))
+            await c.execute("INSERT OR IGNORE INTO groups(group_code, created_at) VALUES(?,?)",
+                            (code, clock.stamp()))
             await c.execute("DELETE FROM groups WHERE group_code=?", (raw,))
+
+
+# ── переход со старой конвенции (UTC) на локальное время ──────────────────────
+# Ключ в settings: миграция отработала один раз, следующий запуск бота данные
+# не двигает. Значение — сдвиг, который применили, в минутах.
+TZ_MIGRATION_KEY = "tz_migrated"
+
+# Колонки, где лежит момент времени. Список явный и не выводится из схемы:
+# рядом есть колонки со свободным текстом (tickets.ready_until — «сегодня до
+# 18:00»), и сдвигать их нельзя. Плюс страховка на уровне значений: миграция
+# трогает только строки вида «ГГГГ-ММ-ДД ЧЧ:ММ:СС», поэтому пустые строки и
+# «18:00» остаются как есть.
+# groups.created_at здесь нет намеренно: это служебная отметка справочника,
+# она нигде не показывается, зато значение в неё пишут и руками.
+TIME_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("admins", "created_at"),
+    ("users", "created_at"),
+    ("users", "consent_at"),
+    ("user_states", "created_at"),
+    ("tickets", "created_at"),
+    ("tickets", "updated_at"),
+    ("tickets", "deleted_at"),
+    ("ticket_messages", "created_at"),
+    ("ticket_events", "created_at"),
+    ("schedules", "parsed_at"),
+    ("schedules", "updated_at"),
+    ("schedule_subscriptions", "created_at"),
+    ("group_aliases", "created_at"),
+    ("contacts", "first_seen"),
+    ("contacts", "last_seen"),
+    ("staff_requests", "created_at"),
+    ("staff_requests", "updated_at"),
+    ("staff_invites", "created_at"),
+    ("staff_invites", "expires_at"),
+    ("staff_invites", "used_at"),
+    ("login_attempts", "created_at"),
+    ("processed_updates", "created_at"),
+    ("reply_templates", "created_at"),
+    ("broadcasts", "created_at"),
+    ("admin_log", "created_at"),
+    ("faq", "created_at"),
+    ("faq", "updated_at"),
+)
+
+
+async def migrate_timezone() -> int:
+    """Сдвигает записанное время из UTC в локальное время колледжа.
+
+    Отдельная функция, а не только шаг init_db: починка старой базы — редкое
+    событие, и его полезно уметь запустить руками. Возвращает, сколько
+    значений сдвинуто; повторный вызов ничего не меняет.
+    """
+    async with _conn() as c:
+        moved = await _migrate_timezone(c)
+        await c.commit()
+    return moved
+
+
+async def _migrate_timezone(c) -> int:
+    offset = clock.offset_minutes()
+    marker = await (await c.execute(
+        "SELECT value FROM settings WHERE key=?", (TZ_MIGRATION_KEY,))).fetchone()
+    if marker is not None:
+        if as_str(marker["value"]) != str(offset):
+            log.info("Часовой пояс сменился на сдвиг %s минут после миграции (%s): "
+                     "данные второй раз не сдвигаются", offset, marker["value"])
+        return 0
+    if not offset:
+        await _mark_tz_migrated(c, offset)
+        return 0
+    moved = 0
+    for table, column in TIME_COLUMNS:
+        if not await column_exists(c, table, column):
+            continue
+        moved += await _shift_column(c, table, column, offset)
+    await _mark_tz_migrated(c, offset)
+    log.info("Время в базе переведено в %s: сдвинуто значений — %d", clock.tz_name(), moved)
+    return moved
+
+
+async def _shift_column(c, table: str, column: str, offset: int) -> int:
+    """Сдвигает в одной колонке все значения, похожие на дату из базы."""
+    cur = await c.execute(
+        f'SELECT rowid AS _rid, "{column}" AS _moment FROM "{table}" WHERE "{column}" GLOB ?',
+        (clock.STAMP_GLOB,),
+    )
+    updates: list[tuple[str, int]] = []
+    for row in await cur.fetchall():
+        old = as_str(row["_moment"])
+        if not clock.looks_like_stamp(old):
+            continue
+        new = clock.shift(old, offset)
+        if new and new != old:
+            updates.append((new, int(row["_rid"])))
+    if updates:
+        await c.executemany(f'UPDATE "{table}" SET "{column}"=? WHERE rowid=?', updates)
+    return len(updates)
+
+
+async def _mark_tz_migrated(c, offset: int) -> None:
+    await c.execute(
+        "INSERT INTO settings(key, value) VALUES(?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (TZ_MIGRATION_KEY, str(offset)),
+    )
 
 
 async def init_db() -> None:
@@ -322,11 +431,15 @@ async def init_db() -> None:
         await c.executescript(SCHEMA)
         for table, columns in COLUMN_UPGRADES.items():
             await _add_missing_columns(c, table, columns)
+        # Переход со старой конвенции (UTC) на локальное время: один раз за всю
+        # жизнь базы, дальше запись в settings останавливает повторный сдвиг.
+        # Идёт до наполнения: всё, что init_db пишет сам, уже локальное.
+        await _migrate_timezone(c)
         marker = await c.execute("SELECT value FROM settings WHERE key=?", (GROUP_BACKFILL_MARKER,))
         marker_row = await marker.fetchone()
         if marker_row is None or marker_row["value"] != "1":
             for sql in GROUP_BACKFILL:
-                await c.execute(sql)
+                await c.execute(sql, (clock.stamp(),))
             await _fix_group_codes(c)
             await c.execute(
                 "INSERT INTO settings(key, value) VALUES(?, '1') "
@@ -335,17 +448,19 @@ async def init_db() -> None:
             )
         for admin_id in await _sysadmins_to_import(c):
             await c.execute(
-                "INSERT INTO admins(user_id, full_name, role_type, can_broadcast) VALUES(?, 'Сис-админ', 'sysadmin', 1) "
+                "INSERT INTO admins(user_id, full_name, role_type, can_broadcast, created_at) "
+                "VALUES(?, 'Сис-админ', 'sysadmin', 1, ?) "
                 "ON CONFLICT(user_id) DO UPDATE SET role_type='sysadmin', can_broadcast=1",
-                (admin_id,),
+                (admin_id, clock.stamp()),
             )
         # Владелец: максимальные права на корневом уровне. Обновляется при каждом
         # старте, и отзыв прав в панели его не касается (см. revoke_sysadmin).
         for owner_id in config.ROOT_IDS or []:
             await c.execute(
-                "INSERT INTO admins(user_id, full_name, role_type, can_broadcast) VALUES(?, 'Владелец', 'owner', 1) "
+                "INSERT INTO admins(user_id, full_name, role_type, can_broadcast, created_at) "
+                "VALUES(?, 'Владелец', 'owner', 1, ?) "
                 "ON CONFLICT(user_id) DO UPDATE SET role_type='owner', can_broadcast=1",
-                (str(owner_id),),
+                (str(owner_id), clock.stamp()),
             )
         await c.commit()
 
@@ -429,10 +544,10 @@ async def get_state(user_id: str):
 
 async def set_state(user_id: str, state: str, payload: dict | None = None) -> None:
     await run(
-        "INSERT INTO user_states(user_id, state, payload, created_at) VALUES(?,?,?,datetime('now')) "
+        "INSERT INTO user_states(user_id, state, payload, created_at) VALUES(?,?,?,?) "
         "ON CONFLICT(user_id) DO UPDATE SET state=excluded.state, payload=excluded.payload, "
         "created_at=excluded.created_at",
-        (user_id, state, json.dumps(payload or {}, ensure_ascii=False)),
+        (user_id, state, json.dumps(payload or {}, ensure_ascii=False), clock.stamp()),
     )
 
 
@@ -467,8 +582,10 @@ async def mark_processed(key: str, ttl_hours: int = 24) -> bool:
     даже при конкурентной обработке. Старые записи вычищаются по TTL.
     """
     async with _conn() as c:
-        cur = await c.execute("INSERT OR IGNORE INTO processed_updates(key) VALUES(?)", (key,))
-        await c.execute("DELETE FROM processed_updates WHERE created_at < datetime('now', ?)", (f"-{ttl_hours} hours",))
+        cur = await c.execute("INSERT OR IGNORE INTO processed_updates(key, created_at) VALUES(?,?)",
+                              (key, clock.stamp()))
+        await c.execute("DELETE FROM processed_updates WHERE created_at < ?",
+                        (clock.stamp_at(-int(ttl_hours) * 60),))
         await c.commit()
         return cur.rowcount > 0
 
@@ -593,7 +710,8 @@ async def checkpoint() -> int:
 
 
 def backup_name() -> str:
-    return time.strftime("bot-%Y%m%d-%H%M%S.db")
+    """Имя копии с местным временем: в контейнере time.strftime даёт UTC."""
+    return "bot-" + clock.stamp().replace("-", "").replace(":", "").replace(" ", "-") + ".db"
 
 
 def _unique_path(folder: str, name: str) -> str:
@@ -729,10 +847,11 @@ async def prune(table: str, days: int) -> int:
     allowed = ("processed_updates", "login_attempts", "user_states")
     if table not in allowed:
         return -1
+    cutoff = clock.stamp_at(-int(days) * 24 * 60)
     if table == "user_states":
         # состояния незавершённых диалогов: пустое created_at — заведомо старые
         return await run_count(
-            "DELETE FROM user_states WHERE created_at='' OR created_at < datetime('now', ?)",
-            (f"-{int(days)} days",),
+            "DELETE FROM user_states WHERE created_at='' OR created_at < ?",
+            (cutoff,),
         )
-    return await run_count(f"DELETE FROM {table} WHERE created_at < datetime('now', ?)", (f"-{int(days)} days",))
+    return await run_count(f"DELETE FROM {table} WHERE created_at < ?", (cutoff,))

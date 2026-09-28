@@ -6,6 +6,7 @@ bot.py не пишет SQL сам — все обращения к базе ид
 from datetime import date, datetime, timedelta
 from typing import Optional
 
+import clock
 import config
 import database as db
 from utils import (
@@ -17,7 +18,6 @@ from utils import (
     group_code,
     group_digits,
     norm_group,
-    parse_db_time,
     same_group,
     parse_max_ids,
     parse_nicks,
@@ -67,14 +67,15 @@ async def is_registered(user_id: str) -> bool:
 async def upsert_user(user_id: str, full_name: str, group_code: str) -> None:
     code = norm_group(group_code)
     await db.run(
-        "INSERT INTO users(user_id, full_name, group_code) VALUES(?,?,?) "
+        "INSERT INTO users(user_id, full_name, group_code, created_at) VALUES(?,?,?,?) "
         "ON CONFLICT(user_id) DO UPDATE SET full_name=excluded.full_name, group_code=excluded.group_code",
-        (user_id, full_name, code),
+        (user_id, full_name, code, clock.stamp()),
     )
     if code:
         # новая группа сразу попадает в справочник: иначе её не будет в списке панели
         # и переименовать её до перезапуска бота (когда сработает дозаполнение) нельзя
-        await db.run("INSERT OR IGNORE INTO groups(group_code) VALUES(?)", (code,))
+        await db.run("INSERT OR IGNORE INTO groups(group_code, created_at) VALUES(?,?)",
+                     (code, clock.stamp()))
 
 
 async def set_user_name(user_id: str, full_name: str) -> None:
@@ -190,7 +191,7 @@ async def on_vacation(user_id: str) -> bool:
     if not row or not as_str(row["vacation_until"]):
         return False
     day = _parse_day(row["vacation_until"])
-    return bool(day) and date.today() <= day          # отпуск начался или ещё не кончился
+    return bool(day) and clock.today() <= day         # отпуск начался или ещё не кончился
 
 
 async def staff_on_vacation() -> list[dict]:
@@ -263,10 +264,10 @@ async def add_staff(
     """Добавляет сотрудника. Существующую строку не трогает — данные правит update_admin."""
     await db.run(
         "INSERT OR IGNORE INTO admins(user_id, full_name, role_type, position, department, office, "
-        "ticket_category, can_broadcast) VALUES(?,?, 'staff', ?,?,?,?,?)",
+        "ticket_category, can_broadcast, created_at) VALUES(?,?, 'staff', ?,?,?,?,?,?)",
         (str(user_id), as_str(full_name).strip()[:100], as_str(position).strip()[:100],
          as_str(department).strip()[:100], as_str(office).strip()[:100],
-         ticket_category or "all", int(bool(can_broadcast))),
+         ticket_category or "all", int(bool(can_broadcast)), clock.stamp()),
     )
 
 
@@ -380,8 +381,8 @@ async def staff_activity(days: int = 30) -> dict:
         "SUM(CASE WHEN t.status IN ('new','accepted','in_progress') THEN 1 ELSE 0 END) open_n, "
         "MAX(t.updated_at) last_reply "
         "FROM tickets t JOIN admins a ON a.user_id=t.target_admin_id "
-        "WHERE t.created_at >= datetime('now', ?) GROUP BY t.target_admin_id",
-        (f"-{max(1, int(days))} days",),
+        "WHERE t.created_at >= ? GROUP BY t.target_admin_id",
+        (clock.stamp_at(-max(1, int(days)) * 24 * 60),),
     )
     return {as_str(row["uid"]): {"tickets": row["tickets"], "open": row["open_n"] or 0,
                                  "last_reply": as_str(row["last_reply"])} for row in rows}
@@ -493,8 +494,8 @@ async def latest_message_roles(ticket_ids: list[int]) -> dict:
 
 async def log_ticket_event(ticket_id: int, actor_id: str, event: str, detail: str = "") -> int:
     return await db.run(
-        "INSERT INTO ticket_events(ticket_id, actor_id, event, detail) VALUES(?,?,?,?)",
-        (int(ticket_id), as_str(actor_id).strip(), event, as_str(detail).strip()[:200]),
+        "INSERT INTO ticket_events(ticket_id, actor_id, event, detail, created_at) VALUES(?,?,?,?,?)",
+        (int(ticket_id), as_str(actor_id).strip(), event, as_str(detail).strip()[:200], clock.stamp()),
     )
 
 
@@ -505,8 +506,8 @@ async def add_internal_note(ticket_id: int, actor_id: str, text: str) -> int:
     заметка видна как строка, но не отправляется в MAX.
     """
     return await db.run(
-        "INSERT INTO ticket_events(ticket_id, actor_id, event, detail) VALUES(?,?,'note',?)",
-        (int(ticket_id), as_str(actor_id).strip(), as_str(text).strip()[:200]),
+        "INSERT INTO ticket_events(ticket_id, actor_id, event, detail, created_at) VALUES(?,?,'note',?,?)",
+        (int(ticket_id), as_str(actor_id).strip(), as_str(text).strip()[:200], clock.stamp()),
     )
 
 
@@ -524,8 +525,8 @@ async def forward_ticket(ticket_id: int, new_admin_id: str, actor_id: str,
     if is_sysadmin_role(as_str(admin["role_type"])):
         return False, "Сис-админ не принимает обращения - выдайте ему роль сотрудника"
     changed = await db.run_count(   # run_count возвращает число строк, run - lastrowid
-        "UPDATE tickets SET target_admin_id=?, updated_at=datetime('now') WHERE ticket_id=?",
-        (as_str(new_admin_id), int(ticket_id)),
+        "UPDATE tickets SET target_admin_id=?, updated_at=? WHERE ticket_id=?",
+        (as_str(new_admin_id), clock.stamp(), int(ticket_id)),
     )
     if not changed:
         return False, f"Обращение №{ticket_id} не найдено"
@@ -568,18 +569,22 @@ async def status_counts(admin_id: Optional[str] = None) -> dict:
 async def create_ticket(student_id: str, admin_id: str, category: str, text: str, topic: str = "") -> int:
     """Создаёт обращение и его первое сообщение в одной транзакции."""
     async with db._conn() as c:
+        stamp = clock.stamp()
         cur = await c.execute(
-            "INSERT INTO tickets(student_id, target_admin_id, category, text_content, topic) VALUES(?,?,?,?,?)",
-            (student_id, admin_id, category, text, as_str(topic).strip()),
+            "INSERT INTO tickets(student_id, target_admin_id, category, text_content, topic, "
+            "created_at, updated_at) VALUES(?,?,?,?,?,?,?)",
+            (student_id, admin_id, category, text, as_str(topic).strip(), stamp, stamp),
         )
         ticket_id = cur.lastrowid
         await c.execute(
-            "INSERT INTO ticket_messages(ticket_id, sender_id, sender_role, text) VALUES(?,?,?,?)",
-            (ticket_id, student_id, "student", text),
+            "INSERT INTO ticket_messages(ticket_id, sender_id, sender_role, text, created_at) "
+            "VALUES(?,?,?,?,?)",
+            (ticket_id, student_id, "student", text, stamp),
         )
         await c.execute(
-            "INSERT INTO ticket_events(ticket_id, actor_id, event, detail) VALUES(?,?,'created',?)",
-            (ticket_id, student_id, as_str(topic).strip()[:200] or category),
+            "INSERT INTO ticket_events(ticket_id, actor_id, event, detail, created_at) "
+            "VALUES(?,?,'created',?,?)",
+            (ticket_id, student_id, as_str(topic).strip()[:200] or category, stamp),
         )
         await c.commit()
     return ticket_id
@@ -587,50 +592,56 @@ async def create_ticket(student_id: str, admin_id: str, category: str, text: str
 
 async def add_ticket_message(ticket_id: int, sender_id: str, role: str, text: str, new_status: str | None = None) -> None:
     async with db._conn() as c:
+        stamp = clock.stamp()
         await c.execute(
-            "INSERT INTO ticket_messages(ticket_id, sender_id, sender_role, text) VALUES(?,?,?,?)",
-            (ticket_id, sender_id, role, text),
+            "INSERT INTO ticket_messages(ticket_id, sender_id, sender_role, text, created_at) VALUES(?,?,?,?,?)",
+            (ticket_id, sender_id, role, text, stamp),
         )
         await c.execute(
-            "INSERT INTO ticket_events(ticket_id, actor_id, event, detail) VALUES(?,?,?,?)",
-            (ticket_id, sender_id, "message_student" if role == "student" else "message_staff", as_str(text)[:200]),
+            "INSERT INTO ticket_events(ticket_id, actor_id, event, detail, created_at) VALUES(?,?,?,?,?)",
+            (ticket_id, sender_id, "message_student" if role == "student" else "message_staff",
+             as_str(text)[:200], stamp),
         )
         if new_status:
             await c.execute(
-                "UPDATE tickets SET status=?, updated_at=datetime('now') WHERE ticket_id=?", (new_status, ticket_id)
+                "UPDATE tickets SET status=?, updated_at=? WHERE ticket_id=?", (new_status, stamp, ticket_id)
             )
             await c.execute(
-                "INSERT INTO ticket_events(ticket_id, actor_id, event, detail) VALUES(?,?,'status',?)",
-                (ticket_id, sender_id, new_status),
+                "INSERT INTO ticket_events(ticket_id, actor_id, event, detail, created_at) VALUES(?,?,'status',?,?)",
+                (ticket_id, sender_id, new_status, stamp),
             )
         else:
-            await c.execute("UPDATE tickets SET updated_at=datetime('now') WHERE ticket_id=?", (ticket_id,))
+            await c.execute("UPDATE tickets SET updated_at=? WHERE ticket_id=?", (stamp, ticket_id))
         await c.commit()
 
 
 async def set_ticket_status(ticket_id: int, status: str, actor_id: str = "") -> None:
     async with db._conn() as c:
+        stamp = clock.stamp()
         await c.execute(
-            "UPDATE tickets SET status=?, updated_at=datetime('now') WHERE ticket_id=?", (status, ticket_id)
+            "UPDATE tickets SET status=?, updated_at=? WHERE ticket_id=?", (status, stamp, ticket_id)
         )
         if actor_id:
             await c.execute(
-                "INSERT INTO ticket_events(ticket_id, actor_id, event, detail) VALUES(?,?,'status',?)",
-                (ticket_id, as_str(actor_id), status),
+                "INSERT INTO ticket_events(ticket_id, actor_id, event, detail, created_at) "
+                "VALUES(?,?,'status',?,?)",
+                (ticket_id, as_str(actor_id), status, stamp),
             )
         await c.commit()
 
 
 async def transition_ticket_status(ticket_id: int, current_status: str, status: str, actor_id: str = "") -> bool:
     async with db._conn() as c:
+        stamp = clock.stamp()
         cur = await c.execute(
-            "UPDATE tickets SET status=?, updated_at=datetime('now') WHERE ticket_id=? AND status=?",
-            (status, ticket_id, current_status),
+            "UPDATE tickets SET status=?, updated_at=? WHERE ticket_id=? AND status=?",
+            (status, stamp, ticket_id, current_status),
         )
         if cur.rowcount > 0 and actor_id:
             await c.execute(
-                "INSERT INTO ticket_events(ticket_id, actor_id, event, detail) VALUES(?,?,'status',?)",
-                (ticket_id, as_str(actor_id), status),
+                "INSERT INTO ticket_events(ticket_id, actor_id, event, detail, created_at) "
+                "VALUES(?,?,'status',?,?)",
+                (ticket_id, as_str(actor_id), status, stamp),
             )
         await c.commit()
         return cur.rowcount > 0
@@ -644,14 +655,17 @@ async def set_ticket_ready(
     actor_id: str = "",
 ) -> None:
     async with db._conn() as c:
+        stamp = clock.stamp()
         await c.execute(
             "UPDATE tickets SET status='ready', ready_until=?, pickup_place=?, doc_url=?, "
-            "updated_at=datetime('now') WHERE ticket_id=?",
-            (as_str(ready_until).strip(), as_str(pickup_place).strip(), as_str(doc_url).strip(), ticket_id),
+            "updated_at=? WHERE ticket_id=?",
+            (as_str(ready_until).strip(), as_str(pickup_place).strip(), as_str(doc_url).strip(),
+             stamp, ticket_id),
         )
         await c.execute(
-            "INSERT INTO ticket_events(ticket_id, actor_id, event, detail) VALUES(?,?,'ready',?)",
-            (ticket_id, as_str(actor_id), f"{as_str(ready_until).strip()} · {as_str(pickup_place).strip()}"),
+            "INSERT INTO ticket_events(ticket_id, actor_id, event, detail, created_at) VALUES(?,?,'ready',?,?)",
+            (ticket_id, as_str(actor_id), f"{as_str(ready_until).strip()} · {as_str(pickup_place).strip()}",
+             stamp),
         )
         await c.commit()
 
@@ -676,10 +690,10 @@ async def upsert_schedule(group_code: str, pdf_url: str) -> bool:
     if old and as_str(old["pdf_url"]) == pdf_url:
         return False  # ссылка прежняя — разобранное расписание остаётся в силе
     await db.run(
-        "INSERT INTO schedules(group_code, pdf_url, updated_at) VALUES(?,?,datetime('now')) "
+        "INSERT INTO schedules(group_code, pdf_url, updated_at) VALUES(?,?,?) "
         "ON CONFLICT(group_code) DO UPDATE SET pdf_url=excluded.pdf_url, updated_at=excluded.updated_at, "
         "parsed_at='', parsed_hash='', parse_error=''",
-        (code, pdf_url),
+        (code, pdf_url, clock.stamp()),
     )
     return True
 
@@ -710,8 +724,8 @@ def stamp_is_fresh(stamp: dict, hours: int) -> bool:
     """
     if not stamp["parsed_hash"]:
         return False
-    moment = parse_db_time(stamp["parsed_at"])
-    return bool(moment) and (datetime.now() - moment) < timedelta(hours=hours)
+    moment = clock.parse(stamp["parsed_at"])
+    return bool(moment) and (clock.now() - moment) < timedelta(hours=hours)
 
 
 def stamp_matches_file(stamp: dict, file_hash: str) -> bool:
@@ -739,9 +753,9 @@ async def save_lessons(group_code: str, schedule, file_hash: str, found: list[st
             rows,
         )
         await c.execute(
-            "UPDATE schedules SET parsed_at=datetime('now'), parsed_hash=?, found_groups=?, parse_error=? "
+            "UPDATE schedules SET parsed_at=?, parsed_hash=?, found_groups=?, parse_error=? "
             "WHERE group_code=?",
-            (file_hash, ",".join(found), error, code),
+            (clock.stamp(), file_hash, ",".join(found), error, code),
         )
         await c.commit()
     return len(rows)
@@ -852,9 +866,9 @@ async def set_schedule_subscription(user_id: str, group_code: str) -> None:
     code = _code(group_code)
     if code:
         await db.run(
-            "INSERT INTO schedule_subscriptions(user_id, group_code) VALUES(?,?) "
+            "INSERT INTO schedule_subscriptions(user_id, group_code, created_at) VALUES(?,?,?) "
             "ON CONFLICT(user_id) DO UPDATE SET group_code=excluded.group_code",
-            (str(user_id), code),
+            (str(user_id), code, clock.stamp()),
         )
 
 
@@ -923,9 +937,9 @@ async def add_group_aliases(group_code_: str, aliases=()) -> int:
         if not normalized or normalized == canonical:
             continue
         changed = await db.run(
-            "INSERT INTO group_aliases(alias, group_code) VALUES(?,?) "
+            "INSERT INTO group_aliases(alias, group_code, created_at) VALUES(?,?,?) "
             "ON CONFLICT(alias) DO UPDATE SET group_code=excluded.group_code",
-            (normalized, canonical),
+            (normalized, canonical, clock.stamp()),
         )
         added += int(changed > 0)
     return added
@@ -1057,7 +1071,8 @@ async def upsert_group(
     if active is not None:
         values.append(("active", int(active)))
     async with db._conn() as c:
-        await c.execute("INSERT OR IGNORE INTO groups(group_code) VALUES(?)", (normalized,))
+        await c.execute("INSERT OR IGNORE INTO groups(group_code, created_at) VALUES(?,?)",
+                        (normalized, clock.stamp()))
         if values:
             await c.execute(
                 f"UPDATE groups SET {', '.join(f'{n}=?' for n, _ in values)} WHERE group_code=?",
@@ -1141,16 +1156,18 @@ async def touch_contact(user_id: str, username: str = "", display_name: str = ""
     """
     if not user_id:
         return
+    stamp = clock.stamp()
     await db.run(
-        "INSERT INTO contacts(user_id, username, display_name, messages, last_text) VALUES(?,?,?,1,?) "
+        "INSERT INTO contacts(user_id, username, display_name, messages, last_text, first_seen, last_seen) "
+        "VALUES(?,?,?,1,?,?,?) "
         "ON CONFLICT(user_id) DO UPDATE SET "
         "username=CASE WHEN excluded.username<>'' THEN excluded.username ELSE contacts.username END, "
         "display_name=CASE WHEN excluded.display_name<>'' THEN excluded.display_name ELSE contacts.display_name END, "
         "messages=contacts.messages + CASE WHEN excluded.last_text<>'' THEN 1 ELSE 0 END, "
         "last_text=CASE WHEN excluded.last_text<>'' THEN excluded.last_text ELSE contacts.last_text END, "
-        "last_seen=datetime('now')",
+        "last_seen=excluded.last_seen",
         (str(user_id), as_str(username).strip()[:64], as_str(display_name).strip()[:100],
-         as_str(last_text).strip()[:200]),
+         as_str(last_text).strip()[:200], stamp, stamp),
     )
 
 
@@ -1211,10 +1228,11 @@ async def people_overview() -> dict:
         "SUM(CASE WHEN u.user_id IS NOT NULL THEN 1 ELSE 0 END) students, "
         "SUM(CASE WHEN a.user_id IS NOT NULL THEN 1 ELSE 0 END) staff, "
         "SUM(CASE WHEN u.user_id IS NULL AND a.user_id IS NULL THEN 1 ELSE 0 END) guests, "
-        "SUM(CASE WHEN c.last_seen >= datetime('now','-30 days') THEN 1 ELSE 0 END) active_30 "
+        "SUM(CASE WHEN c.last_seen >= ? THEN 1 ELSE 0 END) active_30 "
         "FROM contacts c "
         "LEFT JOIN users u ON u.user_id=c.user_id "
-        "LEFT JOIN admins a ON a.user_id=c.user_id"
+        "LEFT JOIN admins a ON a.user_id=c.user_id",
+        (clock.stamp_at(-30 * 24 * 60),),
     )
     requests = await db.one("SELECT COUNT(*) n FROM staff_requests WHERE status='new'")
     return {
@@ -1298,8 +1316,9 @@ async def archive_ticket(ticket_id: int, actor_id: str = "") -> tuple[bool, str]
         return False, f"Обращение №{ticket_id} не найдено"
     if as_str(row["deleted_at"]):
         return False, f"Обращение №{ticket_id} уже в архиве"
-    await db.run("UPDATE tickets SET deleted_at=datetime('now'), deleted_by=?, "
-                 "updated_at=datetime('now') WHERE ticket_id=?", (as_str(actor_id), ticket_id))
+    stamp = clock.stamp()
+    await db.run("UPDATE tickets SET deleted_at=?, deleted_by=?, updated_at=? WHERE ticket_id=?",
+                 (stamp, as_str(actor_id), stamp, ticket_id))
     await log_ticket_event(ticket_id, as_str(actor_id) or "сис-админ", "archived", "")
     return True, f"Обращение №{ticket_id} в архиве"
 
@@ -1313,7 +1332,7 @@ async def restore_ticket(ticket_id: int, actor_id: str = "") -> tuple[bool, str]
     if not as_str(row["deleted_at"]):
         return False, f"Обращение №{ticket_id} и так в работе"
     await db.run("UPDATE tickets SET deleted_at='', deleted_by='', "
-                 "updated_at=datetime('now') WHERE ticket_id=?", (ticket_id,))
+                 "updated_at=? WHERE ticket_id=?", (clock.stamp(), ticket_id))
     await log_ticket_event(ticket_id, as_str(actor_id) or "сис-админ", "restored", "")
     return True, f"Обращение №{ticket_id} снова в работе"
 
@@ -1349,8 +1368,8 @@ async def update_ticket(ticket_id: int, actor_id: str = "", **fields) -> tuple[b
         if not value or value == as_str(row[field]):
             continue
         changes.append(f"{label}: {as_str(row[field]) or '—'} → {value}")
-        await db.run(f"UPDATE tickets SET {field}=?, updated_at=datetime('now') WHERE ticket_id=?",
-                     (value, ticket_id))
+        await db.run(f"UPDATE tickets SET {field}=?, updated_at=? WHERE ticket_id=?",
+                     (value, clock.stamp(), ticket_id))
     if not changes:
         return True, "Изменений не было"
     detail = "; ".join(changes)[:300]
@@ -1390,9 +1409,9 @@ async def give_consent(user_id: str, version: str) -> str:
     Хранится рядом с пользователем, а не «в настройках»: потом по записи можно
     доказать, что согласие было получено и на каких условиях.
     """
-    await db.run("UPDATE users SET consent_at=datetime('now'), consent_version=? WHERE user_id=?",
-                 (as_str(version), as_str(user_id)))
-    return datetime.now().strftime("%d.%m.%Y")
+    await db.run("UPDATE users SET consent_at=?, consent_version=? WHERE user_id=?",
+                 (clock.stamp(), as_str(version), as_str(user_id)))
+    return clock.today().strftime("%d.%m.%Y")
 
 
 async def consent_of(user_id: str) -> dict:
@@ -1452,11 +1471,12 @@ async def admin_today() -> dict:
         "(SELECT COUNT(*) FROM contacts c LEFT JOIN admins a ON a.user_id=c.user_id "
         " WHERE a.user_id IS NULL) no_staff, "
         "(SELECT COUNT(*) FROM staff_invites WHERE used_by='' AND "
-        "(expires_at='' OR expires_at > datetime('now'))) codes_active, "
-        "(SELECT COUNT(*) FROM user_states WHERE created_at='' OR created_at < datetime('now','-1 day')) stuck_states, "
-        "(SELECT COUNT(*) FROM tickets WHERE created_at >= datetime('now','-1 day')) tickets_day, "
+        "(expires_at='' OR expires_at > ?)) codes_active, "
+        "(SELECT COUNT(*) FROM user_states WHERE created_at='' OR created_at < ?) stuck_states, "
+        "(SELECT COUNT(*) FROM tickets WHERE created_at >= ?) tickets_day, "
         "(SELECT ROUND(AVG(julianday(m.created_at) - julianday(t.created_at)), 2) FROM ticket_messages m "
-        " JOIN tickets t ON t.ticket_id = m.ticket_id WHERE m.sender_role='staff') avg_reply_days"
+        " JOIN tickets t ON t.ticket_id = m.ticket_id WHERE m.sender_role='staff') avg_reply_days",
+        (clock.stamp(), clock.stamp_at(-24 * 60), clock.stamp_at(-24 * 60)),
     )
     days = row["avg_reply_days"]
     return {
@@ -1494,14 +1514,15 @@ async def create_invite(
     """Создаёт код сотрудника. ttl_hours=0 — без срока. Возвращает код."""
     normalized = norm_code(code)
     hours = config.STAFF_CODE_TTL if ttl_hours is None else int(ttl_hours)
+    stamp = clock.stamp()
     await db.run(
-        "INSERT INTO staff_invites(code, user_id, full_name, created_by, expires_at) "
-        "VALUES(?,?,?,?, CASE WHEN ?>0 THEN datetime('now', ?) ELSE '' END) "
+        "INSERT INTO staff_invites(code, user_id, full_name, created_by, created_at, expires_at) "
+        "VALUES(?,?,?,?,?, CASE WHEN ?>0 THEN ? ELSE '' END) "
         "ON CONFLICT(code) DO UPDATE SET user_id=excluded.user_id, full_name=excluded.full_name, "
-        "created_by=excluded.created_by, created_at=datetime('now'), expires_at=excluded.expires_at, "
+        "created_by=excluded.created_by, created_at=excluded.created_at, expires_at=excluded.expires_at, "
         "used_by='', used_at=''",
         (normalized, as_str(user_id).strip(), as_str(full_name).strip()[:100], as_str(created_by).strip(),
-         hours, f"+{hours} hours"),
+         stamp, hours, clock.stamp_at(hours * 60)),
     )
     return normalized
 
@@ -1514,9 +1535,9 @@ async def use_invite(code: str, user_id: str) -> tuple[bool, str]:
     """
     normalized = norm_code(code)
     row = await db.one(
-        "SELECT user_id, used_by, expires_at<>'' AND expires_at <= datetime('now') AS expired "
+        "SELECT user_id, used_by, expires_at<>'' AND expires_at <= ? AS expired "
         "FROM staff_invites WHERE code=?",
-        (normalized,),
+        (clock.stamp(), normalized),
     )
     if not row:
         return False, "Код не найден. Проверьте раскладку клавиатуры и пробелы."
@@ -1527,9 +1548,9 @@ async def use_invite(code: str, user_id: str) -> tuple[bool, str]:
     if row["user_id"] and as_str(row["user_id"]) != str(user_id):
         return False, "Этот код выдан другому сотруднику."
     changed = await db.run_count(
-        "UPDATE staff_invites SET used_by=?, used_at=datetime('now') "
+        "UPDATE staff_invites SET used_by=?, used_at=? "
         "WHERE code=? AND used_by='' AND (user_id='' OR user_id=?)",
-        (str(user_id), normalized, str(user_id)),
+        (str(user_id), clock.stamp(), normalized, str(user_id)),
     )
     return (True, "") if changed else (False, "Код уже использован.")
 
@@ -1537,9 +1558,9 @@ async def use_invite(code: str, user_id: str) -> tuple[bool, str]:
 async def invite_state(code: str) -> str:
     """Состояние кода: active | used | expired | unknown."""
     row = await db.one(
-        "SELECT used_by, expires_at<>'' AND expires_at <= datetime('now') AS expired "
+        "SELECT used_by, expires_at<>'' AND expires_at <= ? AS expired "
         "FROM staff_invites WHERE code=?",
-        (norm_code(code),),
+        (clock.stamp(), norm_code(code)),
     )
     if not row:
         return "unknown"
@@ -1572,8 +1593,8 @@ async def set_invite_ttl(code: str, hours: int) -> tuple[bool, str]:
     if row["used_by"]:
         return False, "Этот код уже использован"
     await db.run(
-        "UPDATE staff_invites SET expires_at = CASE WHEN ?>0 THEN datetime('now', ?) ELSE '' END WHERE code=?",
-        (int(hours), f"+{int(hours)} hours", normalized),
+        "UPDATE staff_invites SET expires_at = CASE WHEN ?>0 THEN ? ELSE '' END WHERE code=?",
+        (int(hours), clock.stamp_at(int(hours) * 60), normalized),
     )
     return True, ttl_label(hours)
 
@@ -1585,12 +1606,14 @@ async def create_staff_request(
     office: str = "",
     note: str = "",
 ) -> None:
+    stamp = clock.stamp()
     await db.run(
-        "INSERT INTO staff_requests(user_id, full_name, position, office, note) VALUES(?,?,?,?,?) "
+        "INSERT INTO staff_requests(user_id, full_name, position, office, note, created_at, updated_at) "
+        "VALUES(?,?,?,?,?,?,?) "
         "ON CONFLICT(user_id) DO UPDATE SET full_name=excluded.full_name, position=excluded.position, "
-        "office=excluded.office, note=excluded.note, status='new', updated_at=datetime('now')",
+        "office=excluded.office, note=excluded.note, status='new', updated_at=excluded.updated_at",
         (str(user_id), as_str(full_name).strip()[:100], as_str(position).strip()[:100],
-         as_str(office).strip()[:100], as_str(note).strip()[:300]),
+         as_str(office).strip()[:100], as_str(note).strip()[:300], stamp, stamp),
     )
 
 
@@ -1609,20 +1632,21 @@ async def get_staff_request(user_id: str):
 
 async def set_staff_request_status(user_id: str, status: str) -> None:
     await db.run(
-        "UPDATE staff_requests SET status=?, updated_at=datetime('now') WHERE user_id=?",
-        (status, str(user_id)),
+        "UPDATE staff_requests SET status=?, updated_at=? WHERE user_id=?",
+        (status, clock.stamp(), str(user_id)),
     )
 
 
 # ── защита от подбора кода ────────────────────────────────────────────────────
 async def note_attempt(user_id: str) -> None:
-    await db.run("INSERT INTO login_attempts(user_id) VALUES(?)", (str(user_id),))
+    await db.run("INSERT INTO login_attempts(user_id, created_at) VALUES(?,?)",
+                 (str(user_id), clock.stamp()))
 
 
 async def attempts_count(user_id: str, minutes: int = 60) -> int:
     row = await db.one(
-        "SELECT COUNT(*) n FROM login_attempts WHERE user_id=? AND created_at >= datetime('now', ?)",
-        (str(user_id), f"-{int(minutes)} minutes"),
+        "SELECT COUNT(*) n FROM login_attempts WHERE user_id=? AND created_at >= ?",
+        (str(user_id), clock.stamp_at(-int(minutes))),
     )
     return row["n"]
 
@@ -1639,9 +1663,9 @@ async def attempts_log(limit: int = 30) -> list:
         "FROM login_attempts a "
         "LEFT JOIN contacts c ON c.user_id=a.user_id "
         "LEFT JOIN staff_requests s ON s.user_id=a.user_id "
-        "WHERE a.created_at >= datetime('now','-24 hours') "
+        "WHERE a.created_at >= ? "
         "GROUP BY a.user_id ORDER BY tries DESC, last_try DESC LIMIT ?",
-        (limit,),
+        (clock.stamp_at(-24 * 60), limit),
     )
 
 
@@ -1667,10 +1691,10 @@ async def log_broadcast(
     sender_role: str = "",
 ) -> None:
     await db.run(
-        "INSERT INTO broadcasts(sender_id, sender_name, sender_role, audience, text, sent, failed) "
-        "VALUES(?,?,?,?,?,?,?)",
+        "INSERT INTO broadcasts(sender_id, sender_name, sender_role, audience, text, sent, failed, created_at) "
+        "VALUES(?,?,?,?,?,?,?,?)",
         (sender_id, as_str(sender_name).strip()[:100], as_str(sender_role).strip()[:100],
-         audience, text, sent, failed),
+         audience, text, sent, failed, clock.stamp()),
     )
 
 
@@ -1703,9 +1727,10 @@ async def update_admin(user_id: str, **fields) -> None:
 async def add_sysadmin(user_id: str, full_name: str = "") -> None:
     """Назначает сис-админом навсегда (без правки .env и перезапуска)."""
     await db.run(
-        "INSERT INTO admins(user_id, full_name, role_type, can_broadcast) VALUES(?,?, 'sysadmin', 1) "
+        "INSERT INTO admins(user_id, full_name, role_type, can_broadcast, created_at) "
+        "VALUES(?,?, 'sysadmin', 1, ?) "
         "ON CONFLICT(user_id) DO UPDATE SET role_type='sysadmin', can_broadcast=1",
-        (str(user_id), as_str(full_name).strip()[:100] or "Сис-админ"),
+        (as_str(user_id), as_str(full_name).strip()[:100] or "Сис-админ", clock.stamp()),
     )
 
 
@@ -1794,8 +1819,9 @@ async def _save_revoked(ids: set) -> None:
 async def log_action(actor_id: str, action: str, details: str = "") -> None:
     """Записывает, кто и что сделал. Подробности обрезаются, текст виден в панели."""
     await db.run(
-        "INSERT INTO admin_log(actor_id, action, details) VALUES(?,?,?)",
-        (as_str(actor_id).strip()[:64], as_str(action).strip()[:60], as_str(details).strip()[:300]),
+        "INSERT INTO admin_log(actor_id, action, details, created_at) VALUES(?,?,?,?)",
+        (as_str(actor_id).strip()[:64], as_str(action).strip()[:60], as_str(details).strip()[:300],
+         clock.stamp()),
     )
 
 
@@ -1814,9 +1840,9 @@ async def admin_log_counts(days: int = 30) -> dict:
     return {
         as_str(row["action"]): row["n"]
         for row in await db.many(
-            "SELECT action, COUNT(*) n FROM admin_log WHERE created_at >= datetime('now', ?) "
+            "SELECT action, COUNT(*) n FROM admin_log WHERE created_at >= ? "
             "GROUP BY action ORDER BY n DESC",
-            (f"-{int(days)} days",),
+            (clock.stamp_at(-int(days) * 24 * 60),),
         )
     }
 
@@ -1889,12 +1915,7 @@ async def vacations_bulk() -> dict[str, dict]:
     Заменяет два запроса на каждого сотрудника при открытии списка. Закончившиеся
     отпуска отбрасываем: в панели это «кто сейчас в отпуске», а не архив.
     """
-    try:
-        import clock
-
-        today = clock.today()
-    except Exception:                      # часовой пояс ещё не подключён - не мешаем списку
-        today = date.today()
+    today = clock.today()
     rows = await db.many("SELECT user_id, full_name, role, position, vacation_until "
                          "FROM admins WHERE COALESCE(vacation_until, '')<>''")
     current = {}
@@ -1961,7 +1982,8 @@ async def top_groups(limit: int = 20) -> list:
 async def stats_overview() -> dict:
     students = await db.one("SELECT COUNT(*) n FROM users")
     staff = await db.one(f"SELECT COUNT(*) n FROM admins WHERE role_type {STAFF_ROLES_SQL}")
-    week = await db.one("SELECT COUNT(*) n FROM tickets WHERE created_at >= datetime('now','-7 days')")
+    week = await db.one("SELECT COUNT(*) n FROM tickets WHERE created_at >= ?",
+                         (clock.stamp_at(-7 * 24 * 60),))
     total = await db.one("SELECT COUNT(*) n FROM tickets")
     return {"students": students["n"], "staff": staff["n"], "week": week["n"], "total": total["n"],
             "people": await people_overview()}
@@ -1975,8 +1997,8 @@ async def tickets_by_day(days: int = 30) -> list:
     rows = await db.many(
         "SELECT substr(created_at, 1, 10) day, COUNT(*) count, "
         "SUM(CASE WHEN status IN ('completed','rejected') THEN 1 ELSE 0 END) done "
-        "FROM tickets WHERE created_at >= date('now', ?) "
-        "GROUP BY day ORDER BY day", (f"-{max(1, int(days))} days",),
+        "FROM tickets WHERE created_at >= ? "
+        "GROUP BY day ORDER BY day", (clock.date_ago(max(1, int(days))),),
     )
     return [{"day": as_str(row["day"]), "count": row["count"], "done": row["done"] or 0} for row in rows]
 
@@ -2009,12 +2031,12 @@ async def staff_load(days: int = 30) -> list:
         "MAX(r.first_reply) last_reply "
         "FROM admins a "
         "LEFT JOIN tickets t ON t.target_admin_id = a.user_id "
-        f"  AND t.created_at >= datetime('now', ?) "
+        "  AND t.created_at >= ? "
         "LEFT JOIN (SELECT ticket_id, MIN(created_at) first_reply FROM ticket_messages "
         "           WHERE sender_role='staff' GROUP BY ticket_id) r ON r.ticket_id = t.ticket_id "
         f"WHERE a.role_type {STAFF_ROLES_SQL} "
         "GROUP BY a.user_id ORDER BY tickets DESC, full_name LIMIT 25",
-        (f"-{max(1, int(days))} days",),
+        (clock.stamp_at(-max(1, int(days)) * 24 * 60),),
     )
     return [{"user_id": as_str(row["user_id"]), "full_name": as_str(row["full_name"]),
              "tickets": row["tickets"] or 0, "open": row["open_n"] or 0,
@@ -2034,8 +2056,8 @@ async def response_speed(days: int = 30) -> dict:
         "FROM tickets t "
         "LEFT JOIN (SELECT ticket_id, MIN(created_at) first_reply FROM ticket_messages "
         "           WHERE sender_role='staff' GROUP BY ticket_id) r ON r.ticket_id = t.ticket_id "
-        "WHERE t.created_at >= datetime('now', ?)",
-        (f"-{max(1, int(days))} days",),
+        "WHERE t.created_at >= ?",
+        (clock.stamp_at(-max(1, int(days)) * 24 * 60),),
     )
     total = row["total"] or 0
     return {"total": total, "answered": row["answered"] or 0,
@@ -2073,8 +2095,9 @@ async def get_template(template_id: int):
 async def add_template(title: str, text: str, category: str = "all", created_by: str = "") -> int:
     """Добавляет шаблон ответа и возвращает его id."""
     return await db.run(
-        "INSERT INTO reply_templates(title, text, category, created_by) VALUES(?,?,?,?)",
-        (as_str(title).strip()[:80], as_str(text).strip()[:2000], category or "all", as_str(created_by)),
+        "INSERT INTO reply_templates(title, text, category, created_by, created_at) VALUES(?,?,?,?,?)",
+        (as_str(title).strip()[:80], as_str(text).strip()[:2000], category or "all", as_str(created_by),
+         clock.stamp()),
     )
 
 
