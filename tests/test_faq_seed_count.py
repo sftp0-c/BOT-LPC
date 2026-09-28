@@ -1,9 +1,11 @@
 """Тест: повторная заливка вопросов не врёт в журнале."""
+import college
 from handlers import faq
 
 
 async def test_second_seed_reports_zero():
-    assert await faq.seed_defaults() == 17      # первый запуск всё добавил
+    total = len(college.DEFAULT_FAQ)
+    assert await faq.seed_defaults() == total   # первый запуск всё добавил
     assert await faq.seed_defaults() == 0        # второй - ничего не изменил
 
 

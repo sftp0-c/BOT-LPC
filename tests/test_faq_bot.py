@@ -5,6 +5,7 @@
 """
 import pytest
 
+import college
 import database as db
 import handlers.faq as faq
 import max_api
@@ -29,10 +30,17 @@ def faq_api(env, monkeypatch):
     monkeypatch.setattr(faq, "api", env)
 
 
+@pytest.fixture(autouse=True)
+async def faq_sections(env):
+    """Колонку разделов заводит handlers.faq.ensure_category_column, а не
+    database.SCHEMA, поэтому тестам, которые пишут в faq.category, нужна она сама."""
+    await faq.ensure_category_column()
+
+
 @pytest.fixture
 async def one_question():
-    await db.run("INSERT INTO faq(question, answer, keywords) VALUES(?, ?, ?)",
-                 (QUESTION, ANSWER, "общежитие, проживание, поселить"))
+    await db.run("INSERT INTO faq(question, answer, keywords, category) VALUES(?, ?, ?, ?)",
+                 (QUESTION, ANSWER, "общежитие, проживание, поселить", "live"))
     return await db.one("SELECT * FROM faq ORDER BY id")
 
 
@@ -104,8 +112,8 @@ async def test_equally_good_questions_are_not_answered(api, one_question):
     формулировка: выбрать одну из них - значит ответить наугад.
     """
     await db.run("UPDATE faq SET keywords='общежитие'")
-    await db.run("INSERT INTO faq(question, answer, keywords) VALUES(?, ?, ?)",
-                 ("Общежитие есть?", "Другой ответ.", "общежитие"))
+    await db.run("INSERT INTO faq(question, answer, keywords, category) VALUES(?, ?, ?, ?)",
+                 ("Общежитие есть?", "Другой ответ.", "общежитие", "live"))
     assert faq.score({"question": QUESTION, "keywords": "общежитие"}, "общежитие") == \
            faq.score({"question": "Общежитие есть?", "keywords": "общежитие"}, "общежитие")
     assert await faq.find_answer(STUDENT, "общежитие") == ("", "")
@@ -113,8 +121,8 @@ async def test_equally_good_questions_are_not_answered(api, one_question):
 
 async def test_clearer_match_wins_over_unrelated_one(api, one_question):
     """Если подошёл только один вопрос - отвечаем на него, второй не мешает."""
-    await db.run("INSERT INTO faq(question, answer, keywords) VALUES(?, ?, ?)",
-                 ("Где сдать справку?", "Другой ответ.", "справка, документы"))
+    await db.run("INSERT INTO faq(question, answer, keywords, category) VALUES(?, ?, ?, ?)",
+                 ("Где сдать справку?", "Другой ответ.", "справка, документы", "study"))
     answer, title = await faq.find_answer(STUDENT, "общежитие")
     assert answer == ANSWER and title == QUESTION
 
@@ -129,42 +137,64 @@ async def test_seed_defaults_is_idempotent(api):
     assert (await db.one("SELECT COUNT(*) n FROM faq"))["n"] == total
 
 
-# ── меню ──────────────────────────────────────────────────────────────────────
-async def test_faq_menu_lists_questions(api, one_question):
+# ── меню разделов и списка вопросов ───────────────────────────────────────────
+async def test_faq_menu_lists_sections(api, one_question):
+    """«Частые вопросы» без аргумента открывает разделы, а не список вопросов."""
     await register(STUDENT)
+    await db.run("UPDATE faq SET category='live'")
     await press(STUDENT, "faq")
-    # вопросы выводятся кнопками, а не текстом: подпись кнопки и есть заголовок
-    assert QUESTION in [button["text"] for row in api.last(STUDENT)[2] for button in row]
+    text, payloads = api.last(STUDENT)[1], api.payloads(STUDENT)
+    assert "Выберите раздел" in text
+    assert college.FAQ_CATEGORY_BUTTONS["live"] in text
+    assert "faq:live" in payloads
+    # служебные кнопки на месте: поиск, сотрудник, контакты, все вопросы
+    assert {"faqall:0", "faqask", "new:feedback", "college"} <= set(payloads)
+
+
+async def test_faq_menu_shows_questions_of_a_section(api, one_question):
+    await register(STUDENT)
+    await db.run("UPDATE faq SET category='live'")
+    await press(STUDENT, "faq:live")
+    text = api.last(STUDENT)[1]
+    assert "Вопросы раздела «Общежитие» (1)" in text
+    # вопрос уходит в текст, а кнопка несёт только номер - подпись не обрежется
+    assert QUESTION in text
     assert "faqq:1" in api.payloads(STUDENT)
-    assert "Частые вопросы: 1" in api.last(STUDENT)[1]
+    assert "1" in [button["text"] for row in api.last(STUDENT)[2] for button in row]
 
 
 async def test_faq_menu_is_paged_and_below_max_rows(api):
     for index in range(25):
-        await db.run("INSERT INTO faq(question, answer, keywords) VALUES(?, ?, ?)",
-                     (f"Вопрос номер {index}", "Ответ.", f"вопрос номер {index}"))
-    await press(STUDENT, "faq")
+        await db.run("INSERT INTO faq(question, answer, keywords, category) VALUES(?, ?, ?, ?)",
+                     (f"Вопрос номер {index}", "Ответ.", f"вопрос номер {index}", "study"))
+    await press(STUDENT, "faqall:0")
     body = api.last(STUDENT)
+    assert "Все частые вопросы (25)" in body[1]
     assert "страница 1 из 3" in body[1]
     assert len(body[2]) <= max_api.MAX_ROWS
-    # вопросы + переходы + три служебных ряда («спросить», «сотруднику», «в меню»)
-    assert len(body[2]) == faq.FAQ_PAGE + 5   # страница + переходы + 4 служебных ряда
-    assert "faq:1" in api.payloads(STUDENT)
+    for row in body[2]:
+        assert len(row) <= 7          # предел MAX на ширину ряда
+    # номера страниц сквозные: второй вопрос второй страницы - «13»
+    await press(STUDENT, "faqall:1")
+    assert "страница 2 из 3" in api.last(STUDENT)[1]
+    assert "13. Вопрос номер 12" in api.last(STUDENT)[1]
 
-    await press(STUDENT, "faq:2")
+    await press(STUDENT, "faqall:2")
     assert "страница 3 из 3" in api.last(STUDENT)[1]
     # на последней странице «вперёд» уже нет, а «назад» ведёт на предыдущую
-    assert "faq:3" not in api.payloads(STUDENT)
-    assert "faq:1" in api.payloads(STUDENT)
+    assert "faqall:3" not in api.payloads(STUDENT)
+    assert "faqall:1" in api.payloads(STUDENT)
 
 
-async def test_faq_menu_buttons_fit_max_row_width(api):
+async def test_faq_menu_pads_number_rows_to_max_width(api):
     for index in range(20):
-        await db.run("INSERT INTO faq(question, answer, keywords) VALUES(?, ?, ?)",
-                     (f"Вопрос номер {index}", "Ответ.", f"вопрос номер {index}"))
-    await press(STUDENT, "faq")
-    for row in api.last(STUDENT)[2]:
-        assert len(row) <= 7          # предел MAX на ширину ряда
+        await db.run("INSERT INTO faq(question, answer, keywords, category) VALUES(?, ?, ?, ?)",
+                     (f"Вопрос номер {index}", "Ответ.", f"вопрос номер {index}", "study"))
+    await press(STUDENT, "faqall:0")
+    numbers = [button["text"] for row in api.last(STUDENT)[2] for button in row]
+    assert "12" in numbers
+    # ни одна кнопка с номером не обрезана многоточием
+    assert not [label for label in numbers if label.endswith("…")]
 
 
 async def test_faq_menu_empty(api):
@@ -228,10 +258,15 @@ async def test_ask_creates_ticket_when_not_found(api, one_question, staff):
     assert f"rp:{ticket['ticket_id']}" in payloads      # «Ответить» на это обращение
 
 
+# Вопрос из трёх и более значимых слов: короткий обрывок бота не отправляет
+# сотруднику, а просит сформулировать (см. test_faq_voice.py)
+LONG_QUESTION = "а где и когда сдают экзамены и кто принимает"
+
+
 async def test_ask_without_staff_does_not_create_ticket(api, one_question):
     await register(STUDENT)
     await press(STUDENT, "faqask")
-    await say(STUDENT, "а где сдают экзамен")
+    await say(STUDENT, LONG_QUESTION)
     assert "некому передать" in api.last(STUDENT)[1]
     assert (await db.one("SELECT COUNT(*) n FROM tickets"))["n"] == 0
 
@@ -240,7 +275,7 @@ async def test_ask_respects_tickets_switch(api, one_question, staff):
     await db.set_setting("tickets_enabled", "0")
     await register(STUDENT)
     await press(STUDENT, "faqask")
-    await say(STUDENT, "а где сдают экзамен")
+    await say(STUDENT, LONG_QUESTION)
     assert "временно отключён" in api.last(STUDENT)[1]
     assert (await db.one("SELECT COUNT(*) n FROM tickets"))["n"] == 0
 
@@ -268,7 +303,7 @@ async def test_ask_state_cleared_after_answer(api, one_question, staff):
 def test_default_faq_is_consistent():
     import college
 
-    assert 10 <= len(college.DEFAULT_FAQ) <= 20
+    assert 45 <= len(college.DEFAULT_FAQ) <= 60
     questions = [item["question"] for item in college.DEFAULT_FAQ]
     assert len(set(questions)) == len(questions)      # без повторов - иначе поиск путается
     for item in college.DEFAULT_FAQ:

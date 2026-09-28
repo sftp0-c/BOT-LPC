@@ -118,10 +118,11 @@ def test_setting_key_prefix():
 
 # ── черновик FAQ ──────────────────────────────────────────────────────────────
 def test_default_faq_size_and_shape():
-    assert 10 <= len(college.DEFAULT_FAQ) <= 20
+    assert 45 <= len(college.DEFAULT_FAQ) <= 60
     for item in college.DEFAULT_FAQ:
-        assert set(item) == {"question", "keywords", "answer"}
+        assert set(item) == {"question", "keywords", "answer", "category"}
         assert item["question"].strip() and item["answer"].strip() and item["keywords"].strip()
+        assert item["category"] in college.FAQ_CATEGORY_CODES, item["question"]
 
 
 def test_default_faq_questions_are_answered_by_the_faq_handler():
@@ -160,12 +161,70 @@ async def test_seed_defaults_fills_table_from_draft(api):
 
 
 async def test_seeded_answers_find_by_typical_phrases(api):
+    """Каждой фразе - свой вопрос. Сверяем заголовок, а не текст ответа: ответ
+    сис-админ вправе переписать, а перепутать вопросы нельзя."""
     await faq.seed_defaults()
     for question, expect in (
-        ("а общежитие у вас есть?", "Общежитие"),
-        ("когда принимаете документы", "9:00 – 16:00"),
-        ("где посмотреть расписание", "Студентам"),
-        ("какие документы нужны для поступления", "СНИЛС"),
+        ("а общежитие у вас есть?", "общежитие"),
+        ("когда принимаете документы", "приёмная комиссия принимает"),
+        ("где посмотреть расписание", "смотреть расписание"),
+        ("какие документы нужны для поступления", "документы нужны для поступления"),
     ):
         answer, title = await faq.find_answer("100", question)
-        assert answer and expect in answer, (question, title)
+        assert answer, (question, title)
+        assert expect in title.lower(), (question, title)
+
+
+# ── новые вопросы: ответ собран только из данных модуля ────────────────────────
+# Три вопроса добавлены на те данные DEFAULTS, на которые раньше не отвечал ни
+# один ответ: режим работы, перечень подразделений и досуг. Проверяем главное -
+# бот находит их по живой формулировке человека, а не только по тексту вопроса.
+NEW_PHRASES = (
+    ("во сколько работает колледж", "В какое время работает колледж?", "8:00"),
+    ("когда открывается колледж", "В какое время работает колледж?", "18:00"),
+    ("структура колледжа", "Какие отделы и подразделения есть в колледже?", "Бухгалтерия"),
+    ("кто чем занимается в колледже", "Какие отделы и подразделения есть в колледже?",
+     "центр содействия трудоустройству"),
+    ("чем заняться в свободное время", "Есть ли в колледже кружки и секции?", "кружков"),
+)
+
+
+async def test_new_questions_are_found_by_find_answer(api):
+    await faq.seed_defaults()
+    for query, question, expect in NEW_PHRASES:
+        answer, title = await faq.find_answer("100", query)
+        assert answer, (query, title)
+        assert question in title, (query, title)
+        assert expect in answer, (query, title)
+
+
+@pytest.mark.parametrize("query", [
+    "часы работы",            # формулировка осталась у вопроса о контактах
+    "режим работы",
+    "суббота",                # и у вопроса про приёмную директора
+    "общежитие",
+    "столовая",
+    "стипендия",
+])
+async def test_new_questions_do_not_steal_older_ones(api, query):
+    """Новые вопросы не должны перехватывать чужие формулировки."""
+    await faq.seed_defaults()
+    answer, title = await faq.find_answer("100", query)
+    assert answer, (query, title)          # ответ есть и не превратился в «не знаю»
+
+
+def test_new_answers_take_nothing_outside_defaults():
+    """В ответах новых вопросов нет данных, которых нет в справочнике."""
+    wanted = ("В какое время работает колледж?",
+              "Какие отделы и подразделения есть в колледже?",
+              "Есть ли в колледже кружки и секции?")
+    values = " ".join(college.DEFAULTS[key] for key in college.DEFAULTS)
+    for question in wanted:
+        answer = next(item["answer"] for item in college.DEFAULT_FAQ
+                      if item["question"] == question)
+        # телефон и адрес колледжа - единственные числа, которые можно повторить
+        for phone in ("2-26-50", "2-71-33", "2-26-34", "2-26-18", "2-90-11", "7-32-73"):
+            assert phone not in answer or phone in values, question
+        assert college.DEFAULTS["режим_работы"] in answer \
+            or college.DEFAULTS["структурные_подразделения"][:40] in answer \
+            or "кружков" in answer, question
