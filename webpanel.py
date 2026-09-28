@@ -29,7 +29,8 @@ import repository as repo
 import timetable as tt
 import charts
 import schedule_import
-from handlers import demo, faq, schedules
+from panel_theme import ICON_NAMES_BY_PATH, STYLESHEET, icon, theme_script
+from handlers import faq, schedules
 from handlers.admin import STAFF_ROLES, approve_request, notify_schedule_subscribers, probe_pdf_url, reject_request
 from handlers.broadcast import run_broadcast
 from handlers.common import api as max_api
@@ -147,274 +148,8 @@ async def require_form(request: Request) -> str:
 
 
 # ── HTML ──────────────────────────────────────────────────────────────────────
-STYLE = """
-:root{--bg:#f1f4f9;--card:#fff;--line:#e2e8f0;--line-2:#eef2f7;--ink:#16202c;--mut:#67748a;
-      --acc:#2563eb;--acc-2:#eff4ff;--bad:#d13b32;--bad-2:#fdeeed;--ok:#12855a;--ok-2:#e8f7ef;
-      --warn:#b57e0c;--warn-2:#fdf5e3;--r:14px;--r-sm:9px;
-      --sh:0 1px 2px rgba(16,24,40,.05),0 8px 24px -12px rgba(16,24,40,.18);
-      --sh-sm:0 1px 2px rgba(16,24,40,.06);--sb:250px}
-*{box-sizing:border-box}
-html{-webkit-text-size-adjust:100%}
-body{margin:0;background:var(--bg);color:var(--ink);
-     font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
-     -webkit-font-smoothing:antialiased}
-a{color:var(--acc);text-decoration:none}
-a:hover{text-decoration:underline}
+STYLE = STYLESHEET   # токены, тёмная тема по умолчанию, светлая по переключателю
 
-/* ── шапка ─────────────────────────────────────────────────────────────── */
-header{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:16px;
-       padding:10px 20px;background:linear-gradient(120deg,#1b2739,#2a3a52);color:#fff;
-       box-shadow:0 1px 0 rgba(255,255,255,.06),0 6px 20px -14px rgba(0,0,0,.6)}
-.brand{display:flex;align-items:center;gap:10px;min-width:var(--sb)}
-.brand .logo{font-size:22px}
-.brand b{display:block;font-size:15px;letter-spacing:.3px;line-height:1.2}
-.brand small{display:block;color:#a9b8cc;font-size:11.5px;letter-spacing:.4px;text-transform:uppercase}
-.gsearch{flex:1;display:flex;gap:6px;max-width:520px}
-.gsearch input{border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.10);color:#fff;
-      border-radius:999px;padding:7px 14px;font:inherit;font-size:13.5px}
-.gsearch input::placeholder{color:#9fb0c4}
-.gsearch input:focus{outline:0;background:rgba(255,255,255,.18);border-color:rgba(255,255,255,.4)}
-.gsearch button{border:0;border-radius:999px;background:rgba(255,255,255,.14);color:#fff;
-      padding:6px 12px;cursor:pointer;font-size:14px}
-.who{margin-left:auto;color:#b9c6d6;font-size:12.5px;white-space:nowrap}
-.who b{color:#fff}
-.who a{color:#8fb7ff}
-
-/* ── боковое меню ──────────────────────────────────────────────────────── */
-nav{position:fixed;top:56px;bottom:0;left:0;width:var(--sb);padding:14px 10px 24px;
-    background:var(--card);border-right:1px solid var(--line);overflow-y:auto;z-index:15}
-nav a{display:flex;align-items:center;gap:10px;padding:8px 10px;margin-bottom:2px;border-radius:var(--r-sm);
-      color:#41506a;font-size:14px;font-weight:500;text-decoration:none;transition:background .12s}
-nav a:hover{background:var(--acc-2);color:var(--acc);text-decoration:none}
-nav a.on{background:var(--acc);color:#fff;font-weight:600;box-shadow:var(--sh-sm)}
-.nav-ico{font-size:15px;width:20px;text-align:center;flex:0 0 20px}
-
-/* ── основная область ──────────────────────────────────────────────────── */
-main{margin-left:var(--sb);padding:22px 26px 48px;max-width:1280px}
-.page-title{margin:0 0 18px;font-size:22px;font-weight:700;letter-spacing:-.2px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
-      padding:18px 20px;margin-bottom:18px;box-shadow:var(--sh);
-      overflow-x:auto;overscroll-behavior-x:contain}          /* широкая таблица
-      прокручивается внутри карточки, а не растягивает всю страницу */
-.chart-box,.workbench,.wb-queue,.wb-card,.kpi,.cards{min-width:0}
-td.num{text-align:right;white-space:nowrap}
-th.col-key{width:260px}
-/* на телефоне фиксированная ширина колонки только мешает: текст переносится */
-@media (max-width:640px){th.col-key{width:auto}}
-.card h2{margin:0 0 14px;font-size:15px;font-weight:650;color:#20304a;
-      display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.card h2 .pill,.card h2 .btn{font-size:12px}
-h3{margin:20px 0 8px;font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.6px}
-
-/* ── таблицы ───────────────────────────────────────────────────────────── */
-table{width:100%;border-collapse:separate;border-spacing:0;font-size:14px}
-td{word-break:break-word;overflow-wrap:anywhere}
-th,td{text-align:left;padding:10px 10px;border-bottom:1px solid var(--line-2);vertical-align:top}
-th{position:sticky;top:0;background:#f8fafc;color:var(--mut);font-weight:600;font-size:12px;
-   text-transform:uppercase;letter-spacing:.4px;white-space:nowrap;border-bottom:1px solid var(--line);
-   border-radius:var(--r-sm) var(--r-sm) 0 0}
-tbody tr:hover{background:#f7fafd}
-tbody tr:last-child td{border-bottom:0}
-td b{color:#16202c}
-.cards{display:flex;flex-wrap:wrap;gap:12px}
-
-/* ── формы и кнопки ────────────────────────────────────────────────────── */
-input,select,textarea{width:100%;padding:9px 11px;border:1px solid #cfd8e6;border-radius:var(--r-sm);
-     font:inherit;background:#fff;color:var(--ink);transition:border-color .15s,box-shadow .15s}
-input:hover,select:hover,textarea:hover{border-color:#b9c6da}
-input:focus,select:focus,textarea:focus{outline:0;border-color:var(--acc);
-     box-shadow:0 0 0 3px rgba(37,99,235,.14)}
-textarea{min-height:110px;resize:vertical}
-label{display:block;margin:10px 0 4px;font-size:12.5px;color:var(--mut);font-weight:600;
-      letter-spacing:.2px}
-button,.btn{display:inline-flex;align-items:center;gap:6px;padding:9px 15px;border:0;border-radius:var(--r-sm);
-     background:var(--acc);color:#fff;font:inherit;font-weight:500;cursor:pointer;text-decoration:none;
-     transition:filter .15s,transform .05s,box-shadow .15s}
-button:hover,.btn:hover{filter:brightness(1.08);text-decoration:none;box-shadow:var(--sh-sm)}
-button:active,.btn:active{transform:translateY(1px)}
-.btn-grey{background:#64748b}.btn-bad{background:var(--bad)}.btn-ok{background:var(--ok)}
-.btn-sm{padding:5px 10px;font-size:12.5px;border-radius:7px}
-.grid{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end}
-.grid>*{flex:1 1 180px}
-.grid .full{flex:1 1 100%}
-form.inline{display:inline}
-.mut{color:var(--mut)}.small{font-size:13px}
-
-/* ── карточки-показатели ───────────────────────────────────────────────── */
-.stat{flex:1 1 160px;background:linear-gradient(180deg,#fff,#f8fafd);border:1px solid var(--line);
-     border-radius:var(--r);padding:14px 16px;box-shadow:var(--sh-sm)}
-.stat b{display:block;font-size:27px;line-height:1.15;font-variant-numeric:tabular-nums;letter-spacing:-.5px}
-.stat span{color:var(--mut);font-size:12.5px}
-.kpi{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:16px}
-.kpi div{flex:1 1 130px;background:var(--card);border:1px solid var(--line);border-radius:var(--r);
-     padding:13px 15px;box-shadow:var(--sh-sm)}
-.kpi b{display:block;font-size:24px;line-height:1.2;font-variant-numeric:tabular-nums}
-.kpi span{color:var(--mut);font-size:12.5px}
-.kpi .warn b{color:var(--bad)}
-.kpi .good b{color:var(--ok)}
-
-/* ── сообщения и метки ─────────────────────────────────────────────────── */
-.msg{padding:12px 14px;border-radius:var(--r-sm);margin-bottom:16px;font-size:14px;font-weight:500}
-.msg-ok{background:var(--ok-2);border:1px solid #b6e2c9;color:#0f5f42}
-.msg-bad{background:var(--bad-2);border:1px solid #f2c0bc;color:#8b231c}
-.pill{display:inline-block;padding:2px 9px;border-radius:999px;background:#eef2f7;color:#41506a;
-      font-size:12px;font-weight:500;white-space:nowrap}
-.pill-on{background:var(--ok-2);color:#0f6b46}.pill-off{background:#f1f3f6;color:#77808a}
-
-/* ── графики ───────────────────────────────────────────────────────────── */
-.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px}
-.chart-box{margin:0;background:linear-gradient(180deg,#fff,#fafcff);border:1px solid var(--line);
-      border-radius:var(--r);padding:13px 15px}
-.chart-box figcaption{font-size:12.5px;font-weight:600;color:var(--mut);margin-bottom:8px}
-.chart{width:100%;height:auto;display:block}
-.chart .grid-line{stroke:#e9eef5;stroke-width:1}
-.chart .axis{font-size:10px;fill:#8b95a3}
-.donut{width:150px;height:150px;flex:0 0 150px}
-.donut-total{font-size:22px;font-weight:700;fill:var(--ink)}
-.donut-sub{font-size:11px;fill:var(--mut)}
-.donut-wrap{display:flex;gap:16px;align-items:center;flex-wrap:wrap}
-.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mut);margin-top:6px}
-.legend span{display:flex;align-items:center;gap:5px}
-.legend i,.legend-list i{width:10px;height:10px;border-radius:3px;display:inline-block}
-.legend-list{list-style:none;margin:0;padding:0;flex:1 1 130px;font-size:13px}
-.legend-list li{display:flex;align-items:center;gap:8px;padding:3px 0}
-.legend-list span{flex:1;color:#41505f}
-.legend-list b{font-variant-numeric:tabular-nums}
-.hbar-list{list-style:none;margin:0;padding:0;font-size:13px}
-.hbar-list li{display:flex;align-items:center;gap:8px;padding:3px 0}
-.hbar-label{flex:0 0 34%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#41505f}
-.hbar-track{flex:1;background:#eef2f7;border-radius:5px;height:12px;overflow:hidden}
-.hbar-track i{display:block;height:100%;border-radius:5px}
-.hbar-list b{flex:0 0 36px;text-align:right;font-variant-numeric:tabular-nums}
-.chart-empty{color:#9aa5b4;font-size:13px;padding:28px 0;text-align:center}
-.spark svg{height:46px}
-
-/* ── журнал ────────────────────────────────────────────────────────────── */
-pre{background:#0e1723;color:#d6e4f2;padding:16px;border-radius:var(--r);overflow:auto;
-     max-height:560px;font:12.5px/1.55 Consolas,Menlo,monospace;white-space:pre-wrap;word-break:break-all}
-footer{color:var(--mut);font-size:12px;padding:14px 26px 30px;margin-left:var(--sb)}
-
-/* ── тёмная тема: включается системой, кнопки не нужно ─────────────────── */
-@media (prefers-color-scheme:dark){
- :root{--bg:#0e1622;--card:#16202e;--line:#24314a;--line-2:#1e2b3d;--ink:#e6edf6;--mut:#93a3b8;
-       --acc:#5b93ff;--acc-2:#1b2942;--bad-2:#2c1a1a;--ok-2:#122c22;--sh:0 8px 24px -14px rgba(0,0,0,.8);
-       --sh-sm:0 1px 2px rgba(0,0,0,.4)}
- header{background:linear-gradient(120deg,#0b1220,#16233a)}
- nav{background:#111a27}
- nav a{color:#b7c4d6}nav a:hover{background:#1b2740;color:#fff}
- th{background:#141f2e}
- tbody tr:hover{background:#1a2536}
- .stat,.kpi div,.chart-box{background:linear-gradient(180deg,#18242f,#141e2b)}
- .chart .grid-line{stroke:#26344a}.hbar-track{background:#1e2b3d}
- .btn-grey{background:#41506a}.pill{background:#1e2b3d;color:#c3cfe0}
- input,select,textarea{background:#101a27;border-color:#2b3a52;color:#e6edf6}
- td b{color:#e6edf6}.card h2{color:#dbe6f5}
-}
-
-/* ── телефон и планшет ─────────────────────────────────────────────────── */
-/* Рабочее место с обращениями: очередь слева, карточка справа. */
-.workbench{display:grid;grid-template-columns:minmax(320px,380px) 1fr;gap:12px;
-           align-items:start}
-.wb-queue,.wb-card{min-width:0}
-.wb-queue{position:sticky;top:12px}
-.wb-list{display:flex;flex-direction:column;gap:2px;max-height:64vh;overflow-y:auto;
-         padding-right:2px}
-.wb-item{display:grid;grid-template-columns:18px 1fr;gap:8px;align-items:start;
-         padding:8px;border-radius:8px;border:1px solid transparent;cursor:pointer}
-.wb-item:hover{background:var(--bg)}
-.wb-item.wb-on{background:var(--bg);border-color:var(--acc)}
-.wb-item input{margin:3px 0 0;flex:0 0 auto}
-.wb-item a{min-width:0;color:inherit;text-decoration:none;font-size:13px;line-height:1.4}
-/* номер, статус и дата - в одну строку, текст обрезается многоточием */
-.wb-head{display:flex;align-items:baseline;gap:6px;white-space:nowrap}
-.wb-head b{font-weight:650;flex:0 0 auto}
-.wb-status{color:var(--mut);overflow:hidden;text-overflow:ellipsis;flex:1 1 auto;
-           min-width:0}
-.wb-date{color:var(--mut);font-size:12px;flex:0 0 auto;margin-left:auto}
-.wb-text{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-         color:var(--mut);margin-top:1px}
-.wb-bulk{margin-top:10px;padding-top:8px;border-top:1px solid var(--line);font-size:13px}
-.wb-bulk summary{cursor:pointer;color:var(--mut)}
-/* карточка: таблицы с ровными колонками и обрезкой длинных текстов */
-.wb-card table{table-layout:fixed}
-.wb-card table td,.wb-card table th{vertical-align:top;word-break:break-word}
-.wb-card table td:nth-child(1){width:130px}
-.wb-card table td:nth-child(2){width:180px}
-.wb-card table td small{color:var(--mut)}
-@media (max-width:1000px){
-  .workbench{grid-template-columns:1fr}
-  .wb-queue{position:static}
-  .wb-list{max-height:40vh}
-}
-@media (max-width:1000px){
-  :root{--sb:0px}
-  header{flex-wrap:wrap;padding:10px 14px;gap:10px}
-  .brand{min-width:0}
-  .gsearch{order:3;flex:1 1 100%;max-width:none}
-  /* меню: одна строка с прокруткой, а не пятнадцать плиток во весь экран.
-     Плитки съедали пол-экрана, и до содержимого приходилось долистывать. */
-  nav{position:sticky;top:0;width:auto;height:auto;display:flex;flex-wrap:nowrap;gap:6px;
-      overflow-x:auto;overflow-y:hidden;scroll-snap-type:x proximity;
-      -webkit-overflow-scrolling:touch;border-right:0;border-bottom:1px solid var(--line);
-      padding:8px 12px;scrollbar-width:none}
-  nav::-webkit-scrollbar{display:none}
-  nav a{margin:0;padding:9px 12px;font-size:13.5px;white-space:nowrap;flex:0 0 auto;
-        scroll-snap-align:start}
-  .nav-txt{white-space:nowrap}
-  main{margin-left:0;padding:16px 12px 40px}
-  footer{margin-left:0;padding:12px}
-  .page-title{font-size:19px}
-  .stat,.kpi div{flex:1 1 44%}
-  .charts{grid-template-columns:1fr}
-  .card{padding:16px 16px}
-}
-
-/* ── телефон: всё, до чего дотягиваются пальцем ──────────────────────────── */
-@media (max-width:640px){
-  body{font-size:15px}
-  header{padding:8px 12px;gap:8px}
-  .brand .logo{font-size:19px}
-  .brand b{font-size:14px}
-  .brand small{display:none}                 /* «панель сис-админа» - лишняя строка */
-  .who{display:none}                         /* вход виден в подвале страницы */
-  .gsearch input,.gsearch button{padding:9px 12px}
-  nav{padding:7px 10px;gap:5px}
-  nav a{padding:11px 13px;font-size:14px;min-height:44px}   /* палец, а не курсор */
-  main{padding:12px 10px 44px}
-  .page-title{font-size:18px;margin-bottom:12px}
-  .card{padding:13px 12px;margin-bottom:12px;border-radius:12px}
-  .card h2{font-size:14.5px;margin-bottom:10px}
-  /* таблицы: плотнее, чтобы в экран влезало больше строк */
-  table{font-size:13px}
-  th,td{padding:8px 7px}
-  th{font-size:11px;white-space:normal}
-  /* поля формы: два коротких поля рядом, длинные - во всю ширину */
-  .grid{gap:10px}
-  .grid>*{flex:1 1 calc(50% - 5px)}
-  .grid .full{flex:1 1 100%}
-  button,.btn{padding:11px 14px}              /* крупная цель нажатия */
-  .btn-sm{padding:8px 11px}
-  input,select,textarea{padding:11px 12px;font-size:16px}  /* 16px - iOS не зумит страницу */
-  textarea{min-height:96px}
-  label{margin-top:12px}
-  .stat,.kpi div{flex:1 1 calc(50% - 6px);padding:12px 13px}
-  .stat b{font-size:23px}
-  .kpi b{font-size:21px}
-  .wb-list{max-height:none}                  /* очередь целиком: на телефоне скролл не нужен */
-  .wb-item{padding:11px 9px}
-  .wb-head{white-space:normal;flex-wrap:wrap}
-  .wb-card table td:nth-child(1),.wb-card table td:nth-child(2){width:auto}
-  .donut{width:130px;height:130px;flex:0 0 130px}
-  pre{font-size:11.5px;padding:12px;max-height:none}
-  footer{padding:14px 12px 30px;text-align:center}
-  .msg{padding:11px 12px}
-}
-@media print{
-  header,nav,footer,.gsearch{display:none}
-  main{margin:0;padding:0}
-  .card{break-inside:avoid;box-shadow:none}
-}
-"""
 
 
 def esc(value) -> str:
@@ -447,11 +182,7 @@ TABS = (
     ("/logs", "Журнал и тесты"),
 )
 
-NAV_ICONS = {
-    "/": "📊", "/tickets": "📬", "/analytics": "📈", "/people": "👥", "/nostaff": "👤",
-    "/students": "🎓", "/staff": "👔", "/access": "🗝", "/templates": "⚡", "/groups": "🗂", "/college": "🏫",
-    "/schedules": "📅", "/broadcasts": "📢", "/database": "🗄", "/settings": "⚙️", "/logs": "🧪",
-}
+NAV_ICONS = ICON_NAMES_BY_PATH   # имена иконок вместо эмодзи
 
 
 # страница приглашения: открытая, без входа в панель, читается с телефона
@@ -501,29 +232,33 @@ def page(title: str, body: str, user: str = "", tab: str = "") -> str:
     global _flash
     nav = "".join(
         f'<a href="/panel{path}" class="{"on" if path == tab else ""}">'
-        f'<span class="nav-ico" aria-hidden="true">{NAV_ICONS.get(path, "•")}</span>'
+        f'<span class="nav-ico" aria-hidden="true">{icon(NAV_ICONS.get(path, "dot"), 18)}</span>'
         f'<span class="nav-txt">{esc(name)}</span></a>'
         for path, name in TABS
     )
     notice, _flash = _flash, ""
     kind = "bad" if notice.startswith("!") else "ok"
-    banner = f'<div class="msg msg-{kind}">{esc(notice.lstrip("!"))}</div>' if notice else ""
+    mark = icon("warning", 20) if kind == "bad" else icon("check", 20)
+    banner = (f'<div class="msg msg-{kind}">{mark}<span>{esc(notice.lstrip("!"))}</span></div>'
+              if notice else "")
     return HTMLResponse(
-        f"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
+        f"""<!doctype html><html lang="ru" data-theme="dark"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{esc(title)} — панель сис-админа</title><style>{STYLE}</style></head><body>
 <header>
-  <div class="brand"><span class="logo">🏫</span><span>
-    <b>BOT-LPC</b><small>панель сис-админа</small></span></div>
+  <div class="brand"><span class="logo">{icon("college", 22)}</span><span>
+    <b>Навигатор ЛПК</b><small>панель сис-админа</small></span></div>
   <form class="gsearch" method="get" action="/panel/search">
     <input name="q" value="" placeholder="Поиск: обращение, человек, сотрудник, группа…" autocomplete="off">
-    <button type="submit">🔍</button>
+    <button type="submit" aria-label="Найти">{icon("search", 18)}</button>
   </form>
+  <button class="theme-toggle" type="button"></button>
   <div class="who">вошёл как <b>{esc(user) or '—'}</b> · <a href="/panel/logout">выйти</a></div>
 </header>
 <nav>{nav}</nav>
 <main><h1 class="page-title">{esc(title)}</h1>{banner}{body}</main>
-<footer>Данные те же, что и в боте: изменения применяются сразу · MAX ID {esc(user)}</footer>
+<footer>Данные те же, что в боте: изменения применяются сразу · MAX ID {esc(user)}</footer>
+<script>{theme_script()}</script>
 </body></html>"""
     )
 
@@ -553,9 +288,9 @@ async def global_search(request: Request, q: str = ""):
     ) or "<tr><td colspan='3' class='mut'>Никого не нашлось</td></tr>"
     staff_table = f"<table><tr><th>Сотрудник</th><th>Должность</th><th>Отдел</th></tr>{staff_rows}</table>"
     body = (f'<p class="small mut">По запросу «{esc(needle)}»</p>'
-            f"<div class=\"card\"><h2>📬 Обращения: {len(tickets)}</h2>{_tickets_table(tickets[:20])}</div>"
-            f"<div class=\"card\"><h2>👥 Пользователи: {len(people)}</h2>{_people_table(people)}</div>"
-            f"<div class=\"card\"><h2>👔 Сотрудники: {len(staff)}</h2>{staff_table}</div>")
+            f"<div class=\"card\"><h2>{icon("tickets", 20)} Обращения: {len(tickets)}</h2>{_tickets_table(tickets[:20])}</div>"
+            f"<div class=\"card\"><h2>{icon("people", 20)} Пользователи: {len(people)}</h2>{_people_table(people)}</div>"
+            f"<div class=\"card\"><h2>{icon("staff", 20)} Сотрудники: {len(staff)}</h2>{staff_table}</div>")
     return page("Поиск", body, user, "/")
 
 
@@ -3043,7 +2778,6 @@ async def settings_page(request: Request):
     rows = await repo.all_settings()
     welcome = await db.get_setting("welcome_text", "")
     consent_text = await db.get_setting("consent_text", "")
-    demo_on = await demo.is_demo()
     tickets_enabled = await db.get_setting("tickets_enabled", "1") == "1"
     actions = await repo.admin_log(15)
     counts = await repo.admin_log_counts(30)
@@ -3070,15 +2804,6 @@ async def settings_page(request: Request):
 <form method="post" action="/panel/settings/consent">{csrf(request)}
 <textarea name="value" maxlength="1000" style="min-height:110px">{esc(consent_text)}</textarea>
 <div class="grid" style="margin-top:10px"><button>Сохранить</button></div></form></div>
-<div class="card"><h2>Демо-стенд</h2>
-<form method="post" action="/panel/settings/demo">{csrf(request)}
-<input type="hidden" name="enabled" value="{"0" if demo_on else "1"}">
-<button class="{"btn-bad" if demo_on else "btn-ok"}">{"Выключить" if demo_on else "Включить"}</button>
-<span class="small mut">сейчас: {"включён" if demo_on else "выключен"}</span></form>
-<p class="small mut">В демо-режиме бот показывает все экраны, но не создаёт обращения,
-не меняет статусы, не отправляет рассылки и не выдаёт права. В базу пишется только
-отметка «демо» в журнале действий. Выход — кнопка «↩️ Выйти из демо» в боте,
-кнопка «🏠 Меню» или команда <code>/demo_off</code>.</p></div>
 <div class="card"><h2>Приветствие студентов</h2>
 <form method="post" action="/panel/settings/welcome">{csrf(request)}
 <textarea name="value" maxlength="500">{esc(welcome)}</textarea>
@@ -3104,7 +2829,7 @@ async def settings_page(request: Request):
 <tr><th>Адрес API</th><td>{esc(config.MAX_API_URL)}</td></tr>
 <tr><th>Файл журнала</th><td>{esc(config.LOG_FILE)}</td></tr>
 <tr><th>Сис-админов в базе</th><td>{len(sysadmins)} ({esc(", ".join(item["full_name"] for item in sysadmins) or "—")})</td></tr>
-<tr><th>SYSADMIN_IDS (.env)</th><td>{esc(", ".join(str(i) for i in config.SYSADMIN_IDS) or "—")}</td></tr>
+<tr><th>Системные администраторы (SYSADMIN_IDS в .env)</th><td>{esc(", ".join(str(i) for i in config.SYSADMIN_IDS) or "—")}</td></tr>
 <tr><th>Автокопия базы</th><td>{("раз в %s ч" % config.BACKUP_EVERY_HOURS) if config.BACKUP_EVERY_HOURS else "выключена"}</td></tr>
 <tr><th>Перечитывание PDF расписания</th><td>раз в {config.SCHEDULE_CACHE_HOURS} ч</td></tr>
 </table><p class="small mut">Секреты (.env, токен бота) панель не показывает.</p></div>"""
@@ -3126,16 +2851,6 @@ async def settings_consent(request: Request):
     data = await request.form()
     await db.set_setting("consent_text", as_str(data.get("value", "")).strip()[:1000])
     flash("Текст согласия сохранён.")
-    return redirect("/panel/settings")
-
-
-@router.post("/settings/demo")
-async def settings_demo(request: Request):
-    """Переключатель демо-стенда: смотреть можно, менять данные - нет."""
-    user = await require_form(request)
-    data = await request.form()
-    on = await demo.set_demo(value(data, "enabled") == "1", actor=user)
-    flash("Демо-стенд " + ("включён." if on else "выключен."))
     return redirect("/panel/settings")
 
 
