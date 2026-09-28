@@ -296,7 +296,8 @@ async def test_ask_state_cleared_after_answer(api, one_question, staff):
     assert await db.get_state(STUDENT) is None
     # следующее сообщение - уже обычный сценарий бота, а не продолжение FAQ
     await say(STUDENT, "/cancel")
-    assert "Выберите действие" in api.last(STUDENT)[1]
+    # приветствие по умолчанию здоровается по имени и перечисляет, что есть
+    assert "Это бот колледжа" in api.last(STUDENT)[1]
 
 
 # ── черновик наполнения ───────────────────────────────────────────────────────

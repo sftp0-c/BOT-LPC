@@ -8,7 +8,8 @@ import repository as repo
 import timetable as tt
 from handlers import faq, schedules
 from handlers.admin import audit, command as admin_command, sysadmin_ids
-from handlers.common import BACK, DEFAULT_WELCOME, admin_of, api, can_broadcast, is_super, log, need_super, notify
+from handlers.common import (BACK, admin_of, api, can_broadcast, is_super, log, need_super,
+                             notify, welcome_text)
 from bot_commands import command_payload
 from handlers.registry import CALLBACKS, STATES, callback, state
 from max_api import BUTTON_TEXT, MAX_ROWS, btn, link_btn
@@ -425,8 +426,9 @@ async def show_home(x: str):
                               [*staff_menu(a), [btn("↩️ В меню", "home")]])
     if not await repo.is_registered(x):
         return await start(x)
-    return await api.send(x, await db.get_setting("welcome_text", DEFAULT_WELCOME),
-                          student_menu())
+    # приветствие с подстановками имени и группы: тот же механизм, что в
+    # шаблонах ответов, но берётся из профиля студента
+    return await api.send(x, await welcome_text(x), student_menu())
 
 
 @state("reg_name")

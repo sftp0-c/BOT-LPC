@@ -1,5 +1,10 @@
 """Управление базой данных из панели: состояние, сжатие, копии, восстановление, чистка."""
+import pytest
 import os
+
+# Веб-панель: поднимает TestClient, поэтому медленнее обычного экрана.
+pytestmark = pytest.mark.panel
+
 
 import pytest
 from fastapi.testclient import TestClient

@@ -190,3 +190,16 @@ async def add_staff(staff_id, name, category="all", broadcast=False, position=""
     await press("1", f"sfc:{staff_id}:{category}")
     if broadcast:
         await press("1", f"sfb:{staff_id}")
+
+
+@pytest.fixture
+async def clear_templates():
+    """Чистит шаблоны ответов: при первом запуске бот заливает десять типовых.
+
+    Тесты, которые проверяют пустое состояние или считают количество
+    шаблонов, должны начинать с чистой таблицы - иначе они описывают не то
+    состояние, которое думают.
+    """
+    import database as db
+    await db.run("DELETE FROM reply_templates")
+    return True

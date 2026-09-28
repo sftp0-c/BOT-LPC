@@ -1,5 +1,10 @@
 """Справочник колледжа и частые вопросы: врезка в меню и панель."""
+import pytest
 import college
+
+# Веб-панель: поднимает TestClient, поэтому медленнее обычного экрана.
+pytestmark = pytest.mark.panel
+
 from conftest import csrf_of, login_panel, press, register
 from handlers import faq
 

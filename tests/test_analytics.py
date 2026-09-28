@@ -1,5 +1,10 @@
 """Аналитика: данные для диаграмм и сама страница с графиками."""
+import pytest
 import re
+
+# Веб-панель: поднимает TestClient, поэтому медленнее обычного экрана.
+pytestmark = pytest.mark.panel
+
 
 import pytest
 

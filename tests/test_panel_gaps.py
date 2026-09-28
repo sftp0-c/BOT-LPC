@@ -1,5 +1,10 @@
 """Панель: пробелы в данных и согласие в списке студентов."""
+import pytest
 import database as db
+
+# Веб-панель: поднимает TestClient, поэтому медленнее обычного экрана.
+pytestmark = pytest.mark.panel
+
 import repository as repo
 from conftest import add_staff, csrf_of, login_panel, register
 

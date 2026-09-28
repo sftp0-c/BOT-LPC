@@ -1,5 +1,10 @@
-﻿"""Шаблоны ответов: хранение, выбор в боте, управление в панели."""
+"""Шаблоны ответов: хранение, выбор в боте, управление в панели."""
+import pytest
 import database as db
+
+# Веб-панель: поднимает TestClient, поэтому медленнее обычного экрана.
+pytestmark = pytest.mark.panel
+
 import repository as repo
 from conftest import add_staff, login_panel, post_form, press, register, say
 
@@ -17,14 +22,14 @@ async def make_ticket(category: str = "feedback") -> int:
 
 
 # ── репозиторий ───────────────────────────────────────────────────────────────
-async def test_add_and_read_templates():
+async def test_add_and_read_templates(clear_templates):
     template_id = await repo.add_template("Справка готова", "Заберите справку в кабинете 214.", "certificates", "1")
     row = await repo.get_template(template_id)
     assert row["title"] == "Справка готова" and row["category"] == "certificates"
     assert await repo.templates_count() == 1
 
 
-async def test_list_templates_filters_by_category():
+async def test_list_templates_filters_by_category(clear_templates):
     await repo.add_template("Общее", "Текст для всех", "all", "1")
     await repo.add_template("Справки", "Текст про справки", "certificates", "1")
     for_all = await repo.list_templates()
@@ -35,7 +40,7 @@ async def test_list_templates_filters_by_category():
     assert [row["title"] for row in for_feedback] == ["Общее"]          # общий виден всем
 
 
-async def test_most_used_template_is_first():
+async def test_most_used_template_is_first(clear_templates):
     await repo.add_template("Редкий", "раз", "all", "1")
     used = await repo.add_template("Частый", "два", "all", "1")
     for _ in range(3):
@@ -44,7 +49,7 @@ async def test_most_used_template_is_first():
     assert titles[0] == "Частый"
 
 
-async def test_delete_template():
+async def test_delete_template(clear_templates):
     template_id = await repo.add_template("Лишний", "текст", "all", "1")
     await repo.delete_template(template_id)
     assert await repo.get_template(template_id) is None
@@ -52,13 +57,13 @@ async def test_delete_template():
 
 
 # ── бот: выбор шаблона в карточке обращения ───────────────────────────────────
-async def test_templates_button_in_ticket_card(api):
+async def test_templates_button_in_ticket_card(api, clear_templates):
     await make_ticket()
     await press(STAFF, "t:1")
     assert "tpl:1" in api.payloads(STAFF)
 
 
-async def test_staff_picks_template_and_sends_it(api):
+async def test_staff_picks_template_and_sends_it(api, clear_templates):
     await make_ticket()
     await repo.add_template("Справка готова", "Заберите справку в кабинете 214.", "all", "1")
     await press(STAFF, "tpl:1")
@@ -75,7 +80,7 @@ async def test_staff_picks_template_and_sends_it(api):
     assert (await db.one("SELECT used_count FROM reply_templates"))["used_count"] == 1
 
 
-async def test_staff_appends_text_to_template(api):
+async def test_staff_appends_text_to_template(api, clear_templates):
     await make_ticket()
     await repo.add_template("Справка готова", "Заберите справку в 214.", "all", "1")
     template_id = (await db.one("SELECT id FROM reply_templates"))["id"]
@@ -88,7 +93,7 @@ async def test_staff_appends_text_to_template(api):
     assert message.index("Заберите справку") < message.index("Подпись")
 
 
-async def test_templates_list_is_empty_message(api):
+async def test_templates_list_is_empty_message(api, clear_templates):
     await make_ticket()
     await press(STAFF, "tpl:1")
     text = api.last(STAFF)[1]
@@ -107,7 +112,7 @@ async def test_student_cannot_open_templates(api):
 
 
 # ── панель ────────────────────────────────────────────────────────────────────
-async def test_panel_manages_templates(panel_client):
+async def test_panel_manages_templates(panel_client, clear_templates):
     assert login_panel(panel_client)
     assert "Шаблонов пока нет" in panel_client.get("/panel/templates").text
 
@@ -123,7 +128,7 @@ async def test_panel_manages_templates(panel_client):
     assert await repo.templates_count() == 0
 
 
-async def test_panel_template_requires_title_and_text(panel_client):
+async def test_panel_template_requires_title_and_text(panel_client, clear_templates):
     assert login_panel(panel_client)
     assert post_form(panel_client, "/panel/templates/add",
                      {"title": "", "text": "", "category": "all"}).status_code == 303
@@ -131,14 +136,14 @@ async def test_panel_template_requires_title_and_text(panel_client):
     assert await repo.templates_count() == 0
 
 
-async def test_panel_template_requires_csrf(panel_client):
+async def test_panel_template_requires_csrf(panel_client, clear_templates):
     assert login_panel(panel_client)
     assert panel_client.post("/panel/templates/add",
                              data={"title": "X", "text": "Y"}).status_code == 403
     assert await repo.templates_count() == 0
 
 
-async def test_templates_page_survives_empty(panel_client):
+async def test_templates_page_survives_empty(panel_client, clear_templates):
     """Страница не падает, пока шаблонов нет - их может не быть очень долго."""
     assert login_panel(panel_client)
     assert panel_client.get("/panel/templates").status_code == 200

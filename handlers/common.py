@@ -1,7 +1,10 @@
 """Общий доступ handlers-модулей: клиент API, роли, рассылка уведомлений."""
 import asyncio
 import logging
+import re
 
+import clock
+import college
 import database as db
 import repository as repo
 from max_api import MaxAPI, btn
@@ -11,7 +14,18 @@ log = logging.getLogger("bot")
 
 api = MaxAPI()
 
-DEFAULT_WELCOME = "🏫 Бот колледжа. Выберите действие:"
+# Приветствие по умолчанию. Плейсхолдеры те же, что в шаблонах ответов:
+# {ФИО}, {имя}, {группа}, {дата}, {колледж}. Если подстановки не сработали
+# (например, приветствие настроил человек в панели и он оставил пустое поле)
+# бот не должен показать студенту «{ФИО}» - поэтому после подстановки
+# убираем остатки плейсхолдеров.
+DEFAULT_WELCOME = (
+    "🏫 Здравствуйте, {имя}! Это бот колледжа.\n"
+    "Группа: {группа}. Здесь справки, бухгалтерия, расписание и обращения к "
+    "сотрудникам — в двух нажатиях.\n"
+    "Что-то не нашли или не работает — жалоба прямо сюда, {ФИО}: раздел "
+    "«Обратная связь»."
+)
 BACK = [[btn("↩️ В меню", "home")]]
 
 _tasks: set[asyncio.Task] = set()
@@ -31,6 +45,49 @@ def pending_tasks() -> list[asyncio.Task]:
 
 
 # ── роли ──────────────────────────────────────────────────────────────────────
+WELCOME_PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")
+WELCOME_UNKNOWN = "студент"
+
+MONTHS_RU = ("января", "февраля", "марта", "апреля", "мая", "июня", "июля",
+             "августа", "сентября", "октября", "ноября", "декабря")
+
+
+async def welcome_text(x: str) -> str:
+    """Приветствие студента с подстановками его имени и группы.
+
+    Плейсхолдеры те же, что в шаблонах ответов, но берутся не из обращения, а
+    из профиля студента: {ФИО}, {имя}, {группа}, {дата}, {колледж}.
+
+    Если приветствие настроил человек в панели и оставил неизвестное имя в
+    скобках, остатки плейсхолдеров убираются - студент не должен увидеть
+    «{ФИО}» вместо приветствия.
+    """
+    text = as_str(await db.get_setting("welcome_text", DEFAULT_WELCOME))
+    # repo.get_user отдаёт sqlite3.Row, а у него нет .get - оборачиваем в словарь
+    row = await repo.get_user(x)
+    student = dict(row) if row is not None and hasattr(row, "keys") else {}
+    full = as_str(student.get("full_name") or "")
+    parts = full.split()
+    now = clock.now()
+    values = {
+        "фио": full or WELCOME_UNKNOWN,
+        "имя": parts[1] if len(parts) > 1 else (parts[0] if parts else WELCOME_UNKNOWN),
+        "фамилия": parts[0] if parts else WELCOME_UNKNOWN,
+        "отчество": parts[2] if len(parts) > 2 else "",
+        "группа": as_str(student.get("group_code") or "") or "не указана",
+        "дата": f"{now.day} {MONTHS_RU[now.month - 1]} {now.year}",
+        "время": now.strftime("%H:%M"),
+        "колледж": await college.get("телефон_учебная_часть"),
+        "учебная_часть": await college.get("телефон_учебная_часть"),
+    }
+    def replace(match):
+        name = match.group(1).strip().lower()
+        return values.get(name, "")
+    text = WELCOME_PLACEHOLDER_RE.sub(replace, text)
+    # убрать лишние пробелы, которые остались от пустых подстановок
+    return " ".join(text.split())
+
+
 async def admin_of(user_id: str):
     return await repo.get_admin(user_id)
 

@@ -115,7 +115,7 @@ async def test_placeholder_case_does_not_matter():
     assert text == "Иванов Иван Иванович " * 3 + "Иванов Иван Иванович"
 
 
-async def test_unknown_placeholder_stays_and_is_reported(api):
+async def test_unknown_placeholder_stays_and_is_reported(api, clear_templates):
     """Опечатка в шаблоне не ломает ответ, но сотруднику список имён показан."""
     tid = await make_ticket()
     await repo.add_template("С опечаткой", "Здравствуйте, {ФИО}, ваш {студент}.",
@@ -134,7 +134,7 @@ async def test_unknown_placeholder_stays_and_is_reported(api):
     assert tickets.unknown_placeholders("") == []
 
 
-async def test_unknown_placeholder_never_breaks_sending(api):
+async def test_unknown_placeholder_never_breaks_sending(api, clear_templates):
     tid = await make_ticket()
     await repo.add_template("С опечаткой", "Здравствуйте, {ФИО}, {студент}!", CATEGORY, "1")
     template_id = (await db.one("SELECT id FROM reply_templates"))["id"]
@@ -174,7 +174,7 @@ async def test_close_screen_offers_templates_and_own_text(api):
     assert "Справка готова" in text and "✅ Завершено" in text
 
 
-async def test_reply_and_close_sends_answer_and_closes(api):
+async def test_reply_and_close_sends_answer_and_closes(api, clear_templates):
     tid = await make_ticket()
     template_id = await repo.add_template(
         "Справка готова", "Здравствуйте, {ФИО}! Справка ждёт в {кабинет_выдачи}.",
@@ -189,7 +189,7 @@ async def test_reply_and_close_sends_answer_and_closes(api):
     assert any("закрыто" in body for _to, body, _kb in api.to(STAFF))
 
 
-async def test_student_gets_answer_and_closing_note_in_one_message(api):
+async def test_student_gets_answer_and_closing_note_in_one_message(api, clear_templates):
     tid = await make_ticket()
     await repo.add_template("Справка готова", "Справка готова, {ФИО}!", CATEGORY, "1")
     template_id = (await db.one("SELECT id FROM reply_templates"))["id"]

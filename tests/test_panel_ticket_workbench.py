@@ -1,5 +1,9 @@
-﻿"""Панель: рабочее место с обращениями (очередь, карточка, массы, архив)."""
+"""Панель: рабочее место с обращениями (очередь, карточка, массы, архив)."""
 import pytest
+
+# Веб-панель: поднимает TestClient, поэтому медленнее обычного экрана.
+pytestmark = pytest.mark.panel
+
 
 import repository as repo
 from conftest import add_staff, login_panel, post_form, register

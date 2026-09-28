@@ -1,5 +1,10 @@
 """Приглашение по ссылке: страница без входа, команда /join, одноразовость кода."""
+import pytest
 import config
+
+# Веб-панель: поднимает TestClient, поэтому медленнее обычного экрана.
+pytestmark = pytest.mark.panel
+
 import database as db
 import repository as repo
 from conftest import login_panel, say

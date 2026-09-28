@@ -12,7 +12,12 @@
 * в кнопках действий и статусах нет эмодзи (в текстах для MAX - остались);
 * печатная версия и ссылка «Открыть в боте» на месте.
 """
+import pytest
 import re
+
+# Веб-панель: поднимает TestClient, поэтому медленнее обычного экрана.
+pytestmark = pytest.mark.panel
+
 
 import database as db
 import panel_theme

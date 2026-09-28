@@ -1,5 +1,10 @@
 """Отпуск сотрудника: обращения уходят заместителю, студент знает об этом."""
+import pytest
 from datetime import date, timedelta
+
+# Веб-панель: поднимает TestClient, поэтому медленнее обычного экрана.
+pytestmark = pytest.mark.panel
+
 
 import repository as repo
 from conftest import add_staff, csrf_of, login_panel, press, register, say
