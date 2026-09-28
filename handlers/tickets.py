@@ -1,13 +1,17 @@
 ﻿"""Обращения студентов: создание, переписка, статусы, списки."""
 from datetime import datetime, timedelta
+import re
 
+import clock
+import college
 import config
 import os
 
 import database as db
 import repository as repo
 from handlers.admin import STAFF_ROLES, audit
-from handlers.common import BACK, admin_of, api, is_super, log, notify
+from handlers.common import (BACK, admin_of, api, is_personal_template, is_super, log,
+                             notify, personal_template_ids, set_personal_template)
 from handlers.menus import need_author
 from handlers.registry import callback, state
 import max_api
@@ -42,6 +46,8 @@ READY_MAX = 100
 PICKUP_FALLBACK = "кабинет не указан"
 OFFICE_REQUIRED = "Сначала укажите кабинет в карточке сотрудника"
 LEGACY_COMPLETED_FROM = ("new", "accepted", "in_progress")
+CLOSED_STATUSES = ("completed", "rejected")   # дела закрыты: отвечать и закрывать уже нечего
+CLOSE_BTN = "✅ Ответить и закрыть"           # ответ шаблоном и статус «завершено» сразу
 ARCHIVE_VIEW = "archive"        # значение фильтра очереди: архив обращений
 ARCHIVE_LIMIT = 200             # сколько архивных обращений держим в одном экране
 ARCHIVE_BTN = "🗄 В архив"      # закрытое дело - в архив
@@ -181,6 +187,11 @@ def ticket_kb(t, staff_side: bool, can_delete: bool = False, can_archive: bool =
             rows.append([btn(RESTORE_BTN, f"tarch:{tid}")])   # подпись длинная - одна в ряду
         return rows
     rows = [[btn("💬 Ответить", f"rp:{tid}")]]
+    if as_str(status) not in CLOSED_STATUSES:
+        # «Ответить и закрыть» - отдельным рядом: подпись в 20 символов, а в
+        # паре с «Ответить» MAX показывает 16 и обрезал бы её многоточием.
+        # На закрытом обращении кнопки нет: закрывать уже нечего.
+        rows.append([btn(CLOSE_BTN, f"tplclose:{tid}")])
     # статус в кнопке короткий: в ряду из двух кнопок помещается 16 символов,
     # а «📄 Готово к выдаче» обрезалось бы многоточием (полный - в тексте карточки)
     changes = [btn(STATUS_SHORT[code], f"st:{tid}:{code}") for code in NEXT_STATUSES.get(status, ())]
@@ -1069,6 +1080,127 @@ async def _do_forward(x, t, target: str, comment: str) -> None:
     await api.send(x, f"✅ {message}.{tail}", [[btn("👤 Открыть обращение", f"t:{t['ticket_id']}")]])
 
 
+# ── подстановки в шаблонах ответов ─────────────────────────────────────────
+PLACEHOLDER_RE = re.compile(r"\{([^{}\n]{1,40})\}")
+"""Плейсхолдер в фигурных скобках: {ФИО}, {группа}, {дата}…"""
+
+MONTHS = ("января", "февраля", "марта", "апреля", "мая", "июня",
+          "июля", "августа", "сентября", "октября", "ноября", "декабря")
+"""Месяцы в родительном падеже: дата в письме — «28 сентября 2026»."""
+
+TPL_STUDENT = "студент"        # ФИО неизвестно - лучше слово, чем дыра в письме
+TPL_FIELDS: tuple[str, ...] = (
+    "ФИО", "фамилия", "имя", "отчество", "группа", "преподаватель", "должность",
+    "кабинет", "кабинет_выдачи", "дата", "время", "номер", "тема",
+    "колледж", "учебная_часть", "директор",
+)
+"""Подстановки, которые бот понимает: перечисляем одной строкой, когда встретил неизвестную."""
+
+TPL_PAGE = 12               # сколько шаблонов помещается на экран ответа
+
+
+def topic_words(t) -> set:
+    """Ключевые слова темы обращения: по ним шаблоны в списке идут выше."""
+    topic = _row_value(t, "topic") or CATS.get(_row_value(t, "category"), "")
+    return set(re.findall(r"[а-яёa-z]{4,}", topic.lower()))
+
+
+async def template_values(t, staff=None) -> dict:
+    """Значения подстановок по обращению и сотруднику. Ключи - в нижнем регистре.
+
+    Пропуски в данных не оставляем пустыми: в письме студенту «ваша группа —»
+    читается как ошибка бота, поэтому подставляем слово.
+    """
+    student = _get(t, "student") or await repo.get_user(_row_value(t, "student_id"))
+    person = staff if staff is not None else _get(t, "staff")
+    if person is None and _row_value(t, "target_admin_id"):
+        person = await admin_of(_row_value(t, "target_admin_id"))
+    full = _row_value(student, "full_name")
+    parts = full.split()
+    now = clock.now()
+    return {
+        "фио": full or TPL_STUDENT,
+        "фамилия": parts[0] if parts else TPL_STUDENT,
+        "имя": parts[1] if len(parts) > 1 else TPL_STUDENT,
+        "отчество": parts[2] if len(parts) > 2 else "",
+        "группа": _row_value(student, "group_code") or "не указана",
+        "преподаватель": _row_value(person, "full_name") or "сотрудник",
+        "должность": (position_of(person) if person is not None else "") or "не назначена",
+        "кабинет": (office_of(person) if person is not None else "") or "не указан",
+        # место выдачи: сначала кабинет из самого обращения, потом кабинет
+        # сотрудника (документ отдают на его рабочем месте), потом честное «не указан»
+        "кабинет_выдачи": (_row_value(t, "pickup_place")
+                           or (office_of(person) if person is not None else "")
+                           or PICKUP_FALLBACK),
+        "дата": f"{now.day} {MONTHS[now.month - 1]} {now.year}",
+        "время": now.strftime("%H:%M"),
+        "номер": as_str(_get(t, "ticket_id")),
+        "тема": _row_value(t, "topic") or CATS.get(_row_value(t, "category"), "обращения"),
+        # телефоны берём из справочника college (их правят в панели, в шаблоне
+        # писать номера нельзя - устареют первыми). {колледж} и {учебная_часть} -
+        # один и тот же телефон: учебная часть это общий контакт для студентов
+        # колледжа, отдельного «телефона колледжа» в справочнике нет.
+        "колледж": await college.get("телефон_учебная_часть"),
+        "учебная_часть": await college.get("телефон_учебная_часть"),
+        "директор": await college.get("телефон_директор"),
+    }
+
+
+def unknown_placeholders(text: str) -> list:
+    """Имена в скобках, которых нет среди известных подстановок."""
+    known = {name.lower() for name in TPL_FIELDS}
+    found = []
+    for match in PLACEHOLDER_RE.finditer(as_str(text)):
+        name = match.group(1).strip()
+        if name and name.lower() not in known and name not in found:
+            found.append(name)
+    return found
+
+
+def placeholder_help(unknown=()) -> str:
+    """Что можно подставить: одна строка, чтобы сотрудник понял, где ошибка."""
+    names = ", ".join("{%s}" % name for name in TPL_FIELDS)
+    tail = f" Непонятно: {', '.join('{%s}' % name for name in unknown)}." if unknown else ""
+    return f"🔤 Подстановки: {names}.{tail}"
+
+
+async def render_template(text, ticket, staff=None) -> str:
+    """Текст шаблона с данными обращения: {ФИО} -> «Иванов Иван».
+
+    Имя в скобках пишется в любом регистре: {ФИО}, {фио} и {Фио} - одно и то же.
+    Неизвестное имя остаётся в тексте как есть: выбросить его молча нельзя
+    (сотрудник отправит письмо с дырой), поэтому подсказка идёт в его сообщение
+    вместе с текстом - см. unknown_placeholders() и placeholder_help().
+    """
+    values = await template_values(ticket, staff)
+    return PLACEHOLDER_RE.sub(
+        lambda match: values.get(match.group(1).strip().lower(), match.group(0)), as_str(text))
+
+
+async def staff_templates(x: str, t, limit: int = TPL_PAGE) -> list:
+    """Шаблоны для обращения: личные сотрудника сначала, потом подходящие по теме.
+
+    Возвращает пары (шаблон, личный_ли) - пометка «мои» нужна в тексте экрана.
+    """
+    rows = list(await repo.list_templates(as_str(t["category"]), limit=50))
+    mine = await personal_template_ids(x)
+    words = topic_words(t)
+
+    def rank(item):
+        row, own = item
+        hay = f"{as_str(row['title'])} {as_str(row['text'])}".lower()
+        return (0 if own else 1, 0 if words & set(re.findall(r"[а-яёa-z]{4,}", hay)) else 1)
+
+    paired = [(row, int(row["id"]) in mine) for row in rows]
+    return sorted(paired, key=rank)[:limit]
+
+
+def templates_text(rows: list) -> str:
+    """Названия шаблонов текстом: в кнопке длинное название обрезается."""
+    return "\n".join(f"· {short(row['title'], 40)}{'  — мои' if own else ''}"
+                     for row, own in rows)
+
+
 @callback("tpl")
 async def cb_templates(x, arg):
     """Шаблоны ответов: подходящие под раздел обращения + общие.
@@ -1079,7 +1211,7 @@ async def cb_templates(x, arg):
     t, staff_side = await load_ticket(x, to_int(arg))
     if not t or not staff_side:
         return await api.send(x, "Шаблоны доступны сотруднику в его обращении.", BACK)
-    rows = await repo.list_templates(as_str(t["category"]))
+    rows = await staff_templates(x, t)
     if not rows:
         return await api.send(
             x,
@@ -1090,11 +1222,14 @@ async def cb_templates(x, arg):
     # название шаблона режем по границе слова и без многоточия: MAX обрезает
     # кнопку в одну строку, а полное название и так видно в тексте ниже
     keyboard = [[btn(cut_plain(row["title"], max_api.BUTTON_TEXT),
-                     f"tplu:{row['id']}:{t['ticket_id']}")] for row in rows[:12]]
+                     f"tplu:{row['id']}:{t['ticket_id']}")] for row, _own in rows]
     await api.send(
         x,
         f"⚡ Шаблоны для раздела {CATS.get(t['category'], t['category'])}\n"
-        "Выберите - текст подставится в ответ, его можно поправить перед отправкой.",
+        "Выберите - текст подставится в ответ, его можно поправить перед отправкой.\n"
+        "Подстановки: {ФИО}, {группа}, {дата} и другие - полный список виден "
+        "при выборе шаблона.\n\n"
+        f"{templates_text(rows)}",
         [*keyboard, [btn("↩️ К обращению", f"t:{t['ticket_id']}")], *BACK],
     )
 
@@ -1110,15 +1245,51 @@ async def cb_template_use(x, arg):
     if not template:
         return await api.send(x, "Шаблон удалён.", [[btn("↩️ К обращению", f"t:{tid}")]])
     await repo.count_template_use(to_int(template_id))
-    await db.set_state(x, "reply", {"tid": t["ticket_id"], "draft": as_str(template["text"])[:3000]})
+    raw = as_str(template["text"])
+    draft = await render_template(raw, t, await admin_of(x))
+    # неизвестное имя в скобках оставляем как есть, но говорим сотруднику,
+    # какие имена бот понимает: иначе «{ФИО student}» уйдёт студенту как есть
+    unknown = unknown_placeholders(raw)
+    await db.set_state(x, "reply", {"tid": t["ticket_id"], "draft": draft[:3000]})
+    own = await is_personal_template(x, to_int(template_id))
     await api.send(
         x,
         f"⚡ Шаблон «{template['title']}» готов к отправке в обращение №{t['ticket_id']}:\n\n"
-        f"{short(template['text'], 1200)}\n\n"
+        f"{short(draft, 1200)}\n\n"
+        f"{placeholder_help(unknown)}\n\n"
         "Отправить как есть, дописать своё или отменить?",
         [[btn("📤 Отправить как есть", f"tplsend:{t['ticket_id']}")],
          [btn("✏️ Дописать", f"tplmore:{t['ticket_id']}")],
+         [btn("⭐ Убрать из моих" if own else "⭐ Сделать личным",
+              f"tplmy:{t['ticket_id']}:{template_id}:{0 if own else 1}")],
          [btn("✖️ Отмена", f"t:{t['ticket_id']}")]],
+    )
+
+
+@callback("tplmy")
+async def cb_template_mine(x, arg):
+    """Пометить шаблон личным: свои ответы сотрудник видит первыми.
+
+    Отдельной колонки в таблице reply_templates нет, а править схему ради
+    одной отметки нельзя - пометка живёт в settings по ключу
+    tpl:<user_id>:<id> (см. handlers.common).
+    """
+    tid, _, rest = as_str(arg).partition(":")
+    template_id, _, flag = rest.partition(":")
+    t, staff_side = await load_ticket(x, to_int(tid))
+    if not t or not staff_side:
+        return await api.send(x, "Обращение не найдено.", BACK)
+    if not await repo.get_template(to_int(template_id)):
+        return await api.send(x, "Шаблон удалён.", [[btn("↩️ К обращению", f"t:{tid}")]])
+    await set_personal_template(x, to_int(template_id), as_str(flag).strip() == "1")
+    rows = await staff_templates(x, t)
+    own = int(template_id) in await personal_template_ids(x)
+    title = title_of(rows, template_id)
+    note = (f"⭐ Шаблон «{title}» теперь личный: он первым в списке ответов и помечен «мои»."
+            if own else f"⭐ Шаблон «{title}» больше не личный: он снова среди общих.")
+    return await api.send(
+        x, note,
+        [[btn("⚡ К шаблонам", f"tpl:{tid}"), btn("↩️ К обращению", f"t:{tid}")], *BACK],
     )
 
 
@@ -1142,6 +1313,127 @@ async def cb_template_more(x, arg):
     if not t or not staff_side:
         return await api.send(x, "Обращение не найдено.", BACK)
     await api.send(x, "Допишите текст — он уйдёт студенту после шаблона. Или /cancel.")
+
+
+# ── «Ответить и закрыть» ───────────────────────────────────────────────────
+# Сценарий ради двух нажатий: кнопка в карточке, затем шаблон (или свой
+# текст). Ответ уходит студенту вместе с пометкой о закрытии, статус сразу
+# «✅ Завершено» - отдельный переход по «Завершено» сотруднику делать не нужно.
+@callback("tplclose")
+async def cb_reply_close(x, arg):
+    """Экран «Ответить и закрыть»: шаблоны по теме обращения + свой текст."""
+    t, staff_side = await load_ticket(x, to_int(arg))
+    if not t or not staff_side:
+        return await api.send(x, "Обращение не найдено.", BACK)
+    if is_archived(t) or as_str(t["status"]) in CLOSED_STATUSES:
+        return await api.send(
+            x, f"Обращение №{t['ticket_id']} уже закрыто - отвечать на него не нужно.",
+            [[btn("📂 Открыть обращение", f"t:{t['ticket_id']}")], *BACK])
+    rows = await staff_templates(x, t)
+    keyboard = [[btn(cut_plain(row["title"], max_api.BUTTON_TEXT),
+                     f"tplcx:{t['ticket_id']}:{row['id']}")] for row, _own in rows]
+    await api.send(
+        x,
+        f"{CLOSE_BTN} — обращение №{t['ticket_id']}\n"
+        f"{cat_topic_line(t['category'], _row_value(t, 'topic'))}\n"
+        "Ответ уйдёт студенту, обращение сразу станет «✅ Завершено». "
+        "В шаблонах подставляются ФИО, группа, кабинет, дата и время.\n\n"
+        + (templates_text(rows) if rows else "Готовых шаблонов для этого раздела нет."),
+        [*keyboard,
+         [btn("✍️ Свой текст", f"tplct:{t['ticket_id']}")],
+         [btn("↩️ К обращению", f"t:{t['ticket_id']}")], *BACK],
+    )
+
+
+@callback("tplcx")
+async def cb_reply_close_by_template(x, arg):
+    """Шаблон в режиме «ответить и закрыть»: отправляем и закрываем одним делом."""
+    tid, _, template_id = as_str(arg).partition(":")
+    t, staff_side = await load_ticket(x, to_int(tid))
+    if not t or not staff_side:
+        return await api.send(x, "Обращение не найдено.", BACK)
+    template = await repo.get_template(to_int(template_id))
+    if not template:
+        return await api.send(x, "Шаблон удалён.", [[btn("↩️ К обращению", f"t:{tid}")]])
+    await repo.count_template_use(to_int(template_id))
+    text = await render_template(template["text"], t, await admin_of(x))
+    return await send_and_close(x, t, text, f"⚡ Шаблон «{template['title']}»",
+                                unknown_placeholders(as_str(template["text"])))
+
+
+@callback("tplct")
+async def cb_reply_close_own_text(x, arg):
+    """Свой текст в режиме «ответить и закрыть»: пишем ответ обычным сообщением."""
+    t, staff_side = await load_ticket(x, to_int(arg))
+    if not t or not staff_side:
+        return await api.send(x, "Обращение не найдено.", BACK)
+    if is_archived(t) or as_str(t["status"]) in CLOSED_STATUSES:
+        return await api.send(
+            x, f"Обращение №{t['ticket_id']} уже закрыто - отвечать на него не нужно.",
+            [[btn("📂 Открыть обращение", f"t:{t['ticket_id']}")], *BACK])
+    await db.set_state(x, "tpl_close", {"tid": t["ticket_id"]})
+    await api.send(
+        x,
+        f"Ответ по обращению №{t['ticket_id']} — он уйдёт студенту и закроет обращение.\n"
+        "Напишите текст или /cancel для отмены.")
+
+
+@state("tpl_close")
+async def st_reply_close(x, text, p):
+    """Свой текст в режиме закрытия: отправляем ответ и закрываем обращение."""
+    t, staff_side = await load_ticket(x, to_int(p.get("tid")))
+    if not t or not staff_side:
+        await db.clear_state(x)
+        return await api.send(x, "Обращение недоступно.", BACK)
+    return await send_and_close(x, t, as_str(text), "")
+
+
+async def send_and_close(x: str, t, text: str, source: str = "", unknown=()):
+    """Ответ сотрудника и закрытие обращения одним действием.
+
+    Закрываем раньше, чем пишем сообщение: repo.transition_ticket_status
+    меняет статус только если он ещё прежний, поэтому второе нажатие той же
+    кнопки (старый экран у сотрудника мог остаться) не закроет обращение
+    повторно и не отправит студенту второе уведомление.
+    """
+    tid = t["ticket_id"]
+    text = text.strip()[:3000]
+    if not text:
+        await db.clear_state(x)
+        return await api.send(x, "Ответ пустой - отправлять нечего.",
+                              [[btn("↩️ К обращению", f"t:{tid}")], *BACK])
+    if as_str(t["status"]) in CLOSED_STATUSES or is_archived(t):
+        await db.clear_state(x)
+        return await api.send(x, f"Обращение №{tid} уже закрыто.",
+                              [[btn("📂 Открыть обращение", f"t:{tid}")], *BACK])
+    if not await repo.transition_ticket_status(tid, as_str(t["status"]), "completed", actor_id=x):
+        await db.clear_state(x)
+        return await api.send(x, f"Обращение №{tid} уже закрыто - второй раз не закрываем.",
+                              [[btn("📂 Открыть обращение", f"t:{tid}")], *BACK])
+    await repo.add_ticket_message(tid, x, "staff", text)
+    fresh = await repo.get_ticket(tid)
+    student = fresh["student_id"] if fresh else t["student_id"]
+    await notify(
+        student,
+        f"✅ Обращение №{tid} закрыто - сотрудник ответил и закрыл его.\n\n{text}\n\n"
+        "Если появятся новые вопросы - напишите новое обращение через меню.",
+        [[btn("📂 Открыть обращение", f"t:{tid}")]],
+    )
+    lines = [f"{source}. " if source else "",
+             f"✅ Ответ отправлен, обращение №{tid} закрыто."]
+    if unknown:
+        lines.append(placeholder_help(unknown))
+    await api.send(x, "\n".join(lines), [[btn("📂 Открыть обращение", f"t:{tid}")], *BACK])
+    if fresh:
+        await send_ticket(x, fresh, True)
+
+
+def title_of(rows: list, template_id) -> str:
+    """Название шаблона из списка - для подтверждения пометки «личный»."""
+    for row, _own in rows:
+        if int(row["id"]) == int(template_id):
+            return short(row["title"], 40)
+    return f"ID {template_id}"
 
 
 @state("reply")

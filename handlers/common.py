@@ -2,8 +2,10 @@
 import asyncio
 import logging
 
+import database as db
 import repository as repo
 from max_api import MaxAPI, btn
+from utils import as_str
 
 log = logging.getLogger("bot")
 
@@ -54,3 +56,41 @@ async def notify(user_id, text, keyboard=None) -> bool:
     except Exception as exc:
         log.warning("не удалось отправить сообщение %s: %s", user_id, exc)
         return False
+
+
+# ── личные шаблоны ответов ─────────────────────────────────────────────────
+# Пометка «этот шаблон личный у сотрудника» хранится в settings по ключу
+# tpl:<user_id>:<template_id>. Отдельную колонку в reply_templates заводить
+# нельзя без правки схемы, а помечается всё несколько человек - хватит и
+# одной строки настройки. Значение "1" - личный, отсутствие ключа - общий.
+TPL_FLAG = "tpl:"
+FLAG_MINE = "1"
+
+
+def _tpl_flag(user_id: str, template_id: int) -> str:
+    return f"{TPL_FLAG}{user_id}:{int(template_id)}"
+
+
+async def is_personal_template(user_id: str, template_id: int) -> bool:
+    """Помечен ли шаблон личным у этого сотрудника."""
+    return as_str(await db.get_setting(_tpl_flag(user_id, template_id))).strip() == FLAG_MINE
+
+
+async def set_personal_template(user_id: str, template_id: int, mine: bool = True) -> None:
+    """Пометить шаблон личным или вернуть его в общие."""
+    key = _tpl_flag(user_id, template_id)
+    if mine:
+        await db.set_setting(key, FLAG_MINE)
+    else:
+        await db.run("DELETE FROM settings WHERE key=?", (key,))
+
+
+async def personal_template_ids(user_id: str) -> set[int]:
+    """id личных шаблонов сотрудника: выборка настроек по его префиксу."""
+    rows = await db.many("SELECT key FROM settings WHERE key LIKE ?", (f"{TPL_FLAG}{user_id}:%",))
+    ids = set()
+    for row in rows:
+        tail = as_str(row["key"]).rsplit(":", 1)[-1]
+        if tail.isdigit():
+            ids.add(int(tail))
+    return ids
