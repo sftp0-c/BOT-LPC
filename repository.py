@@ -1,4 +1,4 @@
-﻿"""Репозиторий: SQL-запросы к схемам из database.py.
+"""Репозиторий: SQL-запросы к схемам из database.py.
 
 bot.py не пишет SQL сам — все обращения к базе идут через функции этого модуля,
 чтобы тексты запросов не дублировались и их было легко менять/тестировать точечно.
@@ -12,19 +12,24 @@ import database as db
 from utils import (
     OPEN_STATUSES,
     as_str,
+    group_code,
+    group_digits,
     is_owner_role,
     is_sysadmin_role,
     norm_code,
-    group_code,
-    group_digits,
     norm_group,
-    same_group,
     parse_max_ids,
     parse_nicks,
+    same_group,
     to_int,
     ttl_label,
     valid_group,
 )
+
+# Параметр upsert_user тоже называется group_code и перекрывает импорт,
+# поэтому для канонического вида используем отдельное имя.
+canonical_group = group_code
+
 
 TOPIC_SOURCES = db.TOPIC_SOURCES
 # Роли с доступом к панели. Владелец (owner) — тоже: в списках сотрудников и в
@@ -65,7 +70,12 @@ async def is_registered(user_id: str) -> bool:
 
 
 async def upsert_user(user_id: str, full_name: str, group_code: str) -> None:
-    code = norm_group(group_code)
+    # Код группы пишется в каноническом виде («24-23П»), а не как его набрали
+    # («24-23 (П)»). Так его ищут расписания, справочник и все остальные
+    # выборки проекта. Раньше здесь стоял norm_group, который скобки сохранял,
+    # и группа, записанная со скобками, не находилась никогда: фильтр искал
+    # каноническую форму, а в базе лежала другая.
+    code = canonical_group(as_str(group_code).strip())
     await db.run(
         "INSERT INTO users(user_id, full_name, group_code, created_at) VALUES(?,?,?,?) "
         "ON CONFLICT(user_id) DO UPDATE SET full_name=excluded.full_name, group_code=excluded.group_code",
@@ -83,7 +93,8 @@ async def set_user_name(user_id: str, full_name: str) -> None:
 
 
 async def set_user_group(user_id: str, group_code: str) -> None:
-    await db.run("UPDATE users SET group_code=? WHERE user_id=?", (norm_group(group_code), user_id))
+    await db.run("UPDATE users SET group_code=? WHERE user_id=?",
+                 (canonical_group(as_str(group_code).strip()), user_id))
 
 
 # ── сотрудники ────────────────────────────────────────────────────────────────
@@ -200,6 +211,35 @@ async def staff_on_vacation() -> list[dict]:
         "SELECT user_id, full_name, role, position, ticket_category, vacation_until "
         "FROM admins WHERE COALESCE(vacation_until, '')<>'' ORDER BY vacation_until")
     return [dict(row) for row in rows if await on_vacation(row["user_id"])]
+
+
+def replacement_rule(staff, everyone, away) -> dict | None:
+    """Кто принимает обращения отсутствующего сотрудника - без запросов.
+
+    Правило одно и то же для поштучного и массового поиска: сначала человек с
+    той же должностью, потом сосед по разделу обращений, минуя отпускников.
+    Если таких нет - None: лучше честно сказать «заместитель не назначен»,
+    чем отправлять обращение не тому.
+
+    Работает по уже загруженным строкам, поэтому страница сотрудников делает
+    ноль запросов вместо одного на каждого.
+    """
+    if not staff:
+        return None
+    role = as_str(_row_value(staff, "role", ""))
+    category = as_str(_row_value(staff, "ticket_category", ""))
+    staff_id = as_str(_row_value(staff, "user_id", ""))
+    for field, value in (("role", role), ("ticket_category", category)):
+        if not value:
+            continue
+        for row in everyone:
+            if as_str(_row_value(row, "user_id", "")) == staff_id:
+                continue
+            if as_str(_row_value(row, "user_id", "")) in away:
+                continue
+            if as_str(_row_value(row, field, "")) == value:
+                return row
+    return None
 
 
 async def vacation_replacement(staff) -> dict | None:
@@ -980,6 +1020,24 @@ async def find_group(text: str) -> dict | None:
     return None
 
 
+
+def _code_forms(group: str) -> list:
+    """Все формы кода группы, в которых он может лежать в базе.
+
+    Запись идёт через norm_group («24-23 (П)»), а канонический вид через
+    utils.group_code («24-23П»). Обе формы встречаются в данных, поэтому
+    фильтр должен ловить и ту, и другую - иначе группа, записанная со
+    скобками, не находится никогда.
+    """
+    raw = as_str(group).strip()
+    forms = [value for value in (raw, norm_group(raw), _code(raw)) if value]
+    seen: list = []
+    for value in forms:
+        if value not in seen:
+            seen.append(value)
+    return seen or [""]
+
+
 def _group_dict(row) -> dict:
     return {"code": as_str(row["group_code"]), "title": as_str(row["title"]),
             "active": bool(row["active"])}
@@ -1217,7 +1275,7 @@ async def people_count(kind: str = "", q: str = "") -> int:
     where, params = _contact_filter(kind, q)
     row = await db.one(f"SELECT COUNT(*) n FROM contacts c "
                        f"LEFT JOIN users u ON u.user_id=c.user_id "
-                       f"LEFT JOIN admins a ON a.user_id=c.user_id{where}", params)
+                       f"LEFT JOIN admins a ON a.user_id=c.user_id {where}", params)
     return row["n"]
 
 
@@ -1847,18 +1905,39 @@ async def admin_log_counts(days: int = 30) -> dict:
     }
 
 
-async def list_users(limit: int = 200, group_code: str = "") -> list:
-    """Студенты с числом обращений, ником и временем последнего обращения."""
-    where, params = ("WHERE u.group_code=?", (_code(group_code),)) if _code(group_code) else ("", ())
+async def list_users(limit: int = 200, group_code: str = "", offset: int = 0) -> list:
+    """Студенты с числом обращений, ником и временем последнего обращения.
+
+    offset добавлен для честных страниц в панели: раньше бралось окно «на
+    страницу вперёд», и на середине списка переход врёт.
+    """
+    forms = _code_forms(group_code) if as_str(group_code).strip() else []
+    if forms:
+        placeholders = ",".join("?" * len(forms))
+        where, params = f"WHERE u.group_code IN ({placeholders})", tuple(forms)
+    else:
+        where, params = "", ()
     return await db.many(
         "SELECT u.user_id, u.full_name, u.group_code, u.created_at, "
         "COALESCE(u.consent_at, '') consent_at, "
         "COALESCE(c.username, '') username, COALESCE(c.last_seen, '') last_seen, "
         "(SELECT COUNT(*) FROM tickets t WHERE t.student_id=u.user_id) tickets "
-        f"FROM users u LEFT JOIN contacts c ON c.user_id=u.user_id{where} "
-        "ORDER BY u.full_name LIMIT ?",
-        params + (limit,),
+        f"FROM users u LEFT JOIN contacts c ON c.user_id=u.user_id {where} "
+        "ORDER BY u.full_name LIMIT ? OFFSET ?",
+        params + (max(1, int(limit)), max(0, int(offset))),
     )
+
+
+async def list_users_count(group_code: str = "") -> int:
+    """Сколько всего студентов с учётом фильтра по группе."""
+    forms = _code_forms(group_code) if as_str(group_code).strip() else []
+    if forms:
+        placeholders = ",".join("?" * len(forms))
+        where, params = f"WHERE group_code IN ({placeholders})", tuple(forms)
+    else:
+        where, params = "", ()
+    row = await db.one(f"SELECT COUNT(*) AS c FROM users {where}", params)
+    return int(row["c"]) if row else 0
 
 
 async def recent_ticket_events(limit: int = 30) -> list:

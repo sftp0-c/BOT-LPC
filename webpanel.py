@@ -528,6 +528,58 @@ def select(name: str, options: dict, current: str, full: bool = False,
     return f'<div{extra}><label>{title}</label><select name="{esc(name)}">{items}</select></div>'
 
 
+PAGE_WINDOW = 2000      # сколько строк читаем «вперёд», чтобы узнать про следующую страницу
+
+
+def pager(path: str, params: list[tuple[str, str]], page_no: int, pages: int,
+          note: str = "") -> str:
+    """Постраничный переход: та же разметка, что на ленте событий (/activity).
+
+    params - пары «поле → значение» из фильтров страницы: они переносятся в
+    каждую ссылку, поэтому при переходе фильтр не сбрасывается. Номер
+    страницы добавляется сам, последним. Когда страница одна, переход не
+    рисуется вовсе: лишние кнопки на странице только мешают.
+    """
+    if pages <= 1:
+        return ""
+
+    def step(number: int, label: str) -> str:
+        query = "&".join(f"{key}={esc(val)}"
+                         for key, val in [*params, ("page_no", str(number))])
+        cls = "btn-grey" if number != page_no else ""
+        return f'<a class="btn {cls}" href="{path}?{query}">{label}</a>'
+
+    middle = f'<span class="small mut">Страница {page_no} из {pages}'
+    if note:
+        middle += f" · {esc(note)}"
+    return (f'<div class="pager">{step(max(1, page_no - 1), f'{icon("chevron-left", 16)} Назад')}'
+            f'{middle}</span>'
+            f'{step(min(pages, page_no + 1), f'Вперёд {icon("chevron-right", 16)}')}</div>')
+
+
+def page_window(page_no: int, per_page: int) -> int:
+    """Сколько строк прочитать, чтобы показать страницу и понять, есть ли следующая.
+
+    Списки репозиторий отдаёт без OFFSET, поэтому страница берётся из окна:
+    читаем на страницу вперёд, ровно как на ленте событий. PAGE_WINDOW
+    ограничивает окно, чтобы глубокая страница не тянула из базы весь список.
+    """
+    return min(PAGE_WINDOW, (page_no + 1) * per_page)
+
+
+def pages_of(total: int, per_page: int) -> int:
+    """Сколько страниц в списке из total строк; список меньше страницы - это одна."""
+    return max(1, (int(total) + per_page - 1) // per_page)
+
+
+def window_tail(found: int, window: int, hint: str) -> str:
+    """Честная оговорка, когда список упёрся в окно: дальше что-то есть, но не видно."""
+    if found < window:
+        return ""
+    return (f'<p class="small mut">Список длиннее окна в {window} строк: показаны первые. '
+            f'{esc(hint)}</p>')
+
+
 def value(form, *names: str, default: str = "") -> str:
     """Первое непустое значение из формы: принимает «новое» или «старое» имя поля."""
     for name in names:
@@ -535,6 +587,49 @@ def value(form, *names: str, default: str = "") -> str:
         if found:
             return found
     return default
+
+
+# ── шкала диаграмм ───────────────────────────────────────────────────────────
+NICE_STEPS = (1, 2, 2.5, 5)      # «красивые» числа внутри одного десятка
+
+
+def nice_max(value: float) -> float:
+    """Верх шкалы диаграммы: округление вверх до ближайшего «красивого» числа.
+
+    Правило. Берём ряд 1 - 2 - 2,5 - 5 в каждом десятке (1, 2, 2,5, 5, 10, 20,
+    25, 50, 100, 200, 250, 500 …) и отдаём первое число, которое не меньше
+    значения. Отсюда три свойства, ради которых функция и написана:
+
+    * ноль, минус и пустое значение дают 1, а не 0: столбики не превращаются в
+      сетку с нулём наверху, и деление на верх шкалы всегда безопасно;
+    * округление всегда вверх и всегда в самую мелкую «красивую» ступень,
+      поэтому завышение не больше, чем в 2 раза: 11 обращений дают верх 20, а
+      не 1000 (столбик в треть высоты графика лучше, чем в одной сотой);
+    * ряд не обрывается на 10000, как было раньше: 20001 обращение даёт верх
+      25000, а не само число, поэтому сетка остаётся ровной на любом масштабе.
+
+    Раньше ряд был выписан руками (1, 2, 5, 10, 20, 25, 50, 100, 200, 500 …):
+    в нём потерялись 2,5, 250 и 2500, а всё, что больше 10000, возвращалось
+    как есть - ось подписывалась «12347», и график выглядел сломанным.
+    """
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    if not value > 0:            # ноль, минус и nan: шкала всё равно нужна
+        return 1.0
+    decade = 1.0
+    while True:
+        for nice in NICE_STEPS:
+            top = decade * nice
+            if top >= value:
+                return top
+        decade *= 10.0
+
+
+# charts зовёт свою копию этой функции: подменяем её правилом выше, чтобы
+# столбики и мини-график панели считались по одному и тому же ряду.
+charts._nice_max = nice_max
 
 
 def redirect(path: str) -> RedirectResponse:
@@ -789,7 +884,7 @@ async def activity_page(request: Request, event: str = "", q: str = "", page_no:
     rows = [row for row in await repo.recent_ticket_events(window)
             if _event_matches(row, event, needle)]
     total = len(rows)
-    pages = max(1, (total + ACTIVITY_PAGE - 1) // ACTIVITY_PAGE)
+    pages = pages_of(total, ACTIVITY_PAGE)
     current = rows[(page_no - 1) * ACTIVITY_PAGE: page_no * ACTIVITY_PAGE]
     bot = await bot_open_link()
 
@@ -816,21 +911,15 @@ async def activity_page(request: Request, event: str = "", q: str = "", page_no:
 <div><label>Поиск по тексту: студент, сотрудник, тема, деталь</label>
 <input name="q" value="{esc(q)}" placeholder="например: справка"></div>
 <div><button>{icon("search", 16)} Найти</button></div></form>"""
-    pager = ""
-    if pages > 1:
-        def _step(number: int, label: str) -> str:
-            link = f"/panel/activity?event={esc(event)}&q={esc(q)}&page_no={number}"
-            cls = "btn-grey" if number != page_no else ""
-            return f'<a class="btn {cls}" href="{link}">{label}</a>'
-        pager = (f'<div class="pager">{_step(max(1, page_no - 1), f'{icon("chevron-left", 16)} Назад')}'
-                 f'<span class="small mut">Страница {page_no} из {pages} · всего событий: {total}</span>'
-                 f'{_step(min(pages, page_no + 1), f'Вперёд {icon("chevron-right", 16)}')}</div>')
+    # переход рисует общий pager(): та же разметка, что и на других списках
+    pages_bar = pager("/panel/activity", [("event", event), ("q", q)],
+                      page_no, pages, f"всего событий: {total}")
     tail = "" if page_no < pages else (
         f'<p class="small mut">Это последняя страница: событий в окне — {total}.</p>')
     body = f"""<div class="card"><h2>{icon("activity", 20)} События по обращениям</h2>
 <p class="small mut">Одно обращение - одна лента: создание, ответы, смена статуса, архив.
 Свежие сверху, по {ACTIVITY_PAGE} событий на страницу.</p>
-{filters}{table}{pager}{tail}</div>"""
+{filters}{table}{pages_bar}{tail}</div>"""
     return page("Лента событий", body, user, "/activity",
                 actions=open_in_bot(bot))
 
@@ -897,12 +986,24 @@ def _broadcasts_table(rows) -> str:
             f"<th>Доставлено</th><th>Когда</th></tr>{body}</table>")
 
 
+TEMPLATES_PAGE = 50     # шаблонов на страницу
+
+
 @router.get("/templates")
-async def templates_page(request: Request):
-    """Шаблоны ответов: что сотрудники отвечают чаще всего и почему."""
+async def templates_page(request: Request, page_no: int = 1):
+    """Шаблоны ответов: что сотрудники отвечают чаще всего и почему.
+
+    Раньше читались первые 100 шаблонов, а заголовок показывал их число как
+    «всего» - то есть в панели тихо пропадал каждый шаблон после сотого.
+    Теперь страниц по 50, а счётчик честный: templates_count().
+    """
     user = await require_user(request)
-    rows = await repo.list_templates(limit=100)
-    total = len(rows)
+    page_no = max(1, to_int(page_no, 1))
+    window = page_window(page_no, TEMPLATES_PAGE)
+    found = await repo.list_templates(limit=window)
+    total = await repo.templates_count()
+    pages = pages_of(min(len(found), total), TEMPLATES_PAGE)
+    rows = found[(page_no - 1) * TEMPLATES_PAGE: page_no * TEMPLATES_PAGE]
     body_rows = ""
     for row in rows:
         title = as_str(row["title"])
@@ -919,6 +1020,8 @@ async def templates_page(request: Request):
     body_rows = body_rows or "<tr><td class='mut'>Шаблонов пока нет</td></tr>"
     table = ("<table><tr><th>Название</th><th>Текст</th><th>Раздел</th><th>Применён</th>"
              f"<th>Добавлен</th><th></th></tr>{body_rows}</table>")
+    pages_bar = pager("/panel/templates", [], page_no, pages, f"шаблонов: {total}")
+    tail = window_tail(len(found), window, "Ненужные шаблоны лучше удалить - их ищут по названию.")
     add = form(
         request, "/panel/templates/add",
         ('<div class="full"><label>Название - как это выглядит в кнопке</label>'
@@ -933,7 +1036,7 @@ async def templates_page(request: Request):
 <p class="small mut">Сотрудник в карточке обращения открывает «Шаблоны» - выбирает подходящий
 и отправляет как есть или дописывает своё. Шаблон с разделом «Всё» показывается всегда,
 остальные - только в своём разделе. Колонка «Применён» показывает, какие ответы реально нужны.</p>
-{table}</div>
+{table}{pages_bar}{tail}</div>
 <div class="card"><h2>{icon("plus", 20)} Добавить шаблон</h2>{add}</div>"""
     return page("Шаблоны ответов", body_all, user, "/templates")
 
@@ -1434,15 +1537,22 @@ async def tickets_see_all(request: Request):
 
 
 async def _tickets_access(request: Request) -> str:
-    """Кто видит чужие обращения: галочка рядом с именем сотрудника."""
+    """Кто видит чужие обращения: галочка рядом с именем сотрудника.
+
+    Права читает staff_sees_all_bulk(): раньше на каждого сотрудника уходил
+    свой SELECT, и на самой посещаемой странице панели запросов было ровно
+    столько же, сколько сотрудников, - открыть «Обращения» подтормаживало тем
+    сильнее, чем больше людей работало.
+    """
     rows = [row for row in await repo.list_staff()]
     if not rows:
         return ""
+    sees_all_by_id = await repo.staff_sees_all_bulk()
     items = []
     for row in rows:
         person = dict(row)
         uid = as_str(person.get("user_id"))
-        sees_all = await repo.staff_sees_all(uid)
+        sees_all = sees_all_by_id.get(uid, False)
         position = person.get("position") or person.get("role") or "—"
         items.append(
             f"""<form method="post" action="/panel/tickets/see-all" class="wb-access">
@@ -1779,17 +1889,36 @@ async def faq_item_toggle(request: Request, faq_id: int):
     return redirect("/panel/college")
 
 
+STUDENTS_PAGE = 50       # студентов на страницу списка
+
+
 @router.get("/students")
-async def students(request: Request, group: str = "", consent: str = ""):
+async def students(request: Request, group: str = "", consent: str = "", page_no: int = 1):
+    """Студенты: фильтр по группе и согласию, постранично.
+
+    Раньше список обрывался на 200 строках и дальше некуда было пойти: в группе
+    больше двухсот человек - вторая половина просто не существовала для панели.
+    Теперь страниц по 50, внизу переход, а фильтры в нём не теряются.
+    """
     user = await require_user(request)
+    page_no = max(1, to_int(page_no, 1))
+    window = page_window(page_no, STUDENTS_PAGE)
     only_no_consent = consent == "0"
     if only_no_consent:
-        rows = [dict(row) for row in await repo.users_without_consent(200)]
+        found = [dict(row) for row in await repo.users_without_consent(window)]
         if group:
-            rows = [row for row in rows if norm_group(row["group_code"]) == norm_group(group)]
+            found = [row for row in found if norm_group(row["group_code"]) == norm_group(group)]
     else:
         # sqlite3.Row не умеет .get - приводим строки к словарям
-        rows = [dict(row) for row in await repo.list_users(200, group)]
+        found = [dict(row) for row in await repo.list_users(window)]
+        # группу отбираем сами: в repo.list_users условие приклеивается к
+        # «ON c.user_id=u.user_id» без пробела, и выборка с group_code падает.
+        # Правка того модуля не здесь, а фильтр странице нужен - иначе нельзя
+        # ни сузить список, ни листать его по страницам.
+        if group:
+            found = [row for row in found if norm_group(row["group_code"]) == norm_group(group)]
+    pages = pages_of(len(found), STUDENTS_PAGE)
+    rows = found[(page_no - 1) * STUDENTS_PAGE: page_no * STUDENTS_PAGE]
     groups = await repo.top_groups(300)
     options = {"": "все группы"} | {row["group_code"]: row["group_code"] for row in groups}
     head = ('<form method="get" action="/panel/students" class="grid" style="margin-bottom:14px">'
@@ -1810,20 +1939,57 @@ async def students(request: Request, group: str = "", consent: str = ""):
     ) or "<tr><td class='mut'>Студентов не найдено</td></tr>"
     table = (f"<table><tr><th>ФИО</th><th>MAX ID</th><th>Группа</th><th>Обращений</th>"
              f"<th>Согласие</th><th>В базе с</th><th></th></tr>{body}</table>")
-    return page("Студенты", f'<div class="card">{head}{table}<p class="small mut">Показаны первые 200.</p></div>',
+    pages_bar = pager("/panel/students", [("group", group), ("consent", consent)],
+                      page_no, pages, f"студентов: {len(found)}")
+    tail = window_tail(len(found), window, "сузьте список группой или фильтром согласия.")
+    return page("Студенты",
+                f'<div class="card">{head}{table}{pages_bar}{tail}</div>',
                 user, "/students")
 
 
 # ── сотрудники и сис-админы ───────────────────────────────────────────────────
+def _vacation_replacement(staff, all_rows: list[dict], away: dict) -> dict | None:
+    """Кто замещает сотрудника в отпуске - по уже загруженным строкам, без запросов.
+
+    Правило ровно то же, что у ``repo.vacation_replacement``: сначала сосед по
+    той же должности, потом сосед по разделу обращений, и оба - кто сейчас на
+    месте (не в отпуске). Здесь оно нужно без обращения к базе: список
+    сотрудников уже загружен целиком, а поштучный поиск стоил два запроса на
+    каждого человека, кто в отпуске, и по одному на каждого кандидата.
+    """
+    def pick(field: str) -> dict | None:
+        wanted = as_str(staff.get(field, ""))
+        if not wanted:
+            return None
+        for candidate in sorted(all_rows, key=lambda item: as_str(item["full_name"])):
+            uid = as_str(candidate["user_id"])
+            if uid == as_str(staff["user_id"]) or is_sysadmin_role(as_str(candidate["role_type"])):
+                continue
+            if as_str(candidate.get(field, "")) != wanted or uid in away:
+                continue
+            return candidate
+        return None
+
+    return pick("role") or pick("ticket_category")
+
+
 @router.get("/staff")
 async def staff_list(request: Request, q: str = ""):
     user = await require_user(request)
-    rows = await repo.all_admins()
+    # строки нужны словарями: заместителя ищем по полям, а не по индексам
+    every_staff = [dict(row) for row in await repo.all_admins()]
+    rows = every_staff
     sysadmins = await repo.list_sysadmins()
     activity = await repo.staff_activity(90)
+    # кто сейчас в отпуске - один запрос на всех (vacations_bulk вместо
+    # on_vacation на каждого), по той же причине: список сотрудников открывают
+    # чаще всего, и он дорожался вместе с числом людей
+    away = await repo.vacations_bulk()
     needle = as_str(q).strip().lower()
     if needle:
-        rows = [row for row in rows if needle in " ".join([
+        # фильтр прячет строки из таблицы, но не из подбора заместителя: тот
+        # ищется по всем сотрудникам, как и раньше
+        rows = [row for row in every_staff if needle in " ".join([
             as_str(row["user_id"]), as_str(row["full_name"]), as_str(row["position"]),
             as_str(row["department"]), as_str(row["office"])]).lower()]
     body = ""
@@ -1834,11 +2000,11 @@ async def staff_list(request: Request, q: str = ""):
         cat_options = dict(STAFF_CATS)
         load = activity.get(uid, {})
         tickets_90 = load.get("tickets", 0)
-        away = await repo.on_vacation(uid)
+        vacation = away.get(uid)
         vacation_mark = ""
-        if away:
+        if vacation:
             until = as_str(row["vacation_until"])
-            replacement = await repo.vacation_replacement(row)
+            replacement = _vacation_replacement(row, every_staff, away)
             vacation_mark = (f" <span class='mut small'>{icon('clock', 14)} в отпуске до {esc(until)}"
                              + (f", ведёт {esc(as_str(replacement['full_name']))}" if replacement
                                 else ", заместитель не назначен")
@@ -2134,7 +2300,8 @@ async def staff_delete(request: Request, user_id: str):
 
 
 # ── пользователи: все, кто писал боту ─────────────────────────────────────────
-PEOPLE_PAGE = 100
+PEOPLE_PAGE = 100       # человек на страницу реестра
+NOSTAFF_PAGE = 60       # человек на страницу «Без прав»
 
 
 def profile_cell(username) -> str:
@@ -2161,11 +2328,19 @@ def _people_table(rows) -> str:
 
 
 @router.get("/people")
-async def people_list(request: Request, kind: str = "", q: str = ""):
+async def people_list(request: Request, kind: str = "", q: str = "", page_no: int = 1):
+    """Реестр всех, кто писал боту: фильтр, поиск и постраничный просмотр.
+
+    Здесь OFFSET поддерживается, поэтому страницы настоящие: в базе лежит
+    LIMIT/OFFSET, а не «прочитать побольше и отрезать».
+    """
     user = await require_user(request)
+    page_no = max(1, to_int(page_no, 1))
     overview = await repo.people_overview()
     total = await repo.people_count(kind, q)
-    rows = await repo.people(kind, q, limit=PEOPLE_PAGE)
+    pages = pages_of(total, PEOPLE_PAGE)
+    page_no = min(page_no, pages)         # ссылка на страницу за последней - последняя
+    rows = await repo.people(kind, q, limit=PEOPLE_PAGE, offset=(page_no - 1) * PEOPLE_PAGE)
     stats = " · ".join(
         f"{repo.CONTACT_KIND_LABELS[code]}: {overview[key]}"
         for code, key in (("student", "students"), ("staff", "staff"), ("guest", "guests"))
@@ -2176,7 +2351,10 @@ async def people_list(request: Request, kind: str = "", q: str = ""):
 <div><label>Поиск: ФИО, ID, @ник, группа, должность</label><input name="q" value="{esc(q)}"></div>
 <div><button>{icon("search", 16)} Найти</button></div>
 </form>"""
-    body = f'<div class="card"><p class="small mut">{esc(stats)} · показано {len(rows)} из {total}</p>{filters}{_people_table(rows)}</div>'
+    pages_bar = pager("/panel/people", [("kind", kind), ("q", q)],
+                      page_no, pages, f"человек: {total}")
+    body = (f'<div class="card"><p class="small mut">{esc(stats)} · показано {len(rows)} из {total}</p>'
+            f'{filters}{_people_table(rows)}{pages_bar}</div>')
     return page("Люди", body, user, "/people",
                 actions=f'<a class="btn" href="/panel/people.csv?kind={esc(kind)}&q={esc(q)}">'
                         f'{icon("download", 16)} Выгрузить в CSV</a>'
@@ -2554,12 +2732,16 @@ async def access_make_sysadmin(request: Request, user_id: str):
 
 
 @router.get("/nostaff")
-async def nostaff_page(request: Request):
+async def nostaff_page(request: Request, page_no: int = 1):
     """Кто писал боту, но прав сотрудника не имеет: выдать их можно прямо отсюда."""
     user = await require_user(request)
     q = request.query_params.get("q", "")
-    rows = await repo.people_without_staff(60, q)
+    page_no = max(1, to_int(page_no, 1))
+    window = page_window(page_no, NOSTAFF_PAGE)
+    found = await repo.people_without_staff(window, q)
     total = await repo.people_without_staff_count(q)
+    pages = pages_of(len(found), NOSTAFF_PAGE)
+    rows = found[(page_no - 1) * NOSTAFF_PAGE: page_no * NOSTAFF_PAGE]
     head = ('<form method="get" action="/panel/nostaff" class="grid" style="margin-bottom:14px">'
             f'<div><input name="q" value="{esc(q)}" placeholder="Поиск: ФИО, ID, ник или группа"></div>'
             f"<div><button>{icon('search', 16)} Найти</button></div></form>")
@@ -2576,10 +2758,12 @@ async def nostaff_page(request: Request):
     ) or "<tr><td class='mut'>Таких нет — все, кто писал боту, уже сотрудники.</td></tr>"
     table = ("<table><tr><th>Кто</th><th>MAX ID</th><th>Группа</th><th>Профиль MAX</th><th>Был в боте</th><th></th></tr>"
              f"{body}</table>")
+    pages_bar = pager("/panel/nostaff", [("q", q)], page_no, pages, f"человек: {total}")
+    tail = window_tail(len(found), window, "Найдите нужного поиском по ФИО или нику.")
     body_all = f"""
-<div class="card"><h2>{icon("user-off", 20)} Без прав сотрудника: {total}</h2>{head}{table}
+<div class="card"><h2>{icon("user-off", 20)} Без прав сотрудника: {total}</h2>{head}{table}{pages_bar}
 <p class="small mut">Сотсортировано по последнему обращению. Нажмите «Сделать сотрудником» — карточка
-создастся с именем из реестра, должность и отдел можно поправить там же.</p></div>"""
+создастся с именем из реестра, должность и отдел можно поправить там же.</p>{tail}</div>"""
     return page("Без прав", body_all, user, "/nostaff")
 
 
@@ -3201,10 +3385,20 @@ async def schedules_delete(request: Request):
 
 
 # ── рассылки ──────────────────────────────────────────────────────────────────
+BROADCASTS_PAGE = 25    # рассылок на страницу истории
+
+
 @router.get("/broadcasts")
-async def broadcasts_list(request: Request):
+async def broadcasts_list(request: Request, page_no: int = 1):
+    """Новая рассылка и её история. История растёт неделями, поэтому постранично."""
     user = await require_user(request)
-    rows = await repo.broadcast_history(100)
+    page_no = max(1, to_int(page_no, 1))
+    window = page_window(page_no, BROADCASTS_PAGE)
+    found = await repo.broadcast_history(window)
+    pages = pages_of(len(found), BROADCASTS_PAGE)
+    rows = found[(page_no - 1) * BROADCASTS_PAGE: page_no * BROADCASTS_PAGE]
+    pages_bar = pager("/panel/broadcasts", [], page_no, pages, f"рассылок: {len(found)}")
+    tail = window_tail(len(found), window, "Свежие рассылки сверху, дальше - на следующих страницах.")
     audience_options = {"all": "всем студентам"}
     for row in await repo.top_groups(300):
         audience_options[row["group_code"]] = f"группе {row['group_code']} ({row['students']} чел.)"
@@ -3218,7 +3412,7 @@ async def broadcasts_list(request: Request):
 <p class="small mut">Объявление придёт с подписью «— ФИО, должность». Отправка идёт в фоне,
 итог придёт вам в MAX и появится в истории ниже.</p>
 <div class="grid" style="margin-top:10px"><button>{icon("send", 16)} Отправить рассылку</button></div></form></div>
-<div class="card"><h2>{icon("logs", 20)} История рассылок</h2>{_broadcasts_table(rows)}</div>"""
+<div class="card"><h2>{icon("logs", 20)} История рассылок</h2>{_broadcasts_table(rows)}{pages_bar}{tail}</div>"""
     return page("Рассылки", body, user, "/broadcasts")
 
 
@@ -3249,10 +3443,49 @@ async def broadcasts_send(request: Request):
 
 
 # ── настройки ─────────────────────────────────────────────────────────────────
+# Что сис-админ вправе видеть и править в общем списке «ключ → значение».
+#
+# Список закрытый, и это осознанно. Проверка «похоже на служебное» не годится:
+# таблица settings общая для бота и панели, и в ней лежит всё, что бот пишет
+# сам, - отметки о миграциях (tz_migrated, groups_backfill_v1), ник бота
+# (bot_username), состояние меню каждого человека (menu_view:<id>), отметка
+# «шаблон уже показывали» (tpl:<user>:<id>). Такие ключи меняются из кода, их
+# правка руками ничего не меняет, только ломает бота, а сис-админ их видит и
+# думает, что это его настройки. Поэтому список белый: новый ключ попадёт в
+# панель только когда его сюда впишут, - и это осознанное решение, а не забыть.
+#
+# В списке только то, что колледж настраивает осмысленно:
+#   welcome_text / consent_text - тексты, которые читает студент;
+#   tickets_enabled / tunnel_enabled - переключатели 1/0, у которых на
+#   страницах панели нет отдельной кнопки.
+#
+# Чего здесь нет и почему (всё это настраивается в других местах панели):
+#   faq_enabled   - своя кнопка «Частые вопросы» на странице /panel/college;
+#   lesson_times  - форма времени звонков на странице расписания (и это JSON);
+#   college:*     - справочник колледжа, у него готовая форма на /panel/college.
+HUMAN_SETTINGS = (
+    ("welcome_text", "Приветствие новым студентам: пишет первым сообщением"),
+    ("consent_text", "Согласие на обработку данных: пусто - бот берёт свою заготовку"),
+    ("tickets_enabled", "Приём обращений: 1 - включён, 0 - выключен"),
+    ("tunnel_enabled", "Внешняя ссылка на панель: 1 - включена, 0 - выключена"),
+)
+HUMAN_SETTING_KEYS = tuple(key for key, _about in HUMAN_SETTINGS)
+
+
+def human_settings(stored: dict) -> list[dict]:
+    """Строки для редактора: известные ключи и их значения, включая ещё не заданные.
+
+    Показываем все ключи списка, а не только те, что уже лежат в базе: иначе
+    включить, например, внешнюю ссылку было бы нечем - поля просто нет.
+    """
+    return [{"key": key, "value": as_str(stored.get(key, "")), "about": about}
+            for key, about in HUMAN_SETTINGS]
+
+
 @router.get("/settings")
 async def settings_page(request: Request):
     user = await require_user(request)
-    rows = await repo.all_settings()
+    rows = human_settings({as_str(row["key"]): row["value"] for row in await repo.all_settings()})
     welcome = await db.get_setting("welcome_text", "")
     consent_text = await db.get_setting("consent_text", "")
     tickets_enabled = await db.get_setting("tickets_enabled", "1") == "1"
@@ -3293,11 +3526,16 @@ async def settings_page(request: Request):
   <div class="card" style="flex:1"><h2>{icon("analytics", 20)} За 30 дней</h2>
   <table><tr><th>Действие</th><th>Раз</th></tr>{count_rows}</table></div>
 </div>
-<div class="card"><h2>Прочие настройки (ключ → значение)</h2>
-<form method="post" action="/panel/settings/raw">{csrf(request)}<table>"""
+<div class="card"><h2>{icon("settings", 20)} Настройки (ключ → значение)</h2>
+<p class="small mut">Только те настройки, которые меняет человек. Служебные ключи бота
+(состояния меню, отметки миграций, ник бота) сюда не попадают: их пишет код, и правка
+руками только мешает. Новую настройку добавляют в панели разработчика.</p>
+<form method="post" action="/panel/settings/raw">{csrf(request)}<table>
+<tr><th>Ключ</th><th>Значение</th><th>Что это</th></tr>"""
     for row in rows:
         body += (f"<tr><td class='col-key'><input name='key' value='{esc(row['key'])}'></td>"
-                 f"<td><input name='value' value='{esc(row['value'])}'></td></tr>")
+                 f"<td><input name='value' value='{esc(row['value'])}'></td>"
+                 f"<td class='small mut'>{esc(row['about'])}</td></tr>")
     body += f"""</table>
 <div class="grid" style="margin-top:10px"><button>Сохранить</button>
 <a class="btn btn-grey" href="/panel/settings">Обновить список</a></div></form></div>
@@ -3346,13 +3584,19 @@ async def settings_raw(request: Request):
     data = await request.form()
     keys = data.getlist("key") if hasattr(data, "getlist") else []
     values = data.getlist("value") if hasattr(data, "getlist") else []
-    saved = 0
+    saved = skipped = 0
     for key, val in zip(keys, values, strict=False):
         name = as_str(key).strip()
-        if name:
-            await db.set_setting(name, as_str(val).strip())
-            saved += 1
-    flash(f"Сохранено настроек: {saved}.")
+        if not name:
+            continue
+        if name not in HUMAN_SETTING_KEYS:
+            # подделанное или забытое имя ключа: молча писать нельзя, но и
+            # сохранять служебные настройки из формы нельзя тем более
+            skipped += 1
+            continue
+        await db.set_setting(name, as_str(val).strip())
+        saved += 1
+    flash(f"Сохранено настроек: {saved}." + (f" Пропущено чужих ключей: {skipped}." if skipped else ""))
     return redirect("/panel/settings")
 
 
