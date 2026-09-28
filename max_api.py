@@ -37,7 +37,23 @@ MAX_ROWS = 30       # строк клавиатуры в одном сообще
 # MAX показывает подпись кнопки в одну строку и обрезает её многоточием: на
 # телефоне половина кнопок превращалась в «Должность изме…». Держим подпись
 # короче, чем обрезка, и режем сами - по границе слова, чтобы не отрезать смысл.
-BUTTON_TEXT = 24
+#
+# Предел зависит от числа кнопок в ряду (замер калибровочным сообщением в MAX:
+# в ряду из двух кнопок на компьютере целиком видно 16 символов, а третья
+# подпись в 18 символов уже обрезается). Поэтому одна кнопка в ряду получает
+# больше места, чем пять.
+BUTTON_TEXT = 26
+
+
+def row_limit(buttons: int) -> int:
+    """Сколько символов помещается в подписи при таком числе кнопок в ряду."""
+    if buttons <= 1:
+        return BUTTON_TEXT
+    if buttons == 2:
+        return 16
+    if buttons == 3:
+        return 14
+    return 12
 
 
 def short_label(text: str, limit: int = BUTTON_TEXT) -> str:
@@ -57,12 +73,32 @@ def short_label(text: str, limit: int = BUTTON_TEXT) -> str:
 
 
 def btn(text: str, payload: str) -> dict:
-    """Callback-кнопка (payload ≤ 1024 символов — усекается при превышении)."""
+    """Callback-кнопка (payload ≤ 1024 символов — усекается при превышении).
+
+    Здесь режется только предельный случай (кнопка одна в ряду), а настоящую
+    подгонку под ширину ряда делает fit_keyboard перед отправкой.
+    """
     return {"type": "callback", "text": short_label(text), "payload": payload[:MAX_PAYLOAD]}
 
 
 def link_btn(text: str, url: str) -> dict:
     return {"type": "link", "text": short_label(text), "url": url}
+
+
+def fit_keyboard(keyboard: list | None) -> list:
+    """Подгоняет подписи под ширину ряда: 2 кнопки — 16 символов, 5 — 12.
+
+    Смысл в том, чтобы ни одна подпись не дошла до обрезки многоточием на
+    телефоне: в тесном ряду короткая подпись лучше, чем «Должность изме…».
+    """
+    rows = []
+    for row in keyboard or []:
+        if not row:
+            continue
+        limit = row_limit(len(row))
+        rows.append([dict(button, text=short_label(button.get("text", ""), limit))
+                     if isinstance(button, dict) else button for button in row])
+    return rows
 
 
 def split_keyboard(keyboard: list | None, limit: int = MAX_ROWS) -> list[list[list]]:
@@ -194,7 +230,8 @@ class MaxAPI:
         except (TypeError, ValueError):
             uid = user_id
         parts = split_text(text or "…")
-        chunks = split_keyboard(keyboard)
+        # подписи подгоняем под ширину ряда до разбиения на сообщения
+        chunks = split_keyboard(fit_keyboard(keyboard))
         # первая часть клавиатуры идёт вместе с последней частью текста,
         # остальные - отдельными сообщениями с подписью
         result: dict = {}
