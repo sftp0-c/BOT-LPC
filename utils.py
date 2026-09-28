@@ -2,8 +2,10 @@
 import asyncio
 import os
 import re
+
+import clock
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 
 def as_str(value) -> str:
@@ -166,24 +168,21 @@ def norm_code(value) -> str:
 
 
 # ── время ──────────────────────────────────────────────────────────────────────
-# SQLite пишет created_at через datetime('now') — это UTC. Показываем местное время.
+# Время в базе локальное, часовой пояс колледжа (см. clock). Раньше здесь стояло
+# «голое время из базы считаем UTC и переводим в местное» — после перевода базы
+# на локальное время это давало лишние +5 часов в каждой дате на панели.
 def parse_db_time(value):
     """datetime из строки SQLite ('2026-09-25 14:32:05'); None — если разобрать нельзя."""
-    text = as_str(value).strip()
-    if not text:
-        return None
-    try:
-        return datetime.fromisoformat(text)
-    except ValueError:
-        return None
+    return clock.parse(as_str(value).strip())
 
 
 def local_time(value):
-    """Тот же момент, но в местном часовом поясе; None — если время не разобрано."""
-    moment = parse_db_time(value)
-    if moment is None:
-        return None
-    return (moment.replace(tzinfo=timezone.utc) if moment.tzinfo is None else moment).astimezone()
+    """Момент в часовом поясе колледжа без зоны; None — если время не разобрано.
+
+    Голое время из базы уже местное, поэтому оно возвращается как есть. Если в
+    строке есть явный сдвиг ('Z', '+05:00') — приводится к колледжу.
+    """
+    return clock.parse(as_str(value).strip())
 
 
 def fmt_time(value, fmt: str = "%d.%m.%Y %H:%M") -> str:
@@ -200,7 +199,7 @@ def fmt_when(value, now=None) -> str:
     moment = local_time(value)
     if moment is None:
         return as_str(value).strip()
-    current = (now or datetime.now().astimezone()).astimezone().date()
+    current = clock.parse(now).date() if now else clock.today()
     day = (current - moment.date()).days
     if day == 0:
         return moment.strftime("сегодня %H:%M")
@@ -216,7 +215,7 @@ def days_ago_text(value, days: int) -> str:
     moment = local_time(value)
     if moment is None:
         return "неизвестно"
-    delta = datetime.now().astimezone() - moment
+    delta = clock.now() - moment
     if delta < timedelta(hours=1):
         return "меньше часа назад"
     if delta < timedelta(hours=24):

@@ -1,11 +1,11 @@
 """Панель сис-админа: сотрудники, справочник групп, расписания, настройки, статистика."""
 import ipaddress
 import time
-from datetime import datetime
 from urllib.parse import urlsplit
 
 import httpx
 
+import clock
 import config
 import database as db
 import max_api
@@ -1549,7 +1549,7 @@ async def cb_schedule_view(x, arg):
         return await api.send(x, f"📅 {code} — PDF{hint}\n{url}", back)
 
     schedule = result.schedule
-    weekday = datetime.now().weekday()
+    weekday = clock.now().weekday()
     if view == "day":
         day = schedule.day(weekday)
         text = tt.format_day(day) if day and not day.is_empty else "📅 Сегодня занятий нет"

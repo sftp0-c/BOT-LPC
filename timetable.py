@@ -18,6 +18,8 @@ MAX: 📅 Понедельник 28.09, «1. Математика», «09:00–0
 from __future__ import annotations
 
 import re
+
+import clock
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 
@@ -130,7 +132,7 @@ class GroupSchedule:
         Расписание недельное, поэтому урок «вторника 10:50» после обеда
         вторника показывается со следующего вторника.
         """
-        moment = now or datetime.now()
+        moment = now or clock.now()
         today = moment.date()
         weekday_now = today.weekday()
         result: list[tuple[DaySchedule, Lesson, date]] = []
@@ -421,9 +423,10 @@ def day_title(weekday: int, day_date: date | None = None) -> str:
     name = WEEKDAYS_FULL[weekday].capitalize()
     if day_date is None:
         return name
-    if day_date == date.today():
+    today = clock.today()
+    if day_date == today:
         return f"{name}, сегодня"
-    if day_date == date.today() + timedelta(days=1):
+    if day_date == today + timedelta(days=1):
         return f"{name}, завтра"
     return f"{name} {day_date:%d.%m}"
 
@@ -436,7 +439,7 @@ def format_day(day: DaySchedule, day_date: date | None = None, today: bool = Fal
 
 def today_monday() -> date:
     """Понедельник текущей недели - точка отсчёта для «свежести» файла."""
-    moment = date.today()
+    moment = clock.today()
     return moment - timedelta(days=moment.weekday())
 
 
@@ -446,7 +449,7 @@ def format_schedule(schedule: GroupSchedule, week: date | None = None, only: lis
         return ""
     # Неделя берётся из самого PDF: колледж выкладывает файл на конкретную
     # неделю, и шапка обязана совпадать с ним, а не с текущим днём.
-    monday = week or schedule.week or (date.today() - timedelta(days=date.today().weekday()))
+    monday = week or schedule.week or today_monday()
     days = [schedule.days[key] for key in sorted(schedule.days) if only is None or key in only]
     lines = [f"📚 Расписание группы {schedule.group}"]
     if only is None:
@@ -460,7 +463,7 @@ def format_schedule(schedule: GroupSchedule, week: date | None = None, only: lis
             continue
         day_date = monday + timedelta(days=day.weekday)
         lines.append("")
-        lines.append(format_day(day, day_date, today=day_date == date.today()))
+        lines.append(format_day(day, day_date, today=day_date == clock.today()))
     lines.append("")
     lines.append(f"Пары: {short(', '.join(_bells_line(number, start, end) for number, (start, end) in enumerate(LESSON_TIMES, start=1)), 150)}")
     return "\n".join(lines)

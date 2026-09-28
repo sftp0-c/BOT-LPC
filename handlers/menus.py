@@ -1,6 +1,6 @@
 ﻿"""Главное меню и точки входа (/start, home)."""
-from datetime import datetime
 
+import clock
 import config
 import college
 import database as db
@@ -1321,13 +1321,13 @@ async def send_schedule(x: str, group: str, back_to_list: bool = False, view: st
 
     schedule = result.schedule
     if view == "day":
-        today = schedule.day(datetime.now().weekday())
-        text = tt.format_day(today) if today and not today.is_empty else f"📅 На {WEEKDAYS_FULL[datetime.now().weekday()]} пар нет"
+        today = schedule.day(clock.now().weekday())
+        text = tt.format_day(today) if today and not today.is_empty else f"📅 На {WEEKDAYS_FULL[clock.now().weekday()]} пар нет"
     elif view == "next":
         text = tt.format_upcoming(schedule) or "⏰ Ближайших занятий не найдено"
     else:
         text = tt.format_schedule(schedule)
-    today_weekday = datetime.now().weekday()
+    today_weekday = clock.now().weekday()
     keyboard = [
         [btn("📆 Сегодня", f"schedday:{group}:{today_weekday}"),
          btn("⏰ Ближайшие", f"schednext:{group}")],
@@ -1345,7 +1345,7 @@ async def cb_schedule_day(x, arg):
     result = await schedules.parse_group(_group_code(group))
     if not result.has_lessons:
         return await send_schedule(x, group)
-    day = result.schedule.day(to_int(weekday, datetime.now().weekday()))
+    day = result.schedule.day(to_int(weekday, clock.now().weekday()))
     text = tt.format_day(day) if day and not day.is_empty else "📅 На этот день пар нет"
     label = await _schedule_subscription_label(x, group)
     return await api.send(x, f"{text}\n{sub_hint(label)}", [
