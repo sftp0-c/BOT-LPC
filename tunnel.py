@@ -18,6 +18,7 @@ STALE_AFTER_SECONDS - значит контейнер `tunnel` упал, а ад
 бросают, их можно звать из панели и обработчиков без try/except.
 """
 
+import ipaddress
 import os
 import re
 import time
@@ -125,16 +126,52 @@ def stale() -> bool:
     return 0 <= age > STALE_AFTER_SECONDS
 
 
-def public_url() -> str:
-    """Адрес для ссылок-приглашений: PUBLIC_URL из .env, иначе адрес туннеля.
+def is_private_url(value: str) -> bool:
+    """Адрес, доступный только внутри сети: локальный IP или имя без домена."""
+    text = (value or "").strip()
+    if not text:
+        return True
+    if text.startswith(("http://localhost", "http://127.", "http://0.0.0.0")):
+        return True
+    host = text.split("://", 1)[-1].split("/", 1)[0].split("@")[-1]
+    if host.startswith("[") and "]" in host:          # [::1]:8080
+        host = host[1:host.index("]")]
+    else:
+        host = host.split(":", 1)[0]
+    if not host:
+        return True
+    if host in {"localhost", "bot"} or host.endswith((".local", ".internal")):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_private or ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        # имя без точки - локальное (например, college-panel)
+        return "." not in host
 
-    Публичный адрес в .env главнее: именованный туннель с доменом меняется
-    редко, вводить его вручную удобнее, чем ловить новый случайный адрес.
+
+def public_url() -> str:
+    """Адрес для ссылок-приглашений.
+
+    Порядок выбора неочевиден, поэтому по порядку:
+
+    1. `PUBLIC_URL` из `.env`, если он публичный. Так настраивают именованный
+       туннель с доменом: он меняется редко, вводить вручную удобнее, чем
+       ловить новый случайный адрес.
+    2. Адрес работающего туннеля. Раньше здесь был второй шаг, но с
+       `PUBLIC_URL=http://192.168.0.102:8080` в `.env` приглашения уходили
+       на адрес, который снаружи колледжа не работает, а туннель поднимался
+       рядом и просто не использовался.
+    3. `PUBLIC_URL` как есть, даже если он внутренний: лучше ссылка, которую
+       откроют с телефона в сети Wi-Fi, чем пустота.
     """
-    configured = (os.getenv("PUBLIC_URL") or "").strip()
-    if configured:
-        return configured.rstrip("/")
-    return current_url()
+    configured = (os.getenv("PUBLIC_URL") or "").strip().rstrip("/")
+    url = current_url()
+    tunnel_works = bool(url) and not stale()
+    if configured and not is_private_url(configured):
+        return configured
+    if tunnel_works:
+        return url
+    return configured
 
 
 def status() -> dict:
