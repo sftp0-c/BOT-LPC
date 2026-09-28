@@ -36,6 +36,9 @@ ASK_BUTTON = "✍️ Задать свой вопрос"
 CERT_BUTTON = "📄 Справки и другие документы"
 STAFF_BUTTON = "💬 Написать сотруднику"
 LIST_BUTTON = "☝️ Все частые вопросы"
+# контакты колледжа живут внутри частых вопросов: вопрос «куда звонить» частый,
+# а отдельная кнопка в меню студента только размножала кнопки
+COLLEGE_BUTTON = "🏫 Контакты колледжа"
 SEARCH_BUTTON = "🔍 Спросить бота"
 NO_ANSWER = "🤔 Точного ответа в списке частых вопросов нет - выдумывать я не буду."
 
@@ -268,7 +271,8 @@ async def cb_faq(x, arg):
         return await api.send(
             x, "❓ Частые вопросы пока не заполнены. Напишите вопрос сотруднику - "
                "он ответит и, возможно, войдёт в список.",
-            [[btn(STAFF_BUTTON, "new:feedback")], *BACK])
+            [[btn(STAFF_BUTTON, "new:feedback")],
+             [btn(COLLEGE_BUTTON, "college")], *BACK])
     pages = max(1, -(-len(items) // FAQ_PAGE))
     page = min(max(0, to_int(str(arg or "").replace("faq:", "", 1))), pages - 1)
     chunk = items[page * FAQ_PAGE:(page + 1) * FAQ_PAGE]
@@ -281,7 +285,8 @@ async def cb_faq(x, arg):
     if nav:
         keyboard.append(nav)
     keyboard += [[btn(SEARCH_BUTTON, "faqask")],
-                 [btn(STAFF_BUTTON, "new:feedback")], *BACK]
+                 [btn(STAFF_BUTTON, "new:feedback")],
+                 [btn(COLLEGE_BUTTON, "college")], *BACK]
     title = f"❓ Частые вопросы: {len(items)}"
     if pages > 1:
         title += f", страница {page + 1} из {pages}"

@@ -24,13 +24,16 @@ async def set_role(user_id: str, role: str, name: str = "Должность") ->
 
 # ── меню: шесть кнопок вместо россыпи ─────────────────────────────────────────
 def test_student_menu_is_three_submenus():
-    """Три подменю, три частые кнопки, частые вопросы с контактами и жалоба -
-    девять кнопок в четырёх рядах, ни одна строка не длиннее предела MAX."""
+    """Три подменю, три частые кнопки и частые вопросы - семь кнопок в трёх рядах.
+
+    Жалоба на ошибку уехала в «Обратную связь», контакты - в частые вопросы:
+    меню студента не должно быть россыпью второстепенных кнопок.
+    """
     rows = menus.student_menu()
-    assert len(rows) == 4
+    assert len(rows) == 3
     payloads = [b["payload"] for row in rows for b in row]
     assert payloads == ["sub:cert", "sub:acc", "sub:fb",
-                        "sched", "tickets", "profile", "faq", "college", "bugreport"]
+                        "sched", "tickets", "profile", "faq"]
 
 
 def test_student_menu_fits_keyboard_limits():

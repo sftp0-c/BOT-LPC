@@ -7,11 +7,19 @@ STUDENT = "100"
 
 
 # ── бот: меню и экраны ──────────────────────────────────────────────────────
-async def test_student_menu_has_faq_and_college(api):
+async def test_student_menu_has_faq_only(api):
+    """В меню студента остались подменю, дела и частые вопросы - контакта там нет."""
     await register(STUDENT)
     await press(STUDENT, "home")
     payloads = api.payloads(STUDENT)
-    assert "faq" in payloads and "college" in payloads
+    assert "faq" in payloads
+    assert "college" not in payloads
+
+
+async def test_contacts_live_inside_faq(api):
+    await register(STUDENT)
+    await press(STUDENT, "faq")
+    assert "college" in api.payloads(STUDENT)
 
 
 async def test_college_screen_shows_contacts(api):

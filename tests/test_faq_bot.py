@@ -148,7 +148,7 @@ async def test_faq_menu_is_paged_and_below_max_rows(api):
     assert "страница 1 из 3" in body[1]
     assert len(body[2]) <= max_api.MAX_ROWS
     # вопросы + переходы + три служебных ряда («спросить», «сотруднику», «в меню»)
-    assert len(body[2]) == faq.FAQ_PAGE + 4
+    assert len(body[2]) == faq.FAQ_PAGE + 5   # страница + переходы + 4 служебных ряда
     assert "faq:1" in api.payloads(STUDENT)
 
     await press(STUDENT, "faq:2")

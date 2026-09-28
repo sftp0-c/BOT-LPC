@@ -86,13 +86,15 @@ def student_menu():
     Подменю «Справка», «Бухгалтерия» и «Обратная связь» раскрываются
     конкретными вопросами, а не общими категориями.
     """
+    # «Ошибка в боте» живёт внутри «Обратной связи», а контакты - внутри
+    # частых вопросов: меню студента не должно быть россыпью второстепенных
+    # кнопок ради одной жалобы.
     return [
         [btn("📄 Справка", "sub:cert"), btn("💰 Бухгалтерия", "sub:acc"),
          btn("💬 Обратная связь", "sub:fb")],
         [btn("📅 Моё расписание", "sched"), btn("📋 Мои обращения", "tickets"),
          btn("👤 Профиль", "profile")],
-        [btn("❓ Частые вопросы", "faq"), btn("🏫 Контакты колледжа", "college")],
-        [btn("⚠️ Ошибка в боте", "bugreport")],
+        [btn("❓ Частые вопросы", "faq")],
     ]
 
 
@@ -310,7 +312,16 @@ async def cb_menu_view(x, arg):
 
     Без аргумента показывает сам переключатель с пояснением, что даёт каждый
     режим: без пояснения его легко забыть включить и потом удивляться чужому меню.
+
+    Переключать может только сис-админ: обычному сотруднику незачем смотреть
+    меню студента, а ещё он успевал забыть, в каком режиме находится, и писал
+    студенту вместо коллеги. Без аргумента показываем, чем это заканчивается.
     """
+    if not is_super(await admin_of(x)):
+        return await api.send(
+            x, "🔒 Режим просмотра меняет только сис-админ.\n\n"
+               "Вы работаете в кабинете сотрудника: обращения, расписание и статистика.",
+            [[btn("↩️ В меню", "home")]])
     view = as_str(arg).strip().lower()
     if view in ("", "\u25a0"):
         current = await menu_view(x)
@@ -336,11 +347,11 @@ async def view_switcher(x: str) -> list:
     Отдельный ряд с подписью текущего режима, чтобы его нельзя было спутать
     с рабочим меню.
     """
+    if not is_super(await admin_of(x)):
+        return []                 # у сотрудника переключателя нет вовсе
     current = await menu_view(x)
-    codes = MENU_VIEWS if is_super(await admin_of(x)) else ("admin", "staff", "student")
-    row = [btn(f"✅ {MENU_VIEWS[code]}" if code == current else MENU_VIEWS[code], f"view:{code}")
-           for code in codes]
-    return row
+    return [btn(f"✅ {MENU_VIEWS[code]}" if code == current else MENU_VIEWS[code],
+                f"view:{code}") for code in MENU_VIEWS]
 
 
 async def super_menu(user_id: str) -> list:
@@ -374,23 +385,28 @@ async def show_home(x: str):
     a = await admin_of(x)
     if a:
         view = await menu_view(x)
-        if view == "student":
-            return await api.send(
-                x, f"🎓 {MENU_VIEW_HINT['student']}\n"
-                   + ("" if await repo.get_user(x)
-                      else "Профиля студента у вас нет, поэтому расписание и обращения "
-                           "покажутся общими списками.\n"),
-                [*student_menu(), await view_switcher(x), [btn("↩️ В меню", "home")]])
-        if view == "staff":
-            return await api.send(
-                x, f"🏫 {MENU_VIEW_HINT['staff']}",
-                [*staff_menu(a), await view_switcher(x), [btn("↩️ В меню", "home")]])
         if is_super(a):
+            # у сис-админа все три режима: смотрит и своим кабинетом, и глазами
+            # сотрудника, и глазами студента
+            if view == "student":
+                return await api.send(
+                    x, f"🎓 {MENU_VIEW_HINT['student']}\n"
+                       + ("" if await repo.get_user(x)
+                          else "Профиля студента у вас нет, поэтому расписание и обращения "
+                               "покажутся общими списками.\n"),
+                    [*student_menu(), await view_switcher(x), [btn("↩️ В меню", "home")]])
+            if view == "staff":
+                return await api.send(
+                    x, f"🏫 {MENU_VIEW_HINT['staff']}",
+                    [*staff_menu(a), await view_switcher(x), [btn("↩️ В меню", "home")]])
             return await sysadmin_menu(x)      # режим «сис-админ» - свой кабинет
-        # обычный сотрудник: кабинет сотрудника, без системных кнопок
+        # обычный сотрудник: кабинет сотрудника, без системных кнопок и без
+        # переключателя режима. Если режим был включён раньше - сбрасываем,
+        # иначе человек продолжит видеть чужое меню.
+        if view != "staff":
+            await db.set_setting(f"menu_view:{x}", "staff")
         return await api.send(x, f"🏫 {MENU_VIEW_HINT['staff']}",
-                              [*staff_menu(a), await view_switcher(x),
-                 [btn("↩️ В меню", "home")]])
+                              [*staff_menu(a), [btn("↩️ В меню", "home")]])
     if not await repo.is_registered(x):
         return await start(x)
     return await api.send(x, await db.get_setting("welcome_text", DEFAULT_WELCOME),

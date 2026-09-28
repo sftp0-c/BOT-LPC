@@ -106,12 +106,14 @@ async def test_my_all_keyboard_fits_max_rows(api):
 async def test_bug_report_button_is_in_student_menu(api):
     """«Ошибка в боте» - единственный способ сообщить о поломке, меню не должно её терять.
 
-    Кнопка проверяется в меню студента: если её убрать при переработке меню,
-    жаловаться на ошибки станет нечем - и студент об этом даже не узнает.
+    Кнопка живёт в подменю «Обратная связь»: в меню студента она была лишней
+    отдельной строкой, а потерять её нельзя - иначе жаловаться будет нечем.
     """
     await register(STUDENT)
     api.sent.clear()
     await press(STUDENT, "home")
+    assert "bugreport" not in api.payloads(STUDENT)
+    await press(STUDENT, "sub:fb")
     assert "bugreport" in api.payloads(STUDENT)
     assert any("Ошибка в боте" in button["text"]
                for row in api.last(STUDENT)[2] for button in row)
@@ -127,7 +129,8 @@ async def test_bug_report_asks_and_can_be_cancelled(api):
     assert (await db.get_state(STUDENT))["state"] == "bug_report"
 
     await press(STUDENT, "home")
-    # вернулись в меню, и кнопка жалобы на месте: отмена её не убирает
+    # вернулись в меню, и жалоба на месте: отмена её не убирает
+    await press(STUDENT, "sub:fb")
     assert "bugreport" in api.payloads(STUDENT)
     assert await db.get_state(STUDENT) is None
     assert not await bug_reports()                 # отменённая ошибка в журнал не попала
@@ -163,7 +166,8 @@ async def test_bug_report_answers_and_returns_to_menu(api):
     student_text = texts_of(api, STUDENT)
     assert "Спасибо, сообщили" in student_text
     assert "Опишите одним сообщением" in student_text
-    assert "bugreport" in api.payloads(STUDENT)    # снова в меню, жалобу можно повторить
+    await press(STUDENT, "sub:fb")               # снова в обратной связи
+    assert "bugreport" in api.payloads(STUDENT)    # жалобу можно повторить
     assert await db.get_state(STUDENT) is None
 
 

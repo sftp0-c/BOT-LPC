@@ -470,10 +470,13 @@ async def _feedback_menu(x: str) -> None:
         await api.send(
             x, "👤 Обратная связь\n\nДолжности ещё не назначены в системе — напишите "
                 "любому сотруднику из общего списка.",
-            [[btn("👥 Выбрать сотрудника", "new:feedback")], [btn("🏠 Меню", "home")]])
+            [[btn("👥 Выбрать сотрудника", "new:feedback"),
+              btn("⚠️ Ошибка в боте", "bugreport")], [btn("🏠 Меню", "home")]])
         return
     keyboard = [[btn(item["label"], f"fbrole:{item['code']}")] for item in rows]
-    keyboard += [[btn("👥 Другой сотрудник", "new:feedback")], [btn("🏠 Меню", "home")]]
+    keyboard += [[btn("👥 Другой сотрудник", "new:feedback"),
+                  btn("⚠️ Ошибка в боте", "bugreport")],
+                 [btn("🏠 Меню", "home")]]
     lines = "\n".join(f"· {item['label']}: " + ", ".join(
         short(as_str(p.get("full_name")), 30) for p in item["people"]) for item in rows)
     await api.send(x, f"👤 Обратная связь — кому пишете?\n{lines}", keyboard)
