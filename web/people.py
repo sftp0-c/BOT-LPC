@@ -8,8 +8,8 @@ from fastapi.responses import Response
 from handlers.admin import STAFF_ROLES
 from handlers.common import notify
 from panel_theme import icon
-from utils import (STAFF_CATS, STATUS, as_str, fmt_when, is_sysadmin_role, norm_group, profile_url,
-                   to_int)
+from utils import (POSITION_CODES, POSITION_TITLES, POSITIONS_BTN, STAFF_CATS, STATUS, as_str, fmt_when,
+                   is_sysadmin_role, norm_group, norm_position, profile_url, row_value, to_int)
 
 from .access import request_status_cell
 from .common import (_action_form, code_cell, csrf, esc, fio_brief, flag, flash, form, input, log,
@@ -92,14 +92,15 @@ async def staff_card(request: Request, user_id: str):
 <table>
 <tr><th>MAX ID</th><td>{code_cell(uid, "MAX ID скопирован")}</td></tr>
 <tr><th>Роль в боте</th><td>{"сис-админ" if super_row else "сотрудник"}</td></tr>
-<tr><th>Должность</th><td>{esc(as_str(admin['position']) or STAFF_ROLES.get(admin['role'], '—'))}</td></tr>
+<tr><th>Должность</th><td>{esc(norm_position(admin['position']) or STAFF_ROLES.get(admin['role'], '—'))}</td></tr>
 <tr><th>Отдел</th><td>{esc(as_str(admin['department']) or '—')}</td></tr>
 <tr><th>Кабинет</th><td>{esc(as_str(admin['office']) or '—')}</td></tr>
 <tr><th>Обращения</th><td>{esc(plain(STAFF_CATS.get(admin['ticket_category'], as_str(admin['ticket_category']))))}</td></tr>
 <tr><th>Рассылка</th><td>{pill("разрешена", "on") if flag(admin["can_broadcast"]) else pill("запрещена", "off")}</td></tr>
 <tr><th>Профиль MAX</th><td>{profile_cell((await repo.user_card(uid) or {}).get("username", ""))}</td></tr>
 <tr><th>Отпуск</th><td>{vacation_block}</td></tr>
-</table>
+</table>{position_card_note(admin)}
+{position_pick_form(request, uid, norm_position(admin['position']))}
 <div style="margin-top:12px">
 <a class="btn" href="/panel/staff?q={esc(uid)}">{icon("staff", 16)} Все сотрудники</a>
 <a class="btn-grey btn" href="/panel/analytics">К аналитике</a>
@@ -169,6 +170,104 @@ async def students(request: Request, group: str = "", consent: str = "", page_no
                 user, "/students")
 
 
+# ── должности: подсказки из справочника ──────────────────────────────────────
+# Поле должности остаётся свободным текстом: должность «Преподаватель
+# информатики» в справочник не влезет. Но рядом лежат подсказки из справочника,
+# иначе сис-админ каждый раз вспоминает, как должность называется, и пишет
+# «ПК», «Приёмная комиссия» и «приёмная комиссия» тремя разными строками.
+POSITION_LIST = "position-hints"
+
+
+def position_input(current) -> str:
+    """Поле должности с подсказками браузера: можно и выбрать, и вписать своё."""
+    return (f'<div><label>Должность</label><input name="position" list="{POSITION_LIST}" '
+            f'value="{esc(current)}" placeholder="например, Преподаватель информатики"></div>')
+
+
+def position_pick_buttons(current) -> str:
+    """По одной кнопке на должность справочника; текущая помечена подсказкой."""
+    parts = []
+    for code in POSITION_CODES:
+        title = POSITION_TITLES[code]
+        note = "уже стоит" if title == current else POSITIONS_BTN[code]
+        parts.append('<button class="btn-grey" name="position_pick" value="{value}"'
+                     ' title="{note}">{label}</button>'.format(
+                         value=esc(title), note=esc(note), label=esc(POSITIONS_BTN[code])))
+    return "".join(parts)
+
+
+def position_pick_form(request: Request, user_id: str, current: str) -> str:
+    """Кнопки-подсказки должностей для одного сотрудника.
+
+    Отдельная форма с одним полем: нажатие подсказки не должно затирать отдел,
+    кабинет и раздел обращений, которые человек правит в форме рядом.
+    """
+    return (f'<form method="post" action="/panel/staff/{esc(user_id)}/position">{csrf(request)}'
+            f'<div class="small mut" style="margin:8px 0 4px">Подсказки из справочника: '
+            f'нажмите, чтобы поставить должность одним нажатием.</div>'
+            f'<div class="grid" style="max-height:86px;overflow:auto;align-content:start">'
+            f'{position_pick_buttons(current)}</div></form>')
+
+
+def position_datalist() -> str:
+    """Список должностей для подсказок в поле ввода. Один на страницу."""
+    return (f'<datalist id="{POSITION_LIST}">'
+            + "".join(f'<option value="{esc(title)}"></option>'
+                      for title in POSITION_TITLES.values())
+            + "</datalist>")
+
+
+def position_filled(row) -> bool:
+    """Известна ли должность сотрудника: своей строкой или по типу роли.
+
+    Строки здесь бывают и словарями, и строками sqlite3, поэтому берём поле
+    через row_value, а не через .get.
+    """
+    return bool(norm_position(row_value(row, "position")) or STAFF_ROLES.get(row_value(row, "role")))
+
+
+def position_pill(row) -> str:
+    """Пометка «должность не заполнена» в строке списка сотрудников.
+
+    Системным правам должность не нужна - они не сотрудник колледжа, и помечать
+    её незаполненной было бы шумом в самом верху списка.
+    """
+    if is_sysadmin_role(row_value(row, "role_type")) or position_filled(row):
+        return ""
+    return " " + pill("должность не заполнена", "off")
+
+
+def position_card_note(admin) -> str:
+    """То же самое в карточке сотрудника: пустое поле видно сразу."""
+    if position_filled(admin):
+        return ""
+    return (f'<p class="small mut">{icon("warning", 14)} Должность не заполнена. '
+            f'Пока её нет, у сотрудника в боте не открывается свой раздел, а в подменю '
+            f'«Обратная связь» его нет.</p>')
+
+
+@router.post("/staff/{user_id}/position")
+async def staff_position_pick(request: Request, user_id: str):
+    """Должность поставлена кнопкой-подсказкой: сохраняем в каноническом виде."""
+    actor = await require_form(request)
+    data = await request.form()
+    if not await repo.get_admin(user_id):
+        flash("!Сотрудник не найден.")
+        return redirect("/panel/staff")
+    # Кнопка присылает готовое название справочника, но сводим его ещё раз: тогда
+    # и подсказка, и дописанная руками должность лягут в базу одинаково, и «ПК» с
+    # «Приёмной комиссией» перестанут быть двумя разными сотрудниками.
+    position = norm_position(value(data, "position_pick"))[:100]
+    if not position:
+        flash("!Должность не понята: выберите подсказку или впишите её в поле.")
+        return redirect(f"/panel/staff/{user_id}")
+    await repo.update_admin(user_id, position=position)
+    log.info("панель: должность %s - %s", user_id, position)
+    await repo.log_action(actor, "должность изменена", f"{user_id}: {position}")
+    flash(f"{user_id}: должность «{position}».")
+    return redirect(f"/panel/staff/{user_id}")
+
+
 # ── сотрудники и сис-админы ───────────────────────────────────────────────────
 def _vacation_replacement(staff, all_rows: list[dict], away: dict) -> dict | None:
     """Кто замещает сотрудника в отпуске - по уже загруженным строкам, без запросов.
@@ -232,9 +331,9 @@ async def staff_list(request: Request, q: str = ""):
                                 else ", заместитель не назначен")
                              + "</span>")
         head_row = f"""
-<tr data-hk><td><b>{esc(row['full_name'])}</b>{vacation_mark}<div class="small mut">ID {esc(uid)}</div></td>
+<tr data-hk><td><b>{esc(row['full_name'])}</b>{vacation_mark}{position_pill(row)}<div class="small mut">ID {esc(uid)}</div></td>
 <td>{"сис-админ" if super_row else "сотрудник"}</td>
-<td>{esc(as_str(row['position']) or STAFF_ROLES.get(row['role'], '—'))}<div class="small mut">{esc(row['role'])}</div></td>
+<td>{esc(norm_position(row['position']) or STAFF_ROLES.get(row['role'], '—'))}<div class="small mut">{esc(row['role'])}</div></td>
 <td>{esc(as_str(row['department']) or '—')}</td>
 <td>{esc(as_str(row['office']) or '—')}</td>
 <td>{esc(plain(STAFF_CATS.get(row['ticket_category'], row['ticket_category'])))}</td>
@@ -245,7 +344,7 @@ async def staff_list(request: Request, q: str = ""):
             continue
         fields = (
             f'<div class="full"><label>ФИО</label><input name="full_name" value="{esc(row["full_name"])}"></div>'
-            f"{input('position', row['position'])}"
+            f"{position_input(row['position'])}"
             f"{input('department', row['department'])}"
             f"{select('role', role_options, row['role'])}"
             f"{input('office', row['office'])}"
@@ -254,6 +353,7 @@ async def staff_list(request: Request, q: str = ""):
         )
         body += (f"{head_row}<tr><td colspan='8' style='background:var(--surface-sunken);padding:10px'>"
                  f"{form(request, f'/panel/staff/{esc(uid)}', fields)}"
+                 f"{position_pick_form(request, uid, norm_position(row['position']))}"
                  f"<form method='post' action='/panel/staff/promote/{esc(uid)}' class='inline'>{csrf(request)}"
                  f"<button class='btn-grey'>{icon('access', 16)} Сделать сис-админом</button></form> "
                  f"<form method='post' action='/panel/staff/{esc(uid)}/delete' class='inline' "
@@ -268,7 +368,7 @@ async def staff_list(request: Request, q: str = ""):
         request, "/panel/staff/add",
         ('<div class="full"><label>MAX ID — можно сразу нескольких (через запятую, @ник или ссылку на профиль)</label>'
          '<input name="user_id" value="" placeholder="12345, 67890"></div>')
-        + input("full_name", "") + input("position", "") + input("department", "")
+        + input("full_name", "") + position_input("") + input("department", "")
         + select("role", role_options, "") + input("office", "")
         + select("ticket_category", dict(STAFF_CATS), "all")
         + select("can_broadcast", {"0": "нет", "1": "да"}, "0"),
@@ -318,9 +418,15 @@ async def staff_list(request: Request, q: str = ""):
 но права, снятые здесь, перезапуск не вернёт — иначе нельзя было бы отозвать доступа.
 <code>ROOT_IDS</code> — владелец бота: максимальные права на корневом уровне, снять их нельзя.
 Можно выдать и снять права сразу у нескольких человек — впишите ID через запятую.</p></div></div>"""
+    reference = ("<p class=\"small mut\">Список должностей правый: он лежит в "
+                 "<code>utils.POSITIONS</code>, и там же живут синонимы — «ПК», «Уч. часть» и "
+                 "«зам директора» попадают в ту же должность, что и полное название.</p>")
     body_all = f"""
+{position_datalist()}
 {sysadmins_card}
-<div class="card"><h2>{icon("staff", 20)} Сотрудники</h2>{table}</div>
+<div class="card"><h2>{icon("staff", 20)} Сотрудники</h2>{table}
+<p class="small mut">Подсказки должностей берутся из справочника и кладутся в базу в одном виде.
+{reference}</p></div>
 <div class="grid" style="align-items:stretch">
   <div class="card" style="flex:2"><h2>Добавить сотрудника</h2>{add}
   <p class="small mut">Можно вписать сразу несколько ID через запятую — должность, отдел и категория
@@ -341,7 +447,7 @@ async def staff_add(request: Request):
               "Можно несколько через запятую." + (f" Ники не найдены: {', '.join(missing)}." if missing else ""))
         return redirect("/panel/staff")
     common = {
-        "position": value(data, "position"),
+        "position": norm_position(value(data, "position"))[:100],
         "department": value(data, "department"),
         "office": value(data, "office"),
         "role": value(data, "role"),
@@ -485,11 +591,17 @@ async def staff_update(request: Request, user_id: str):
     if not await repo.get_admin(user_id):
         raise HTTPException(status_code=404, detail="Сотрудник не найден")
     before = await repo.get_admin(user_id)
+    # None означает «не трогать»: так пустое поле не затирает то, что уже записано.
+    # Раньше здесь стояло пустое значение, и один нечаянно очищенный input стирал
+    # должность сотрудника - а по ней его находит и подменю «Обратная связь».
+    # Остальные поля так себя ведут как раньше: там пустое значение - это осознанная
+    # правка (снять тип должности или кабинет), а не случайный пустой input.
+    position = norm_position(value(data, "position"))[:100]
     await repo.update_admin(
         user_id,
         full_name=value(data, "full_name") or None,
         role=value(data, "role"),
-        position=value(data, "position"),
+        position=position or None,
         department=value(data, "department"),
         office=value(data, "office"),
         ticket_category=value(data, "ticket_category") or "all",

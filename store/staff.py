@@ -6,7 +6,7 @@
 
 import clock
 import database as db
-from utils import as_str, parse_max_ids, parse_nicks
+from utils import as_str, norm_position, parse_max_ids, parse_nicks
 
 from .common import (
     STAFF_ROLES_SQL, _CONTACT_SELECT, _contact_filter, _parse_day, _row_dict, _row_value,
@@ -45,7 +45,10 @@ async def set_admin_profile(
 ) -> None:
     values: list[tuple[str, str]] = []
     for name, raw in (("role", role), ("office", office), ("position", position), ("department", department)):
-        value = as_str(raw).strip()[:100]
+        # должность сводится к названию из справочника: иначе один и тот же отдел
+        # в базе лежал бы как «ПК» и «Приёмная комиссия», и группировка по
+        # должности разъезжалась бы на две подменю
+        value = (norm_position(raw) if name == "position" else as_str(raw).strip())[:100]
         if value:
             values.append((name, value))
     if not values:
@@ -83,6 +86,7 @@ async def staff_by_role(role: str) -> list:
         "ORDER BY full_name",
         (as_str(role),),
     )
+
 
 
 # ── отпуска и заместители ───────────────────────────────────────────────────────
@@ -228,7 +232,7 @@ async def add_staff(
     await db.run(
         "INSERT OR IGNORE INTO admins(user_id, full_name, role_type, position, department, office, "
         "ticket_category, can_broadcast, created_at) VALUES(?,?, 'staff', ?,?,?,?,?,?)",
-        (str(user_id), as_str(full_name).strip()[:100], as_str(position).strip()[:100],
+        (str(user_id), as_str(full_name).strip()[:100], norm_position(position)[:100],
          as_str(department).strip()[:100], as_str(office).strip()[:100],
          ticket_category or "all", int(bool(can_broadcast)), clock.stamp()),
     )
@@ -358,6 +362,8 @@ ADMIN_FIELDS = ("full_name", "role", "position", "department", "office", "ticket
 
 async def update_admin(user_id: str, **fields) -> None:
     """Частичное обновление строки admins. Неизвестные поля игнорируются, None — не меняем."""
+    if fields.get("position") is not None:
+        fields["position"] = norm_position(fields["position"])
     values = [(name, fields[name]) for name in ADMIN_FIELDS if name in fields and fields[name] is not None]
     if not values:
         return

@@ -15,7 +15,7 @@ from handlers.registry import CALLBACKS, STATES, callback, state
 from max_api import BUTTON_TEXT, MAX_ROWS, btn, link_btn
 from timetable import WEEKDAYS_FULL
 from utils import (OPEN_STATUSES, STATUS, STATUS_SHORT, as_str, cut_plain, fmt_time, group_code,
-                    group_digits, norm_code, norm_group, short, to_int, valid_group)
+                    group_digits, has_position, norm_code, norm_group, short, to_int, valid_group)
 
 
 # ── входящие сообщения и команды ──────────────────────────────────────────────
@@ -283,13 +283,31 @@ async def _registration_saved(x: str, fio: str, group: str) -> None:
         await api.send(x, "Выберите действие:", student_menu())
 
 
+# Подпись кнопки раздела. Сам экран - в handlers.tickets рядом с очередью:
+# tickets и так берёт need_author из menus, и наоборот импортировать нельзя.
+SECTION_BTN = "🗂 Мой раздел"
+
+NO_POSITION_LINE = (
+    "\n⚠️ Должность не заполнена, поэтому своего раздела нет. Попросите сис-админа "
+    "заполнить её: панель → «Сотрудники» → ваша строка → должность."
+)
+
+
 def staff_menu(a):
-    rows = [[btn("📬 Обращения", "staff"), btn("📊 Статистика", "staffstats")]]
+    rows = []
+    if staff_position_filled(a):
+        rows.append([btn(SECTION_BTN, "mysection")])
+    rows.append([btn("📬 Обращения", "staff"), btn("📊 Статистика", "staffstats")])
     if can_broadcast(a):
         rows.append([btn("📢 Рассылка", "broadcast")])
     if is_super(a):  # переход в панель сис-админа — кнопкой, для тех, кто вписан в .env
         rows.append([btn("🔐 Сис-админ", "sysadm")])
     return rows
+
+
+def staff_position_filled(a) -> bool:
+    """Заполнена ли должность сотрудника. Пусто - значит, своего раздела нет."""
+    return has_position(_row_value(a, "position"))
 
 
 async def sysadmin_menu(x: str):
@@ -422,7 +440,8 @@ async def show_home(x: str):
         # иначе человек продолжит видеть чужое меню.
         if view != "staff":
             await db.set_setting(f"menu_view:{x}", "staff")
-        return await api.send(x, f"🏫 {MENU_VIEW_HINT['staff']}",
+        return await api.send(x, f"🏫 {MENU_VIEW_HINT['staff']}"
+                              + ("" if staff_position_filled(a) else NO_POSITION_LINE),
                               [*staff_menu(a), [btn("↩️ В меню", "home")]])
     if not await repo.is_registered(x):
         return await start(x)

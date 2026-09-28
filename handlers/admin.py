@@ -15,9 +15,10 @@ from handlers import schedules
 from handlers.common import BACK, DEFAULT_WELCOME, admin_of, api, is_super, log, need_super, notify, spawn
 from handlers.registry import callback, state
 from max_api import btn
-from utils import (CODE_TTL_CHOICES, POSITION_HINTS, STAFF_CATS, STAFF_CATS_BTN, STATUS, as_str, cut_plain,
-                   fmt_when, gen_code, group_code, is_sysadmin_role, norm_group, person_label, profile_url,
-                   short, tail_file, to_int, ttl_label, valid_group)
+from utils import (CODE_TTL_CHOICES, POSITION_CODES, POSITION_TITLES, POSITIONS_BTN, STAFF_CATS,
+                   STAFF_CATS_BTN, STATUS, as_str, cut_plain, fmt_when, gen_code, group_code,
+                   is_sysadmin_role, norm_group, norm_position, person_label, profile_url, short,
+                   tail_file, to_int, ttl_label, valid_group)
 
 
 # ── общие мелочи для строк из БД ─────────────────────────────────────────────
@@ -53,22 +54,58 @@ def department_of(a) -> str:
 
 
 # ── должности сотрудников ────────────────────────────────────────────────────
-STAFF_ROLES = {
-    "director": "👔 Директор",
-    "deputy_uvr": "👥 Заместитель директора по УВР",
-    "deputy_upr": "👥 Заместитель директора по УПР",
-    "deputy_unr": "👥 Заместитель директора по УНР",
-    "social_pedagogue": "🧑‍🏫 Социальный педагог",
+# Список должностей лежит в utils (см. POSITIONS). Здесь он превращается в два
+# словаря, потому что нужны две разные подписи: полную видят студенты, панель и
+# рассылка («👥 Заместитель директора по УВР»), а в кнопку бота она не влезает,
+# поэтому там своя короткая («👥 Зам УРП»).
+STAFF_ROLES: dict[str, str] = {
+    code: f"{POSITIONS_BTN[code].split(' ', 1)[0]} {title}"
+    for code, title in POSITION_TITLES.items()
 }
+STAFF_ROLES_BTN: dict[str, str] = dict(POSITIONS_BTN)
 ROLE_PRESET = "📋 Тип должности"
+NO_POSITION = "не назначена"
 
 
 def position_text(a) -> str:
     """Должность сотрудника: свободный текст из карточки, иначе подпись по типу роли."""
     free = _field(a, "position")
     if free:
-        return free
-    return STAFF_ROLES.get(_field(a, "role"), "не назначена")
+        return norm_position(free)
+    return STAFF_ROLES.get(_field(a, "role"), NO_POSITION)
+
+
+def position_hint_rows(prefix: str, codes=None) -> list:
+    """Подсказки должностей рядами кнопок.
+
+    Ряд собирается по ширине: в ряд из двух кнопок помещается 16 ячеек, поэтому
+    длинная подпись («👥 Зам директора», 16 ячеек) встаёт одна, а не режется
+    многоточием. В payload идёт код должности, а не подпись: код короткий, не
+    зависит от эмодзи и остаётся разборчивым, когда список пополняют.
+    """
+    limit = max_api.row_limit(2)
+    rows: list[list[dict]] = [[]]
+    for code in (codes or POSITION_CODES):
+        label = POSITIONS_BTN[code]
+        row = rows[-1]
+        if row and max_api.display_width(row[-1]["text"]) <= limit and \
+                max_api.display_width(label) <= limit:
+            row.append(btn(label, f"{prefix}:{code}"))
+        else:
+            rows.append([btn(label, f"{prefix}:{code}")])
+        if len(rows[-1]) == 2:
+            rows.append([])      # ряд полон: следующая подсказка встанет под ним
+    return [row for row in rows if row]
+
+
+def resolve_position(value) -> str:
+    """Должность из кнопки-подсказки или из ввода: «ПК» -> «Приёмная комиссия».
+
+    Кнопка присылает код, но старая кнопка могла прислать подпись, а человек
+    мог вписать что угодно: norm_position сводит всё это к одному названию, а
+    должность, которой в справочнике нет, оставляет как есть.
+    """
+    return norm_position(value)
 
 
 def role_text(a) -> str:
@@ -225,12 +262,19 @@ async def send_staff_card(x: str, staff_id: str):
     load = (f"Обращений за 90 дней: {activity.get('tickets', 0)}"
             f" · открытых: {activity.get('open', 0)}"
             f" · последнее: {fmt_when(activity['last_reply']) if activity.get('last_reply') else '—'}")
+    position = position_text(a)
+    # Должность пустая - сотрудник в боте не увидит своего раздела, и молчать
+    # об этом нельзя: человек будет думать, что кнопка сломалась.
+    gap = "" if position != NO_POSITION else (
+        "\n⚠️ Должность не заполнена. Пока её нет, у сотрудника в боте не открывается "
+        "свой раздел, а в подменю «Обратная связь» его нет."
+    )
     text = (
         f"👤 {_field(a, 'full_name')}\nMAX ID: {sid}\n"
-        f"Должность: {position_text(a)}\nОтдел: {department_of(a) or '—'}\nКабинет: {office_of(a) or '—'}\n"
+        f"Должность: {position}\nОтдел: {department_of(a) or '—'}\nКабинет: {office_of(a) or '—'}\n"
         f"Обращения: {STAFF_CATS.get(cat, cat)}\n"
         f"Рассылка: {'разрешена' if _flag(_field(a, 'can_broadcast', default='0')) else 'запрещена'}\n"
-        f"{load}"
+        f"{load}{gap}"
     )
     # по две кнопки в ряду: берём короткие подписи, полные - в тексте выше
     cat_row = [btn(("● " if code == cat else "") + STAFF_CATS_BTN[code], f"sfc:{sid}:{code}")
@@ -283,15 +327,21 @@ async def cb_staff_role_pick(x, arg):
     if not a or is_super(a):
         return await send_staff_card(x, arg)
     current = role_of(a)
+    sid = staff_id_of(a) or as_str(arg)
+    # Подпись кнопки короткая: полное название в ряд из одной кнопки не влезает,
+    # MAX обрезал бы его многоточием, поэтому названия перечислены текстом выше.
+    listed = "\n".join(f"· {STAFF_ROLES[code]}" for code in POSITION_CODES
+                       if not current or code != current)
     await api.send(
         x,
         f"{ROLE_PRESET} для {_field(a, 'full_name')}\n"
-        f"Код роли удобен для фильтров, а то, что видят студенты, — свободный текст в «✏️ Должность».",
+        f"Код роли удобен для фильтров, а то, что видят студенты, — свободный текст в «✏️ Должность».\n"
+        f"{listed}",
         [
-            [btn(("● " if code == current else "") + label, f"srset:{staff_id_of(a) or as_str(arg)}:{code}")]
-            for code, label in STAFF_ROLES.items()
+            [btn(("● " if code == current else "") + STAFF_ROLES_BTN[code], f"srset:{sid}:{code}")]
+            for code in POSITION_CODES
         ]
-        + [[btn("Очистить тип", f"srset:{staff_id_of(a) or as_str(arg)}:-")]],
+        + [[btn("Очистить тип", f"srset:{sid}:-")]],
     )
 
 
@@ -303,13 +353,13 @@ async def cb_staff_position_ask(x, arg):
     if not a or is_super(a):
         return await send_staff_card(x, arg)
     await db.set_state(x, "staff_position", {"admin_id": staff_id_of(a) or as_str(arg)})
-    hints = [btn(hint, f"sfph:{staff_id_of(a) or as_str(arg)}:{hint}") for hint in POSITION_HINTS]
     await api.send(
         x,
-        f"Введите должность сотрудника {_field(a, 'full_name')} — свободным текстом, "
-        "например: «Преподаватель информатики» или «Заведующий отделением».\n"
-        "Этот текст увидят студенты в подписи к рассылкам и в обращениях. Частые должности — кнопками ниже (или /cancel).",
-        [hints[i:i + 2] for i in range(0, len(hints), 2)],
+        f"Введите должность сотрудника {_field(a, 'full_name')} — например «Преподаватель информатики».\n"
+        "Этот текст увидят студенты. Частые должности — кнопками ниже: они берутся из "
+        "справочника и ложатся в базу одинаково, поэтому «ПК» и «Приёмная комиссия» не "
+        "разъедутся по разным подменю. Можно вписать и свою (или /cancel).",
+        position_hint_rows(f"sfph:{staff_id_of(a) or as_str(arg)}"),
     )
 
 
@@ -318,11 +368,15 @@ async def cb_staff_position_hint(x, arg):
     """Подсказка должности в карточке сотрудника: сохраняет и возвращает в карточку."""
     if not await need_super(x):
         return
-    staff_id, _, position = as_str(arg).partition(":")
+    staff_id, _, code = as_str(arg).partition(":")
     a = await admin_of(staff_id)
     if not a or is_super(a):
         return await api.send(x, "Сотрудник не найден.", [[btn("↩️ К списку", "admins")]])
-    await repo.update_admin(staff_id, position=position[:100])
+    position = resolve_position(code)[:100]
+    if not position:
+        return await api.send(x, "Должность не понята: выберите подсказку или впишите текстом.",
+                              [*position_hint_rows(f"sfph:{staff_id}"), *BACK])
+    await repo.update_admin(staff_id, position=position)
     await repo.log_action(x, "должность изменена", f"{staff_id}: {position}")
     await api.send(x, f"✏️ {_field(a, 'full_name')}: должность «{position}».")
     await send_staff_card(x, staff_id)
@@ -343,7 +397,7 @@ async def st_staff_position(x, text, p):
     if position == "-":
         await repo.clear_admin_fields(sid, "position")
     else:
-        await repo.set_admin_profile(sid, position=position)
+        await repo.set_admin_profile(sid, position=resolve_position(position))
     await db.clear_state(x)
     await send_staff_card(x, sid)
 
@@ -523,7 +577,7 @@ async def st_add_staff_batch(x, text, p):
     if not await need_super(x):
         return await db.clear_state(x)
     ids = (p or {}).get("ids") or []
-    position = "" if short(text, 100) == "-" else short(text, 100)
+    position = "" if short(text, 100) == "-" else resolve_position(short(text, 100))
     if not ids:
         await db.clear_state(x)
         return await api.send(x, "Список сотрудников потерялся, начните заново.", [[btn("➕ Добавить", "sfadd")]])
@@ -574,20 +628,26 @@ async def st_add_staff_name(x, text, p):
     if not name:
         return await api.send(x, "Введите ФИО сотрудника.")
     await db.set_state(x, "add_staff_position", {"id": p["id"], "name": name})
-    await api.send(
+    await send_position_hints(
         x,
-        f"Должность сотрудника {name} — свободным текстом, например «Преподаватель математики».\n"
-        "Этот текст увидят студенты. Отправьте «-», чтобы пропустить.",
+        f"Должность сотрудника {name} — её увидят студенты.\n"
+        "Выберите подсказку из справочника, впишите свою или отправьте «-», чтобы пропустить.",
     )
+
+
+async def ask_staff_office(x: str, staff_id: str, name: str, position: str) -> None:
+    """Последний шаг выдачи прав одному человеку: кабинет."""
+    await db.set_state(x, "add_staff_office", {"id": staff_id, "name": name, "position": position})
+    await api.send(x, f"Кабинет сотрудника {name or staff_id} (например, 214) "
+                      f"или «-», если кабинета нет. Должность: {position or '—'}.")
 
 
 @state("add_staff_position")
 async def st_add_staff_position(x, text, p):
     if not await need_super(x):
         return await db.clear_state(x)
-    position = "" if short(text, 100) == "-" else short(text, 100)
-    await db.set_state(x, "add_staff_office", {"id": p["id"], "name": p["name"], "position": position})
-    await api.send(x, f"Кабинет сотрудника {p['name']} (например, 214) или «-», если кабинета нет.")
+    position = "" if short(text, 100) == "-" else resolve_position(short(text, 100))
+    await ask_staff_office(x, p["id"], p["name"], position)
 
 
 @state("add_staff_office")
@@ -818,10 +878,13 @@ async def cb_make_staff(x, arg):
 
 
 async def send_position_hints(x: str, text: str) -> None:
-    """Экран выбора должности: подсказки одним нажатием и «свой текст» для остального."""
-    keyboard = [btn(hint, f"mph:{hint}") for hint in POSITION_HINTS]
-    rows = [keyboard[i:i + 2] for i in range(0, len(keyboard), 2)]
-    await api.send(x, text, [*rows, [btn("✏️ Свой текст", "mphtext")]])
+    """Экран выбора должности: подсказки из справочника и «свой текст».
+
+    В payload идёт код должности, а не её название: код короче, без эмодзи и не
+    меняется, когда подпись правят. Поэтому старые кнопки «mph:Секретарь» и новые
+    «mph:secretary» приводят к одной и той же должности.
+    """
+    await api.send(x, text, [*position_hint_rows("mph"), [btn("✏️ Свой текст", "mphtext")]])
 
 
 @callback("mphtext")
@@ -836,11 +899,19 @@ async def cb_position_hint(x, arg):
     """Применил подсказку должности: в выдаче прав пачкой, в карточке человека или в коде."""
     if not await need_super(x):
         return
-    position = as_str(arg)[:100]
+    position = resolve_position(as_str(arg))[:100]
+    if not position:
+        return await api.send(x, "Должность не понята. Выберите подсказку или впишите текстом.",
+                              [*position_hint_rows("mph"), *BACK])
     session = await db.get_state(x) or {}
     payload = session.get("payload") or {}
     if session.get("state") == "make_staff_position":
         return await ask_staff_category(x, payload.get("id", ""), payload.get("name", ""), position)
+    if session.get("state") == "add_staff_position":
+        # подсказка нажата в выдаче прав одному человеку: сразу спрашиваем кабинет
+        await db.clear_state(x)
+        return await ask_staff_office(x, as_str(payload.get("id", "")), as_str(payload.get("name", "")),
+                                      position)
     if session.get("state") == "add_staff_batch":
         ids = payload.get("ids") or []
         if ids:
@@ -888,7 +959,7 @@ async def cb_make_staff_category(x, arg):
 async def st_make_staff_position(x, text, p):
     if not await need_super(x):
         return await db.clear_state(x)
-    position = "" if short(text, 100) == "-" else short(text, 100)
+    position = "" if short(text, 100) == "-" else resolve_position(short(text, 100))
     return await ask_staff_category(x, as_str((p or {}).get("id", "")), as_str((p or {}).get("name", "")), position)
 
 

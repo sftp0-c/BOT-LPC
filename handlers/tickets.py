@@ -20,6 +20,7 @@ from utils import (
     ACCEPT_ON_REPLY,
     CATS,
     OPEN_STATUSES,
+    STAFF_CATS,
     STATUS,
     STATUS_SHORT,
     TOPIC_CATS,
@@ -27,7 +28,13 @@ from utils import (
     as_str,
     cut_plain,
     fmt_when,
+    POSITION_LEADERS,
+    group_by_position,
+    has_position,
+    norm_position,
     person_label,
+    position_group,
+    position_label,
     short,
     short_name,
     to_int,
@@ -81,7 +88,7 @@ def position_of(person) -> str:
     """Должность сотрудника: свободный текст из карточки, иначе подпись по коду роли."""
     free = _row_value(person, "position")
     if free:
-        return free
+        return norm_position(free)
     code = _row_value(person, "role")
     return STAFF_ROLES.get(code, code)
 
@@ -751,6 +758,90 @@ async def send_staff_queue(x: str, view: str = "") -> None:
     await api.send(x, "\n".join(lines), [*keyboard, *BACK])
 
 
+# ── свой раздел сотрудника ───────────────────────────────────────────────────
+SECTION_TEMPLATES = 4        # шаблонов на экране раздела: остальные - из карточки
+NO_POSITION_HELP = (
+    "⚠️ Должность не заполнена, поэтому показать свой раздел нечего.\n"
+    "Без неё бот не знает, к чему вас привязать: не будет ни счётчиков, ни "
+    "шаблонов, ни подсказки кабинета, а в подменю «Обратная связь» вас не будет.\n"
+    "Попросите сис-админа заполнить её: панель → «Сотрудники» → ваша строка → должность."
+)
+
+
+@callback("mysection")
+async def cb_staff_section(x, arg):
+    """Свой раздел: что не сделано, чем отвечать, где кабинет и кто ещё в должности.
+
+    Экран собран из того, чего больше нигде нет: в очереди есть счётчики, но там
+    нет кабинета, коллег по должности и шаблонов раздела. Поэтому он не
+    повторяет очередь, а показывает своё рабочее место.
+    """
+    a = await admin_of(x)
+    if not a:
+        return              # не сотрудник: молча, как и кнопка «Обращения»
+    if not has_position(_row_value(a, "position")):
+        return await api.send(x, NO_POSITION_HELP,
+                              [[btn("📬 Обращения", "staff")], [btn("🏠 Меню", "home")]])
+    category = _row_value(a, "ticket_category") or "all"
+    counts = await repo.status_counts(x)
+    code = position_group(_row_value(a, "position"), _row_value(a, "role"))
+    office = office_of(a)
+    department = _row_value(a, "department")
+    lines = [f"🗂 Ваш раздел: {position_of(a)}"]
+    if department:
+        lines.append(f"Отдел: {department}")
+    # кабинет - то, что чаще всего ищут и что больше нигде не показано
+    lines.append(f"Кабинет: {office}" if office else "Кабинет: не указан — попросите сис-админа")
+    lines.append(f"Обращения по разделу: {STAFF_CATS.get(category, category)}")
+    lines.append("")
+    lines.append("Очередь: " + " · ".join(f"{STATUS[code]} — {counts.get(code, 0)}"
+                                         for code in OPEN_STATUSES))
+    colleagues = [row for row in group_by_position(await repo.list_staff()).get(code, [])
+                  if as_str(_row_value(row, "user_id")) != str(x)]
+    if colleagues:
+        lines.append("")
+        lines.append("👥 В этой должности ещё работают:")
+        for row in colleagues[:6]:
+            room = office_of(row)
+            lines.append(f"· {short(as_str(_row_value(row, 'full_name')), 30)}"
+                         + (f" — каб. {room}" if room else " — кабинет не указан"))
+    else:
+        lines.append("👥 В этой должности вы один - обращения по разделу ваши.")
+    templates = await repo.list_templates("" if category == "all" else category, limit=50)
+    if templates:
+        lines.append("")
+        lines.append(f"⚡ Шаблоны раздела ({len(templates)}):")
+        lines += [f"· {short(as_str(t['title']), 40)}" for t in templates[:SECTION_TEMPLATES]]
+        if len(templates) > SECTION_TEMPLATES:
+            lines.append("· остальные - из карточки обращения")
+    keyboard = [[btn(f"⚡ {cut_plain(as_str(t['title']), max_api.BUTTON_TEXT - 2)}", f"mystpl:{t['id']}")]
+                for t in templates[:SECTION_TEMPLATES]]
+    if category in CATS:
+        keyboard.append([btn("📬 Очередь раздела", f"stafff:{category}")])
+    keyboard.append([btn("📬 Все обращения", "staff"), btn("📊 Статистика", "staffstats")])
+    keyboard.append([btn("🏠 Меню", "home")])
+    await api.send(x, "\n".join(lines), keyboard)
+
+
+@callback("mystpl")
+async def cb_section_template(x, arg):
+    """Шаблон из своего раздела: показать текст и напомнить, куда его вставить."""
+    a = await admin_of(x)
+    if not a:
+        return
+    template = await repo.get_template(to_int(as_str(arg)))
+    if not template:
+        return await api.send(x, "Шаблон удалён.", [[btn("↩️ В раздел", "mysection")], *BACK])
+    raw = as_str(template["text"])
+    await api.send(
+        x,
+        f"⚡ {short(as_str(template['title']), 60)}\n\n{short(raw, 1200)}\n\n"
+        "Текст подставляется в ответ прямо из карточки обращения: «Ответить» → "
+        "«Шаблоны». Подстановки вида {ФИО} бот заменяет сам.",
+        [[btn("📬 К обращениям", "staff")], [btn("↩️ В раздел", "mysection")], *BACK],
+    )
+
+
 @callback("staffv")
 async def cb_staff_view(x, arg):
     """Очередь по подменю: ждут ответа, в работе, готовы или все."""
@@ -803,13 +894,6 @@ SUBMENU_TOPICS = {
     )),
 }
 
-# Обратная связь - адресная: кто именно принимает решение.
-FEEDBACK_ROLES = (
-    ("director", "👔 Директор"),
-    ("deputy_uvr", "👤 Зам УРП"),
-    ("deputy_upr", "👤 Зам УПР"),
-    ("deputy_unr", "👤 Зам УМР"),
-)
 
 
 @callback("sub")
@@ -830,37 +914,47 @@ async def cb_submenu(x, arg):
 async def _feedback_menu(x: str) -> None:
     """Обратная связь адресная: сначала должность, потом человек этой должности.
 
-    Раньше в кнопке были «должность — фамилия», и MAX обрезал фамилию
-    многоточием. Теперь кнопка — это должность, а фамилии видно текстом.
+    Кнопка — это должность, а фамилии видно текстом: в кнопке «должность —
+    фамилия» MAX обрезал фамилию многоточием.
+
+    Список должностей больше не зашит в коде: он собирается из сотрудников по
+    справочнику (utils.POSITIONS), поэтому кнопка появляется у той должности,
+    которую реально назначили, а «ПК» и «Приёмная комиссия», написанные по-
+    разному, попадают в одно подменю, а не в два.
     """
-    rows = []
-    for code, label in FEEDBACK_ROLES:
-        people = await repo.staff_by_role(code)
-        if people:
-            rows.append({"code": code, "label": label, "people": [dict(p) for p in people]})
-    # в ряду из двух кнопок помещается 16 символов, поэтому длинные - по одной
+    groups = group_by_position(await repo.list_staff())
     tail = [[btn("👥 Другой сотрудник", "new:feedback")],
             [btn("⚠️ Ошибка в боте", "bugreport")],
             [btn("🏠 Меню", "home")]]
-    if not rows:
+    if not groups:
         await api.send(
             x, "👤 Обратная связь\n\nДолжности ещё не назначены в системе — напишите "
                 "любому сотруднику из общего списка.",
             [[btn("👥 Выбрать", "new:feedback")], *tail])
         return
-    keyboard = [[btn(item["label"], f"fbrole:{item['code']}")] for item in rows]
+    # Руководящих назначают первыми: к ним пишут адресно, и их кнопка не должна
+    # уезжать вниз экрана. Остальные - по алфавиту, чтобы порядок не прыгал.
+    order = [code for code in POSITION_LEADERS if code in groups]
+    order += sorted(code for code in groups if code not in POSITION_LEADERS)
+    lines = "\n".join(f"· {position_label(code)}: " + ", ".join(
+        short(as_str(_row_value(person, "full_name")), 30)
+        for person in groups[code]) for code in order)
+    keyboard = [[btn(position_label(code), f"fbrole:{code}")] for code in order]
     keyboard += tail
-    lines = "\n".join(f"· {item['label']}: " + ", ".join(
-        short(as_str(p.get("full_name")), 30) for p in item["people"]) for item in rows)
-    await api.send(x, f"👤 Обратная связь — кому пишете?\n{lines}", keyboard)
+    # Руководящих нет - говорим об этом прямо, но должности других не прячем:
+    # назначить директора и секретаря можно одним приказом.
+    hint = "" if any(code in POSITION_LEADERS for code in groups) else (
+        "\n\nРуководящие должности ещё не назначены — напишите любому сотруднику "
+        "из общего списка.")
+    await api.send(x, f"👤 Обратная связь — кому пишете?\n{lines}{hint}", keyboard)
 
 
 @callback("fbrole")
 async def cb_feedback_role(x, arg):
     """Люди одной должности: выбираем конкретного."""
     code = as_str(arg).strip()
-    title = dict(FEEDBACK_ROLES).get(code, code)
-    people = [dict(row) for row in await repo.staff_by_role(code)]
+    title = position_label(code)
+    people = [dict(row) for row in group_by_position(await repo.list_staff()).get(code, [])]
     if not people:
         return await api.send(x, f"{title}: сотрудник не назначен — напишите через общий список.",
                               [[btn("👥 Выбрать", "new:feedback")], *BACK])
