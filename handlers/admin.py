@@ -166,7 +166,7 @@ def staff_list_kb(rows) -> list:
         members = departments[department]
         # отдел бывает «Учебно-производственный» - в кнопку влезает 12 символов,
         # поэтому сокращаем, а полное название идёт строкой текстом выше
-        keyboard.append([btn(f"🏛 {cut_plain(department, 10)} {len(members)}",
+        keyboard.append([btn(f"🏛 {cut_plain(department, 20)} {len(members)}",
                              f"sdep:{short(department, 30)}")])
         for row in members:
             sid = _field(row, "user_id")
