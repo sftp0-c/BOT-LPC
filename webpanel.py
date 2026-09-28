@@ -7,6 +7,7 @@
 Вкладки: обзор, обращения, пользователи, сотрудники, коды и заявки, база данных,
 настройки, журнал и тесты. JSON-API для скриптов и проверок — /panel/api/*.
 """
+import contextvars
 import csv
 import hmac
 import io
@@ -29,7 +30,8 @@ import repository as repo
 import timetable as tt
 import charts
 import schedule_import
-from panel_theme import ICON_NAMES_BY_PATH, STYLESHEET, icon, theme_script
+from panel_theme import (ICON_NAMES_BY_PATH, STYLESHEET, actions_script, hotkeys_script,
+                          icon, panel_toast_js, theme_script)
 from handlers import faq, schedules
 from handlers.admin import STAFF_ROLES, approve_request, notify_schedule_subscribers, probe_pdf_url, reject_request
 from handlers.broadcast import run_broadcast
@@ -67,7 +69,14 @@ open_router = APIRouter(tags=["join"])
 COLLEGE_SCHEDULE_PAGE = "https://collegelan.ru/studentam/raspisanie-zanyatiy.php"
 COOKIE = "lpc_panel"          # имя cookie-сессии
 LOG_LINES = 400               # сколько строк журнала показывать по умолчанию
-_flash = ""                   # одноразовое сообщение для следующей страницы
+# Флеш-сообщение раньше было одной переменной на весь модуль, поэтому при двух
+# открытых панелях сообщение одного сис-админа показывалось другому. Теперь
+# сообщения лежат по токену сессии, а токен кладёт middleware на каждый запрос.
+_flashes: dict[str, str] = {}
+_current_token: contextvars.ContextVar[str] = contextvars.ContextVar("panel_token", default="")
+# Бейджи меню считает nav_badges() на каждый показ страницы, а читает page().
+_nav_badges: contextvars.ContextVar[dict[str, int]] = contextvars.ContextVar(
+    "panel_nav_badges", default={})
 
 
 # ── сессии и доступ ───────────────────────────────────────────────────────────
@@ -125,7 +134,14 @@ async def is_sysadmin(user_id: str) -> bool:
 
 
 async def require_user(request: Request) -> str:
-    """MAX ID вошедшего сис-админа, иначе — 503 (панель выключена) или 303 на вход."""
+    """MAX ID вошедшего сис-админа, иначе — 503 (панель выключена) или 303 на вход.
+
+    Здесь же запоминаем токен сессии: через эту проверку проходит каждая
+    страница панели, поэтому flash() знает, в чью сессию писать сообщение.
+    И считаются бейджи меню - тем же местом, чтобы не искать его в каждой
+    странице отдельно.
+    """
+    _current_token.set(request.cookies.get(COOKIE, ""))
     if not panel_enabled():
         raise HTTPException(status_code=503, detail="Панель выключена: задайте WEB_PANEL_PASSWORD в .env")
     user = session_user(request)
@@ -133,7 +149,39 @@ async def require_user(request: Request) -> str:
         raise HTTPException(status_code=303, headers={"Location": "/panel/login"})
     if not await is_sysadmin(user):
         raise HTTPException(status_code=403, detail="Панель доступна только сис-админам")
+    # бейджи нужны только страницам: JSON-API и выгрузки CSV их не показывают
+    if request.method == "GET" and "/api/" not in request.url.path \
+            and not request.url.path.endswith(".csv"):
+        await nav_badges()
     return user
+
+
+async def nav_badges() -> dict[str, int]:
+    """Числа для бейджиков меню: сколько ждёт внимания в каждой группе.
+
+    «Обращения» — сколько без ответа, «Люди» — сколько писало боту, но без прав
+    сотрудника, «Справочники» — сумма пробелов в данных. Числа кладём в
+    contextvar: ``page()`` остаётся обычной функцией (её вызывает и тест без
+    запроса), а свежесть гарантирует один пересчёт на страницу.
+
+    Считается в общем блоке try: когда схема неполна, сводка не читается, и
+    без этого поймать ошибку панель не смогла бы - вместо страницы с кнопкой
+    «Восстановить схему» сис-админ получил бы 500.
+    """
+    try:
+        today = await repo.admin_today()
+        gaps = await repo.data_gaps()
+    except Exception as exc:                       # noqa: BLE001 - бейджи не блокируют страницу
+        log.warning("бейджи меню не посчитались: %s", exc)
+        _nav_badges.set({})
+        return {}
+    data = {
+        "Обращения": to_int(today["no_answer"]),
+        "Люди": to_int(today["no_staff"]),
+        "Справочники": sum(to_int(row["count"]) for row in gaps),
+    }
+    _nav_badges.set(data)
+    return data
 
 
 async def require_form(request: Request) -> str:
@@ -156,6 +204,64 @@ def esc(value) -> str:
     return _escape(as_str(value), quote=True)
 
 
+EMOJI_HEAD = re.compile(r"^[^\w]+", re.UNICODE)
+
+
+def plain(label) -> str:
+    """Название без эмодзи: в панели их место занимают иконки.
+
+    Сами названия («🆕 Новое», «🔁 Всё») живут в utils и нужны боту как есть,
+    поэтому чистим их только на том, что показываем в панели. В списках выбора
+    (``<option>``) эмодзи остаются: там SVG не поддерживается.
+    """
+    text = as_str(label)
+    return EMOJI_HEAD.sub("", text).strip() or text
+
+
+def pill(text, kind: str = "") -> str:
+    """Плашка-статус вместо эмодзи: «включено», «активна», «готово» и тому же."""
+    cls = f' pill-{kind}' if kind in ("on", "off") else ""
+    return f'<span class="pill{cls}">{esc(text)}</span>'
+
+
+def state_pill(dot: str, text) -> str:
+    """Состояние с цветной точкой: on - работает, off - выключено, bad - сломан."""
+    return f'<span class="pill"><i class="dot-state {esc(dot)}"></i> {esc(text)}</span>'
+
+
+def copy_btn(value, note: str = "Скопировано") -> str:
+    """Кнопка-иконка: копирует значение по клику и подтверждает это тостом.
+
+    Копировать приходится часто - MAX ID, код группы, код приглашения, ссылка
+    на обращение, - а выделять текст в таблице неудобно.
+    """
+    return (f'<button type="button" class="copy-btn" data-copy="{esc(value)}" '
+            f'data-copy-note="{esc(note)}" title="{esc(note)}" '
+            f'aria-label="{esc(note)}: {esc(value)}">{icon("copy", 14)}</button>')
+
+
+def code_cell(value, note: str = "") -> str:
+    """Значение, рядом с которым стоит кнопка копирования."""
+    return f'<span class="code-cell"><code>{esc(value)}</code>{copy_btn(value, note or f"Скопировано: {value}")}</span>'
+
+
+def open_in_bot(target: str) -> str:
+    """Кнопка «Открыть в боте». Без настройки bot_username её не будет вовсе."""
+    if not target:
+        return ""
+    return (f'<a class="btn btn-grey" href="{esc(target)}" target="_blank" rel="noopener">'
+            f'{icon("external", 16)} Открыть в боте</a>')
+
+
+async def bot_open_link() -> str:
+    """Прямая ссылка на бота в MAX: имя бот узнаёт о себе при старте.
+
+    Пока настройки bot_username нет, ссылки нет - и кнопки «Открыть в боте» тоже.
+    """
+    name = as_str(await db.get_setting("bot_username", "")).strip().lstrip("@")
+    return f"https://max.ru/{name}" if name else ""
+
+
 def flag(value) -> bool:
     return as_str(value).strip().lower() in ("1", "true", "yes", "on")
 
@@ -163,26 +269,45 @@ def flag(value) -> bool:
 # ── оболочка страницы ─────────────────────────────────────────────────────────
 # Один и тот же <nav> на всех страницах: на широком экране CSS превращает его
 # в боковое меню, на узком - в верхнюю ленту. Поэтому разметка не дублируется.
-TABS = (
-    ("/", "Обзор"),
-    ("/tickets", "Обращения"),
-    ("/analytics", "Аналитика"),
-    ("/people", "Пользователи"),
-    ("/nostaff", "Без прав"),
-    ("/college", "Колледж"),
-    ("/students", "Студенты"),
-    ("/staff", "Сотрудники"),
-    ("/access", "Коды и заявки"),
-    ("/templates", "Шаблоны"),
-    ("/groups", "Группы"),
-    ("/schedules", "Расписания"),
-    ("/broadcasts", "Рассылки"),
-    ("/database", "База данных"),
-    ("/settings", "Настройки"),
-    ("/logs", "Журнал и тесты"),
+#
+# Пунктов было шестнадцать, и половина экрана уходила на вкладки, которыми
+# пользуются раз в неделю. Теперь их пять групп, а внутри группы - то же самое
+# количество разделов: пути не менялись, старые /panel/<раздел> работают как
+# раньше. Группа: название + пункты (путь, название, иконка).
+NAV_GROUPS: tuple[tuple[str, tuple[tuple[str, str, str], ...]], ...] = (
+    ("Пульт", (("/", "Обзор", "home"),
+               ("/activity", "Лента событий", "activity"))),
+    ("Обращения", (("/tickets", "Рабочее место", "tickets"),
+                   ("/templates", "Шаблоны", "templates"),
+                   ("/analytics", "Аналитика", "analytics"))),
+    ("Люди", (("/people", "Реестр", "people"),
+              ("/students", "Студенты", "students"),
+              ("/staff", "Сотрудники", "staff"),
+              ("/nostaff", "Без прав", "user-off"),
+              ("/access", "Коды и заявки", "access"))),
+    ("Справочники", (("/college", "Колледж", "college"),
+                     ("/groups", "Группы", "groups"),
+                     ("/schedules", "Расписания", "schedules"),
+                     ("/broadcasts", "Рассылки", "broadcasts"))),
+    ("Система", (("/settings", "Настройки", "settings"),
+                  ("/database", "База данных", "database"),
+                  ("/logs", "Журнал", "logs"))),
 )
 
+# Все разделы плоским списком - этим пользуются поиск по разделам и тесты.
+TABS = tuple((path, name) for _group, items in NAV_GROUPS for path, name, _ico in items)
+
 NAV_ICONS = ICON_NAMES_BY_PATH   # имена иконок вместо эмодзи
+
+# Разделы для палитры Ctrl+K: путь с префиксом /panel и готовая иконка.
+NAV_SECTIONS = tuple(
+    (group, tuple((name, f"/panel{item_path}", icon(item_icon, 16))
+                  for item_path, name, item_icon in items))
+    for group, items in NAV_GROUPS
+)
+
+# Бейджи групп: сколько в группе ждёт внимания сис-админа. Считает nav_badges().
+NAV_BADGE_GROUPS = ("Обращения", "Люди", "Справочники")
 
 
 # страница приглашения: открытая, без входа в панель, читается с телефона
@@ -228,19 +353,43 @@ async def bot_profile_link() -> str:
     return template.replace("{username}", name)
 
 
-def page(title: str, body: str, user: str = "", tab: str = "") -> str:
-    global _flash
-    nav = "".join(
-        f'<a href="/panel{path}" class="{"on" if path == tab else ""}">'
-        f'<span class="nav-ico" aria-hidden="true">{icon(NAV_ICONS.get(path, "dot"), 18)}</span>'
-        f'<span class="nav-txt">{esc(name)}</span></a>'
-        for path, name in TABS
-    )
-    notice, _flash = _flash, ""
+def nav_html(tab: str, badges: dict | None = None) -> str:
+    """Меню пятью группами. На узком экране группы выстраиваются в одну строку."""
+    badges = badges if badges is not None else {}
+    blocks = []
+    for group, items in NAV_GROUPS:
+        number = to_int(badges.get(group, 0))
+        badge = f'<b class="nav-badge{" hot" if number else ""}">{number}</b>' if number else ""
+        links = "".join(
+            f'<a href="/panel{item_path}"{" class=\"on\"" if item_path == tab else ""}>'
+            f'<span class="nav-ico" aria-hidden="true">{icon(item_icon, 18)}</span>'
+            f'<span class="nav-txt">{esc(name)}</span></a>'
+            for item_path, name, item_icon in items
+        )
+        blocks.append(
+            f'<div class="nav-group{" on" if any(p == tab for p, _n, _i in items) else ""}">'
+            f'<span class="nav-group-label"><span class="nav-group-name">{esc(group)}</span>'
+            f'{badge}</span><div class="nav-group-items">{links}</div></div>'
+        )
+    return '<div class="nav-groups">' + "".join(blocks) + "</div>"
+
+
+def page(title: str, body: str, user: str = "", tab: str = "",
+         actions: str = "") -> HTMLResponse:
+    """Оболочка страницы: шапка, меню группами, заголовок с действиями, скрипты.
+
+    ``actions`` - кнопки в шапке (выгрузка CSV, печать): раньше они прятались
+    в середине страницы, а на телефоне до них приходилось долистывать.
+    """
+    nav = nav_html(tab, _nav_badges.get())
+    notice = _flashes.pop(_current_token.get(""), "")
     kind = "bad" if notice.startswith("!") else "ok"
     mark = icon("warning", 20) if kind == "bad" else icon("check", 20)
     banner = (f'<div class="msg msg-{kind}">{mark}<span>{esc(notice.lstrip("!"))}</span></div>'
               if notice else "")
+    head = (f'<div class="dochead"><h1 class="page-title">{esc(title)}</h1>'
+            f'<div class="page-actions">{actions}</div></div>' if actions
+            else f'<h1 class="page-title">{esc(title)}</h1>')
     return HTMLResponse(
         f"""<!doctype html><html lang="ru" data-theme="dark"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -252,13 +401,16 @@ def page(title: str, body: str, user: str = "", tab: str = "") -> str:
     <input name="q" value="" placeholder="Поиск: обращение, человек, сотрудник, группа…" autocomplete="off">
     <button type="submit" aria-label="Найти">{icon("search", 18)}</button>
   </form>
-  <button class="theme-toggle" type="button"></button>
+  <button class="theme-toggle" type="button" title="Клавиатура: Ctrl+K — разделы, ? — подсказка"></button>
   <div class="who">вошёл как <b>{esc(user) or '—'}</b> · <a href="/panel/logout">выйти</a></div>
 </header>
-<nav>{nav}</nav>
-<main><h1 class="page-title">{esc(title)}</h1>{banner}{body}</main>
+<nav aria-label="Разделы панели">{nav}</nav>
+<main>{head}{banner}{body}</main>
 <footer>Данные те же, что в боте: изменения применяются сразу · MAX ID {esc(user)}</footer>
 <script>{theme_script()}</script>
+<script>{panel_toast_js()}</script>
+<script>{actions_script()}</script>
+<script>{hotkeys_script(NAV_SECTIONS)}</script>
 </body></html>"""
     )
 
@@ -299,9 +451,11 @@ TICKETS_PAGE = 25             # обращений в очереди рабоч�
 
 
 def flash(message: str) -> None:
-    """Одноразовое сообщение для следующей страницы (ошибка помечается «!»)."""
-    global _flash
-    _flash = message[:300]
+    """Одноразовое сообщение для следующей страницы (ошибка помечается «!»).
+
+    Сообщение получает только та сессия, из которой оно отправлено.
+    """
+    _flashes[_current_token.get("")] = message[:300]
 
 
 def csrf(request: Request) -> str:
@@ -321,13 +475,17 @@ def input(name: str, value="", kind: str = "text", full: bool = False) -> str:
     return f'<div{extra}><label>{esc(name)}</label><input name="{esc(name)}" type="{kind}" value="{esc(value)}"></div>'
 
 
-def select(name: str, options: dict, current: str, full: bool = False) -> str:
+def select(name: str, options: dict, current: str, full: bool = False,
+           label: str = "") -> str:
+    """Список выбора с подписью: по умолчанию - имя поля, у важных фильтров
+    подпись задаётся явно («Статус», «Раздел», «Тип события»)."""
     items = "".join(
         f'<option value="{esc(code)}"{" selected" if code == current else ""}>{esc(label)}</option>'
         for code, label in options.items()
     )
     extra = ' class="full"' if full else ""
-    return f'<div{extra}><label>{esc(name)}</label><select name="{esc(name)}">{items}</select></div>'
+    title = esc(label if label else name)
+    return f'<div{extra}><label>{title}</label><select name="{esc(name)}">{items}</select></div>'
 
 
 def value(form, *names: str, default: str = "") -> str:
@@ -395,85 +553,291 @@ async def logout(request: Request):
     return response
 
 
+def panel_link(path: str) -> str:
+    """Адрес раздела панели: абсолютный, если в .env задан PUBLIC_URL.
+
+    Так ссылку на обращение можно вставить в чат - относительный путь там
+    бесполезен.
+    """
+    base = as_str(config.PUBLIC_URL or "").strip().rstrip("/")
+    return f"{base}/panel{path}" if base else f"/panel{path}"
+
+
 # ── обзор ─────────────────────────────────────────────────────────────────────
 @router.get("/")
 async def overview(request: Request):
+    """«Пульт»: счётчики, что требует действия сегодня, лента и пробелы в данных.
+
+    Страница отвечает на два вопроса: «что сделать сейчас» и «кто что делал
+    последним». Всё остальное живёт в своих разделах, поэтому сюда не возвращаются
+    таблицы ради таблиц.
+    """
     user = await require_user(request)
     st = await repo.stats_overview()
     people = await repo.people_overview()
     counts = await repo.status_counts()
     dedupe = await repo.dedupe_stats()
-    groups = await repo.top_groups(10)
-    tickets = await repo.admin_tickets(None, 10)
-    last_bc = (await repo.broadcast_history(3)) or []
-
-    def stat(value_, label: str) -> str:
-        return f'<div class="stat"><b>{esc(value_)}</b><span>{esc(label)}</span></div>'
-
-    open_total = sum(counts.get(code, 0) for code in OPEN_STATUSES)
     today = await repo.admin_today()
-    cards = "".join([
-        stat(today["no_answer"], "без ответа"),
-        stat(today["requests"], "заявок"),
-        stat(st["students"], "студентов"),
-        stat(st["staff"], "сотрудников"),
-        stat(people["total"], "писали боту"),
-        stat(st["total"], "обращений всего"),
-        stat(open_total, "открытых"),
-        stat(st["week"], "за 7 дней"),
-        stat(today["tickets_day"], "за сутки"),
-        stat(dedupe["processed"], "событий обработано"),
-    ])
-    group_rows = "".join(
-        f"<tr><td><a href='/panel/groups'>{esc(row['group_code'])}</a></td><td>{esc(row['students'])}</td></tr>"
-        for row in groups
-    ) or "<tr><td class='mut'>Групп пока нет</td></tr>"
-    status_rows = "".join(
-        f"<tr><td>{esc(label)}</td><td>{esc(counts.get(code, 0))}</td></tr>" for code, label in STATUS.items()
-    )
-    gaps = [row for row in await repo.data_gaps() if row["count"]]
-    gaps_block = "".join(
-        f"<tr><td><a href='{esc(row['link'])}'>{esc(row['title'])}</a>"
-        f"<div class='small mut'>{esc(row['hint'])}</div></td>"
-        f"<td class='num'><b>{esc(row['count'])}</b></td></tr>"
-        for row in gaps
-    ) or "<tr><td class='mut'>Все данные заполнены</td></tr>"
-    ticket_rows = _tickets_table(tickets)
-    bc_rows = _broadcasts_table(last_bc)
-    body = f"""
-<div class="cards">{cards}</div>
-<div class="card"><h2>Что сделать сегодня</h2>
-<table>
-<tr><th>Обращений без ответа</th><td>{today['no_answer']}</td><th>Заявок на роль сотрудника</th><td>{today['requests']}</td></tr>
-<tr><th>Готово к выдаче, но не отмечено</th><td>{today['ready_not_picked']}</td><th>Активных кодов</th><td>{today['codes_active']}</td></tr>
-<tr><th>Зависших диалогов</th><td>{today['stuck_states']}</td><th>Обращений за сутки</th><td>{today['tickets_day']}</td></tr>
-<tr><th>Среднее время ответа</th><td>{esc(today['avg_reply'] or '—')}</td><th>Обращений за 7 дней</th><td>{st['week']}</td></tr>
-</table></div>
-<div class="card"><h2>Пробелы в данных</h2>
-<p class="small mut">Пока эти строки не заполнены, части бота работают неполно.</p>
-{gaps_block}</div>
-<div class="card"><h2>Последние обращения</h2>{ticket_rows}</div>
-<div class="grid" style="align-items:stretch">
-  <div class="card" style="flex:2"><h2>Студенты по группам</h2>
-    <table><tr><th>Группа</th><th>Студентов</th></tr>{group_rows}</table></div>
-  <div class="card" style="flex:1"><h2>Обращения по статусам</h2>
-    <table>{status_rows}</table></div>
-</div>
-<div class="card"><h2>Последние рассылки</h2>{bc_rows}</div>"""
-    return page("Обзор", body, user, "/")
+    events = await repo.recent_ticket_events(20)
+    open_total = sum(counts.get(code, 0) for code in OPEN_STATUSES)
+    bot = await bot_open_link()
 
+    counters = "".join([
+        _big_stat("/panel/tickets?scope=waiting", "tickets", today["no_answer"],
+                  "без ответа", "bad"),
+        _big_stat("/panel/access", "access", today["requests"],
+                  "заявок на роль", "warn"),
+        _big_stat("/panel/nostaff", "user-off", today["no_staff"],
+                  "без прав сотрудника", "warn"),
+        _big_stat("/panel/tickets?status=ready", "check", today["ready_not_picked"],
+                  "готово к выдаче", "good"),
+        _big_stat("/panel/database", "refresh", today["stuck_states"],
+                  "зависших диалогов", "warn"),
+        _big_stat("/panel/analytics", "clock", today["avg_reply"] or "—",
+                  "среднее время ответа", "", text_value=True),
+    ])
+    scale = " · ".join([
+        f"<b>{st['students']}</b> студентов",
+        f"<b>{st['staff']}</b> сотрудников",
+        f"<b>{people['total']}</b> писали боту",
+        f"<b>{st['total']}</b> обращений всего",
+        f"<b>{open_total}</b> открытых",
+        f"<b>{st['week']}</b> за 7 дней",
+        f"<b>{today['tickets_day']}</b> за сутки",
+        f"<b>{esc(dedupe['processed'])}</b> событий обработано",
+    ])
+    # что требует действия: строки всегда на месте, ноль означает «делать нечего»
+    actions = "".join([
+        _todo_row("Обращений без ответа", today["no_answer"],
+                  "/panel/tickets?scope=waiting", "tickets"),
+        _todo_row("Готово к выдаче, но не отмечено", today["ready_not_picked"],
+                  "/panel/tickets?status=ready", "check"),
+        _todo_row("Заявок на роль сотрудника", today["requests"],
+                  "/panel/access", "access"),
+        _todo_row("Писали боту, но без прав", today["no_staff"],
+                  "/panel/nostaff", "user-off"),
+        _todo_row("Активных кодов сотрудника", today["codes_active"],
+                  "/panel/access", "college"),
+        _todo_row("Зависших диалогов", today["stuck_states"],
+                  "/panel/database", "refresh",
+                  extra=_clear_states_form(request)),
+    ])
+    gaps = [row for row in await repo.data_gaps() if to_int(row["count"])]
+    gaps_line = (' · '.join(f'<a href="{esc(row["link"])}">{esc(row["title"])}: '
+                             f'<b>{esc(row["count"])}</b></a>' for row in gaps)
+                 or "все данные заполнены")
+    feed = _feed_list(events) or _empty_state("activity", "Событий пока нет")
+    body = f"""
+<div class="big-stats">{counters}</div>
+<div class="scale-line">{scale}</div>
+<div class="card"><h2>Что требует действия сегодня</h2>
+<p class="small mut">Что сделать сегодня: строка ведёт в раздел, где это и делается,
+а ноль означает «срочного нет». У зависших диалогов есть кнопка очистки.</p>
+<ul class="todo">{actions}</ul></div>
+<div class="card"><h2>{icon("activity", 20)} Последние события</h2>
+<p class="small mut">Кто и что делал с обращениями. <a href="/panel/activity">Вся лента событий</a></p>
+{feed}</div>
+<div class="card"><h2>{icon("warning", 20)} Пробелы в данных</h2>
+<p class="small mut">Пока эти строки не заполнены, части бота работают неполно: {gaps_line}</p></div>"""
+    return page("Обзор", body, user, "/",
+                actions=f'<a class="btn btn-grey" href="/panel/activity">'
+                        f'{icon("activity", 16)} Вся лента событий</a>'
+                        + open_in_bot(bot))
+
+
+def _big_stat(href: str, icon_name: str, value, label: str, kind: str = "",
+              text_value: bool = False) -> str:
+    """Крупный счётчик: сам кликабельный и ведёт в раздел, где с этим работают.
+
+    Число докручивает CSS (``--to``), а текстовое значение - как есть: так
+    счётчик анимируется и не требует JavaScript. При выключенной анимации
+    ``prefers-reduced-motion`` показывается конечное число.
+    """
+    number = (f'<b class="big-txt">{esc(value)}</b>' if text_value
+              else f'<b class="count" style="--to:{to_int(value)}"></b>')
+    empty = "" if text_value or to_int(value) else " zero"
+    return (f'<a class="big-stat{" " + kind if kind else ""}{empty}" href="{esc(href)}" '
+            f'aria-label="{esc(label)}: {esc(value)}">'
+            f'<span class="big-ico">{icon(icon_name, 18)}</span>{number}'
+            f'<span>{esc(label)}</span></a>')
+
+
+def _todo_row(name: str, number, href: str, icon_name: str, extra: str = "") -> str:
+    """Строка «что требует действия»: название-ссылка, число и действие рядом."""
+    count = to_int(number)
+    return (f'<li><div class="todo-row{" zero" if not count else " hot"}">'
+            f'<span class="todo-ico">{icon(icon_name, 18)}</span>'
+            f'<a class="todo-name" href="{esc(href)}">{esc(name)}'
+            f'{icon("chevron-right", 14)}</a>'
+            f'<b class="todo-n">{count}</b>{extra}</div></li>')
+
+
+def _clear_states_form(request: Request) -> str:
+    """Кнопка «Очистить» рядом с зависшими диалогами: та же чистка, что в боте."""
+    question = "Очистить зависшие диалоги? Студенты смогут начать заново."
+    # подтверждение в браузере - как у остальных опасных кнопок панели
+    ask = " onclick=\"return confirm('" + esc(question) + "')\""
+    return (f'<form method="post" action="/panel/cleanup/states" class="inline wb-tools"{ask}>'
+            f'{csrf(request)}<button class="btn-sm btn-grey">'
+            f'{icon("delete", 16)} Очистить</button></form>')
+
+
+def _empty_state(icon_name: str, text: str) -> str:
+    return (f'<div class="empty">{icon(icon_name, 34)}<span>{esc(text)}</span></div>')
+
+
+# ── лента событий по всем обращениям ─────────────────────────────────────────
+ACTIVITY_PAGE = 50        # событий на страницу ленты
+ACTIVITY_TYPES = (
+    ("", "все события"),
+    ("created", "обращение создано"),
+    ("status", "смена статуса"),
+    ("message_student", "сообщение студента"),
+    ("message_staff", "ответ сотрудника"),
+    ("ready", "документ готов"),
+    ("archive", "в архив"),
+    ("restore", "вернулось из архива"),
+    ("assign", "назначение сотрудника"),
+)
+
+
+def _event_matches(row, event: str, needle: str) -> bool:
+    """Подходит ли событие под фильтры ленты: тип события и текст."""
+    if event and as_str(row["event"]) != event:
+        return False
+    if not needle:
+        return True
+    haystack = " ".join([as_str(row["student_name"]), as_str(row["student_group"]),
+                         as_str(row["topic"]), as_str(row["detail"]),
+                         as_str(row["actor_name"]), as_str(row["actor_id"]),
+                         str(to_int(row["ticket_id"]))]).lower()
+    return needle in haystack
+
+
+def _feed_list(rows) -> str:
+    """Короткая лента для главной страницы: когда, кто и что сделал."""
+    if not rows:
+        return ""
+    items = "".join(
+        f'<li data-hk><span class="feed-time">{esc(fmt_when(row["created_at"]))}</span>'
+        f'<span class="feed-what">{esc(repo.event_feed_label(row))}'
+        + (f' <span class="small mut">— {esc(short(as_str(row["detail"]), 60))}</span>'
+           if as_str(row["detail"]) else "")
+        + "</span>"
+        + copy_btn(panel_link(f"/tickets?t={to_int(row['ticket_id'])}"),
+                   f"Ссылка на обращение №{to_int(row['ticket_id'])} скопирована")
+        + "</li>"
+        for row in rows
+    )
+    return f'<ul class="feed">{items}</ul>'
+
+
+@router.get("/activity")
+async def activity_page(request: Request, event: str = "", q: str = "", page_no: int = 1):
+    """Сквозная лента событий по всем обращениям: фильтр, поиск, постраничный просмотр.
+
+    Источник - ``repo.recent_ticket_events()``: тот же список, что и на главной,
+    но с поиском по тексту и постранично. События приходят с конца, поэтому
+    фильтр отбирает их уже в прочитанном окне: окно берём на страницу вперёд,
+    иначе про следующую страницу узнать нельзя. При редком типе события лента
+    заканчивается раньше, и панель честно пишет об этом.
+    """
+    user = await require_user(request)
+    page_no = max(1, to_int(page_no, 1))
+    needle = as_str(q).strip().lower()
+    window = min(2000, (page_no + 1) * ACTIVITY_PAGE)
+    rows = [row for row in await repo.recent_ticket_events(window)
+            if _event_matches(row, event, needle)]
+    total = len(rows)
+    pages = max(1, (total + ACTIVITY_PAGE - 1) // ACTIVITY_PAGE)
+    current = rows[(page_no - 1) * ACTIVITY_PAGE: page_no * ACTIVITY_PAGE]
+    bot = await bot_open_link()
+
+    body_rows = "".join(
+        f'<tr data-hk><td class="small mut">{esc(fmt_when(row["created_at"]))}</td>'
+        f'<td>{esc(as_str(row["actor_name"]) or as_str(row["actor_id"]) or "кто-то")}'
+        f'<div class="small mut">{esc(as_str(row["actor_position"]))}</div></td>'
+        f'<td><a href="/panel/tickets?t={to_int(row["ticket_id"])}">'
+        f'№{to_int(row["ticket_id"])}</a>'
+        f'<div class="small mut">{esc(as_str(row["student_name"]) or as_str(row["student_id"]))}</div></td>'
+        f'<td>{esc(_event_name(as_str(row["event"])))}</td>'
+        f'<td class="small">{esc(short(as_str(row["detail"]), 90) or "—")}'
+        f'{copy_btn(panel_link(f"/tickets?t={to_int(row["ticket_id"])}"), "Ссылка скопирована")}</td></tr>'
+        for row in current
+    ) or "<tr><td colspan='5' class='mut'>Событий не нашлось</td></tr>"
+    table = ("<table><tr><th>Когда</th><th>Кто</th><th>Обращение</th><th>Событие</th>"
+             f"<th>Деталь</th></tr>{body_rows}</table>")
+    # список типов полный, а не «что нашлось на странице»: иначе выбранный
+    # фильтр исчезал бы из списка ровно тогда, когда по нему ничего не нашлось
+    kind_options = dict(ACTIVITY_TYPES)
+    filters = f"""
+<form method="get" action="/panel/activity" class="grid" style="margin-bottom:12px">
+<div>{select("event", kind_options, event, label="Тип события")}</div>
+<div><label>Поиск по тексту: студент, сотрудник, тема, деталь</label>
+<input name="q" value="{esc(q)}" placeholder="например: справка"></div>
+<div><button>{icon("search", 16)} Найти</button></div></form>"""
+    pager = ""
+    if pages > 1:
+        def _step(number: int, label: str) -> str:
+            link = f"/panel/activity?event={esc(event)}&q={esc(q)}&page_no={number}"
+            cls = "btn-grey" if number != page_no else ""
+            return f'<a class="btn {cls}" href="{link}">{label}</a>'
+        pager = (f'<div class="pager">{_step(max(1, page_no - 1), f'{icon("chevron-left", 16)} Назад')}'
+                 f'<span class="small mut">Страница {page_no} из {pages} · всего событий: {total}</span>'
+                 f'{_step(min(pages, page_no + 1), f'Вперёд {icon("chevron-right", 16)}')}</div>')
+    tail = "" if page_no < pages else (
+        f'<p class="small mut">Это последняя страница: событий в окне — {total}.</p>')
+    body = f"""<div class="card"><h2>{icon("activity", 20)} События по обращениям</h2>
+<p class="small mut">Одно обращение - одна лента: создание, ответы, смена статуса, архив.
+Свежие сверху, по {ACTIVITY_PAGE} событий на страницу.</p>
+{filters}{table}{pager}{tail}</div>"""
+    return page("Лента событий", body, user, "/activity",
+                actions=open_in_bot(bot))
+
+
+def _event_name(code: str) -> str:
+    """Название типа события по его коду из базы."""
+    for known, label in ACTIVITY_TYPES:
+        if known == code:
+            return label
+    return code or "что-то сделал"
+
+
+@router.post("/cleanup/states")
+async def cleanup_states(request: Request):
+    """Чистка зависших диалогов: та же кнопка, что в боте, но из панели.
+
+    Состояния старше суток - это брошенные посреди регистрации диалоги: из-за
+    них человек не может начать заново. Живые диалоги (свежий created_at)
+    остаются нетронутыми.
+    """
+    actor = await require_form(request)
+    removed = await db.prune("user_states", 1)
+    log.info("панель: очищены зависшие диалоги - %s (сис-админ %s)", removed, actor)
+    await repo.log_action(actor, "очищены зависшие диалоги", f"удалено состояний: {removed}")
+    flash(f"Удалено зависших состояний: {removed}.")
+    return redirect("/panel/")
 
 def _tickets_table(rows) -> str:
     if not rows:
         return "<p class='mut'>Обращений пока нет.</p>"
     body = "".join(
-        f"<tr><td><a href='/panel/tickets/{esc(row['ticket_id'])}'>№{esc(row['ticket_id'])}</a></td>"
+        f"<tr data-hk><td><a href='/panel/tickets/{esc(row['ticket_id'])}'>№{esc(row['ticket_id'])}</a></td>"
         f"<td>{esc(row['student_id'])}</td><td>{esc(row['target_admin_id'])}</td>"
-        f"<td>{esc(row['category'])}</td><td>{esc(STATUS.get(row['status'], row['status']))}</td>"
+        f"<td>{esc(plain(STAFF_CATS.get(row['category'], row['category'])))}</td>"
+        f"<td>{esc(plain(STATUS.get(row['status'], row['status'])))}</td>"
         f"<td class='small mut'>{esc(row['created_at'])}</td></tr>"
         for row in rows
     )
     return f"<table><tr><th>№</th><th>Студент</th><th>Сотрудник</th><th>Категория</th><th>Статус</th><th>Создано</th></tr>{body}</table>"
+
+
+def _delivered_cell(sent, failed) -> str:
+    """Доставка рассылки: плашками вместо зелёной галочки и красного крестика."""
+    parts = [pill(f"доставлено {sent}", "on")]
+    if to_int(failed):
+        parts.append(pill(f"не доставлено {failed}"))
+    return " ".join(parts)
 
 
 def _broadcasts_table(rows) -> str:
@@ -485,7 +849,7 @@ def _broadcasts_table(rows) -> str:
         f"{' <span class=\"small mut\">' + esc(row['sender_role']) + '</span>' if row['sender_role'] else ''}</td>"
         f"<td>{esc('всем' if row['audience'] == 'all' else row['audience'])}</td>"
         f"<td class='small'>{esc((row['text'] or '')[:90])}</td>"
-        f"<td>✅{esc(row['sent'])} ❌{esc(row['failed'])}</td>"
+        f"<td>{_delivered_cell(row['sent'], row['failed'])}</td>"
         f"<td class='small mut'>{esc(row['created_at'])}</td></tr>"
         for row in rows
     )
@@ -504,12 +868,12 @@ async def templates_page(request: Request):
         title = as_str(row["title"])
         confirm = f"Удалить шаблон «{title}»?"
         body_rows += (
-            f"<tr><td><b>{esc(title)}</b><div class='small mut'>ID {esc(row['id'])}</div></td>"
+            f"<tr data-hk><td><b>{esc(title)}</b><div class='small mut'>ID {esc(row['id'])}</div></td>"
             f"<td class='small'>{esc((as_str(row['text']) or '')[:220])}</td>"
-            f"<td>{esc(STAFF_CATS.get(row['category'], row['category']))}</td>"
+            f"<td>{esc(plain(STAFF_CATS.get(row['category'], row['category'])))}</td>"
             f"<td>{esc(row['used_count'])}</td>"
             f"<td class='small mut'>{esc(fmt_when(row['created_at']))}</td>"
-            f"<td>{_action_form(request, f'/panel/templates/{esc(row['id'])}/delete', 'Удалить', confirm_text=confirm, cls='btn-bad')}"
+            f"<td>{_action_form(request, f'/panel/templates/{esc(row['id'])}/delete', f'{icon("delete", 16)} Удалить', confirm_text=confirm, cls='btn-bad')}"
             f"</td></tr>"
         )
     body_rows = body_rows or "<tr><td class='mut'>Шаблонов пока нет</td></tr>"
@@ -525,12 +889,12 @@ async def templates_page(request: Request):
         "Добавить шаблон", "btn-ok",
     )
     body_all = f"""
-<div class="card"><h2>⚡ Шаблоны ответов: {total}</h2>
-<p class="small mut">Сотрудник в карточке обращения нажимает «⚡ Шаблоны» - выбирает подходящий
-и отправляет как есть или дописывает своё. Шаблон с разделом «🔁 Всё» показывается всегда,
+<div class="card"><h2>{icon("templates", 20)} Шаблоны ответов: {total}</h2>
+<p class="small mut">Сотрудник в карточке обращения открывает «Шаблоны» - выбирает подходящий
+и отправляет как есть или дописывает своё. Шаблон с разделом «Всё» показывается всегда,
 остальные - только в своём разделе. Колонка «Применён» показывает, какие ответы реально нужны.</p>
 {table}</div>
-<div class="card"><h2>Добавить шаблон</h2>{add}</div>"""
+<div class="card"><h2>{icon("plus", 20)} Добавить шаблон</h2>{add}</div>"""
     return page("Шаблоны ответов", body_all, user, "/templates")
 
 
@@ -644,8 +1008,8 @@ async def staff_card(request: Request, user_id: str):
 </div>"""
     recent_rows = "".join(
         f"<tr><td><a href='/panel/tickets/{esc(row['ticket_id'])}'>№{esc(row['ticket_id'])}</a></td>"
-        f"<td>{esc(STATUS.get(as_str(row['status']), as_str(row['status'])))}</td>"
-        f"<td>{esc(STAFF_CATS.get(as_str(row['category']), as_str(row['category'])))}</td>"
+        f"<td>{esc(plain(STATUS.get(as_str(row['status']), as_str(row['status']))))}</td>"
+        f"<td>{esc(plain(STAFF_CATS.get(as_str(row['category']), as_str(row['category']))))}</td>"
         f"<td>{esc(as_str(row['topic']) or '—')}</td>"
         f"<td class='small mut'>{esc(fmt_when(row['created_at']))}</td></tr>"
         for row in recent
@@ -655,7 +1019,7 @@ async def staff_card(request: Request, user_id: str):
     replacement = None if not away else await repo.vacation_replacement(admin)
     until = as_str(admin["vacation_until"] if "vacation_until" in admin.keys() else "")
     vacation_block = (
-        f"🏖 в отпуске до {esc(until)}"
+        f"{icon('clock', 16)} в отпуске до {esc(until)}"
         + (f", обращения принимает {esc(as_str(replacement['full_name']))}" if replacement
            else ", заместитель не назначен")
         if away else "на месте")
@@ -671,18 +1035,18 @@ async def staff_card(request: Request, user_id: str):
 {cards}
 <div class="card"><h2>{esc(admin['full_name'])}</h2>
 <table>
-<tr><th>MAX ID</th><td>{esc(uid)}</td></tr>
+<tr><th>MAX ID</th><td>{code_cell(uid, "MAX ID скопирован")}</td></tr>
 <tr><th>Роль в боте</th><td>{"сис-админ" if super_row else "сотрудник"}</td></tr>
 <tr><th>Должность</th><td>{esc(as_str(admin['position']) or STAFF_ROLES.get(admin['role'], '—'))}</td></tr>
 <tr><th>Отдел</th><td>{esc(as_str(admin['department']) or '—')}</td></tr>
 <tr><th>Кабинет</th><td>{esc(as_str(admin['office']) or '—')}</td></tr>
-<tr><th>Обращения</th><td>{esc(STAFF_CATS.get(admin['ticket_category'], as_str(admin['ticket_category'])))}</td></tr>
-<tr><th>Рассылка</th><td>{"разрешена" if flag(admin["can_broadcast"]) else "запрещена"}</td></tr>
+<tr><th>Обращения</th><td>{esc(plain(STAFF_CATS.get(admin['ticket_category'], as_str(admin['ticket_category']))))}</td></tr>
+<tr><th>Рассылка</th><td>{pill("разрешена", "on") if flag(admin["can_broadcast"]) else pill("запрещена", "off")}</td></tr>
 <tr><th>Профиль MAX</th><td>{profile_cell((await repo.user_card(uid) or {}).get("username", ""))}</td></tr>
 <tr><th>Отпуск</th><td>{vacation_block}</td></tr>
 </table>
 <div style="margin-top:12px">
-<a class="btn" href="/panel/staff?q={esc(uid)}">Все сотрудники</a>
+<a class="btn" href="/panel/staff?q={esc(uid)}">{icon("staff", 16)} Все сотрудники</a>
 <a class="btn-grey btn" href="/panel/analytics">К аналитике</a>
 </div>{vacation_form}</div>
 <div class="card"><h2>Последние обращения</h2>
@@ -767,6 +1131,8 @@ async def analytics_page(request: Request, days: int = 30):
 
 
 # ── обращения ─────────────────────────────────────────────────────────────────
+# Бот пишет вложение так - по этому префиксу панель узнаёт файл в переписке.
+ATTACH_PREFIX = "📎 Файл: "
 EVENT_LABELS = {"created": "обращение создано", "status": "статус", "ready": "документ готов",
                 "message_student": "сообщение студента", "message_staff": "ответ сотрудника"}
 
@@ -805,28 +1171,50 @@ async def tickets_list(request: Request, status: str = "", q: str = "", category
     cat_options = {"": "все разделы", **{code: label for code, label in CATS.items()}}
     query = f"status={esc(status)}&category={esc(category)}&q={esc(q)}&scope={esc(scope)}"
     live_query = query + (f"&view={esc(view)}" if view else "")
+    # фильтры запоминает actions_script(): пустая форма - восстанавливаем прошлые
+    fresh = "" if (status or category or q or scope) else ' data-filters-saved="1"'
     filters = f"""
-<form method="get" action="/panel/tickets" class="grid" style="margin-bottom:10px">
-<div>{select("status", options, status)}</div>
-<div>{select("category", cat_options, category)}</div>
-<div><label>🔍 Поиск</label><input name="q" value="{esc(q)}" placeholder="текст или ID"></div>
+<form method="get" action="/panel/tickets" class="grid wb-filters" style="margin-bottom:10px"
+ data-filters="status,category,q"{fresh}>
+<div>{select("status", options, status, label="Статус")}</div>
+<div>{select("category", cat_options, category, label="Раздел")}</div>
+<div><label>Поиск: текст обращения или MAX ID</label>
+<input name="q" value="{esc(q)}" placeholder="например: справка"></div>
 <div><button>Найти</button></div></form>
-<p class="small mut">
-<a class="btn{' btn-grey' if scope else ''}" href="/panel/tickets?{live_query}">🔔 Только ждут ответа: {waiting}</a>
-<a class="btn{' btn-grey' if not archived else ''}" href="/panel/tickets?{query}">📥 В работе</a>
-<a class="btn{' btn-grey' if not archived else ' btn-ok'}" href="/panel/tickets?{query}&view=archive">🗄 Архив: {archived_n}</a>
-<a class="btn" href="/panel/tickets/new">➕ Создать обращение</a>
-<a class="btn btn-grey" href="/panel/tickets.csv">⬇️ CSV</a></p>"""
-    summary = " · ".join(f"{STATUS.get(c, c)}: {counts.get(c, 0)}" for c in STATUS)
+<p class="small mut wb-tools">
+<a class="btn{' btn-grey' if scope else ''}" href="/panel/tickets?{live_query}">{icon("clock", 16)} Только ждут ответа: {waiting}</a>
+<a class="btn{' btn-grey' if not archived else ''}" href="/panel/tickets?{query}">{icon("inbox", 16)} В работе</a>
+<a class="btn{' btn-grey' if not archived else ' btn-ok'}" href="/panel/tickets?{query}&view=archive">{icon("archive", 16)} Архив: {archived_n}</a>
+<a class="btn" href="/panel/tickets/new">{icon("plus", 16)} Создать обращение</a>
+<a class="btn btn-grey" href="/panel/tickets" data-filters-reset>{icon("close", 16)} Сбросить фильтры</a></p>"""
+    summary = " · ".join(f"{plain(STATUS.get(c, c))}: {counts.get(c, 0)}" for c in STATUS)
+    bot = await bot_open_link()
     access = await _tickets_access(request)
     queue = _tickets_queue(request, rows, latest, query, selected, archived)
-    card = await _ticket_workbench(request, selected) if selected else (
+    card = await _ticket_workbench(request, selected, bot) if selected else (
         '<div class="card mut">Выберите обращение в очереди слева — здесь появятся переписка, '
-        'правки и быстрые ответы.</div>')
+        'правки и быстрые ответы. Клавиши: j и k — по очереди, Enter — открыть, '
+        'a — в архив, ? — все клавиши.</div>')
     body = f"""<div class="card"><p class="small mut">{esc(summary)}</p>{filters}</div>
 <div class="workbench"><div class="wb-queue">{queue}</div><div class="wb-card">{card}{access}</div></div>"""
-    title = "🗄 Архив обращений" if archived else "🗂 Обращения"
-    return page(title, body, user, "/tickets")
+    title = "Архив обращений" if archived else "Обращения"
+    return page(title, body, user, "/tickets",
+                actions=_tickets_actions(status, category, selected, bot))
+
+
+def print_btn(label: str = "Печать") -> str:
+    """Кнопка печати: печатная версия описана в @media print темы."""
+    return (f'<button type="button" class="btn btn-grey" onclick="window.print()">'
+            f'{icon("print", 16)} {esc(label)}</button>')
+
+
+def _tickets_actions(status: str, category: str, selected, bot: str) -> str:
+    """Шапка рабочего места: выгрузка, печать карточки и ссылка на бота."""
+    return (f'<a class="btn" href="/panel/tickets.csv?status={esc(status)}&category={esc(category)}">'
+            f'{icon("download", 16)} Выгрузить в CSV</a>'
+            f'<span class="small mut">все обращения со статусами, до 1000 строк</span>'
+            + (print_btn("Печать карточки") if selected else "")
+            + open_in_bot(bot))
 
 
 async def _staff_choices(keep_current: str = "", current_name: str = "") -> dict:
@@ -853,14 +1241,16 @@ def _tickets_queue(request: Request, rows, latest: dict, query: str, selected, a
     for row in visible:
         ticket_id = row["ticket_id"]
         mark = "wb-on" if selected and int(selected["ticket_id"]) == int(ticket_id) else ""
-        wait = " ⏳" if latest.get(int(ticket_id)) == "student" else ""
+        waiting = latest.get(int(ticket_id)) == "student"
         # db.many отдаёт sqlite3.Row, поэтому по именам колонок идём через dict()
         data = dict(row)
         who = " ".join(part for part in (as_str(data.get("student_name")),
                                          as_str(data.get("student_group"))) if part)
-        status = f'{esc(STATUS.get(data["status"], data["status"]))}{wait}'
+        status = esc(plain(STATUS.get(data["status"], data["status"])))
+        if waiting:
+            status += f' <span class="wb-wait">{icon("clock", 14)} ждёт ответа</span>'
         items.append(
-            f'<label class="wb-item {mark}"><input type="checkbox" name="tids" value="{esc(ticket_id)}">'
+            f'<label class="wb-item {mark}" data-hk><input type="checkbox" name="tids" value="{esc(ticket_id)}">'
             f'<a href="/panel/tickets?{query}&t={esc(ticket_id)}">'
             f'<span class="wb-head"><b>№{esc(ticket_id)}</b>'
             f'<span class="wb-status">{status}</span>'
@@ -868,7 +1258,7 @@ def _tickets_queue(request: Request, rows, latest: dict, query: str, selected, a
             f'<span class="wb-text" title="{esc(data["text_content"])}">'
             f'{esc(short(who, 40))} · {esc(short(data["text_content"], 90))}</span>'
             f'</a></label>')
-    head = "◀️ Из архива" if archived else f"Очередь · {len(rows)}"
+    head = f'{icon("archive", 18)} Из архива' if archived else f'{icon("inbox", 18)} Очередь · {len(rows)}'
     more = (f'<p class="small mut">Показано {len(visible)} из {len(rows)} — сузьте фильтр '
             f'по статусу, чтобы увидеть нужное.</p>' if len(rows) > len(visible) else "")
     return f"""<div class="card"><h2>{head}</h2>
@@ -877,13 +1267,13 @@ def _tickets_queue(request: Request, rows, latest: dict, query: str, selected, a
 <div class="wb-list">{''.join(items)}</div>
 <details class="wb-bulk"><summary>Групповые действия для отмеченных</summary>
 <div class="grid" style="margin-top:8px">
-<div>{select("action", {"assign": "👤 Назначить сотрудника",
-                        "status": "🔄 Сменить статус",
-                        "pickup": "📍 Кабинет выдачи",
-                        "archive": "🗄 В архив"}, "assign")}</div>
+<div>{select("action", {"assign": "Назначить сотрудника",
+                        "status": "Сменить статус",
+                        "pickup": "Кабинет выдачи",
+                        "archive": "В архив"}, "assign")}</div>
+<div><button class="btn-ok">Применить</button></div></div>
 <div><label>Куда</label><input name="value"
   placeholder="сотрудник, статус или кабинет {PICKUP_DEFAULT}"></div>
-<div><button class="btn-ok">Применить</button></div></div>
 <p class="small mut">Отметьте обращения галочкой слева. Поле «Куда» принимает свой текст:
 например <code>115</code> для кабинета или <code>in_progress</code> для статуса.</p>
 </details>
@@ -891,8 +1281,12 @@ def _tickets_queue(request: Request, rows, latest: dict, query: str, selected, a
 </form>{more}</div>"""
 
 
-async def _ticket_workbench(request: Request, t) -> str:
-    """Правая колонка: карточка со всеми правками и быстрыми ответами."""
+async def _ticket_workbench(request: Request, t, bot: str = "") -> str:
+    """Правая колонка: карточка со всеми правками и быстрыми ответами.
+
+    Формы правки и ответа помечены классами ``wb-edit`` и ``wb-reply`` - на
+    печати их нет, поэтому на бумагу попадает переписка, а не пустые поля.
+    """
     ticket_id = int(t["ticket_id"])
     student_name = as_str(t["student_name"]) or as_str(t["student_id"])
     student_group = as_str(t["student_group"]) or "—"
@@ -908,15 +1302,17 @@ async def _ticket_workbench(request: Request, t) -> str:
             template_options[key] = as_str(template.get("title"))
     def _cell(m) -> str:
         body = esc(m["text"])
-        if as_str(m["text"]).startswith("📎 Файл: "):
-            file_name = as_str(m["text"])[len("📎 Файл: "):].split(" (")[0]
-            body = (f'<a href="/panel/attachments/{esc(file_name)}">📎 {esc(file_name)}</a>'
+        if as_str(m["text"]).startswith(ATTACH_PREFIX):
+            file_name = as_str(m["text"])[len(ATTACH_PREFIX):].split(" (")[0]
+            body = (f'<a href="/panel/attachments/{esc(file_name)}">'
+                    f'{icon("attach", 14)} {esc(file_name)}</a>'
                     f' <span class="small mut">открыть</span>')
         return f"<td>{body}</td></tr>"
 
     thread = "".join(
         f"<tr><td class='small mut'>{esc(fmt_when(m['created_at']))}</td>"
-        f"<td class='small'>{'🎓' if m['sender_role'] == 'student' else '🏫'} "
+        f"<td class='small'>"
+        f"{icon('students' if m['sender_role'] == 'student' else 'staff', 16)} "
         f"{esc(m['sender_name'])}{' · ' + esc(m['position']) if m['position'] else ''}"
         f"<div class='small mut'>{esc(m['group_code'] or m['sender_id'])}</div></td>"
         + _cell(m)
@@ -929,7 +1325,7 @@ async def _ticket_workbench(request: Request, t) -> str:
         for e in reversed(events)
     ) or "<tr><td colspan='3' class='mut'>Событий нет</td></tr>"
     edit = f"""
-<form method="post" action="/panel/tickets/{ticket_id}/edit">{csrf(request)}
+<form method="post" action="/panel/tickets/{ticket_id}/edit" class="wb-edit">{csrf(request)}
 <div class="grid">
 <div class="full"><label>Текст обращения</label>
 <textarea name="text_content" rows="2">{esc(t['text_content'])}</textarea></div>
@@ -944,17 +1340,25 @@ async def _ticket_workbench(request: Request, t) -> str:
 </div>
 <div class="grid" style="margin-top:10px">
 <div><button class="btn-ok">Сохранить</button></div>
-<div>{_action_form(request, f'/panel/tickets/{ticket_id}/ready', '✅ Справка готова')}</div>
-<div>{_action_form(request, f'/panel/tickets/{ticket_id}/archive', '🗄 В архив')}</div>
+<div>{_action_form(request, f'/panel/tickets/{ticket_id}/ready',
+                   f'{icon("check", 16)} Справка готова')}</div>
+<div>{_action_form(request, f'/panel/tickets/{ticket_id}/archive',
+                   f'{icon("archive", 16)} В архив', cls="btn-grey")}</div>
 </div>
 <p class="small mut">Пустое поле не затирает старое значение. «Справка готова» пишет
 студенту кабинет {PICKUP_DEFAULT} и закрывает обращение.</p></form>"""
-    return f"""<div class="card"><h2>Обращение №{ticket_id}</h2>
-<p class="small mut">🎓 {esc(student_name)} (ID {esc(t['student_id'])}),
+    # шапка карточки - то, что должно попасть на бумагу
+    head = f"""<div class="card"><h2>Обращение №{ticket_id}
+<span class="pill">{esc(plain(STATUS.get(as_str(t['status']), as_str(t['status']))))}</span></h2>
+<p class="small mut">{icon('students', 16)} {esc(student_name)}
+(ID {code_cell(t['student_id'], "MAX ID студента скопирован")}),
 группа {esc(student_group)} · создано {esc(fmt_when(t['created_at']))}</p>
-{edit}</div>
+<p class="small mut wb-tools">{open_in_bot(bot)}
+{copy_btn(panel_link(f"/tickets?t={ticket_id}"), "Ссылка на обращение скопирована")}</p>
+{edit}</div>"""
+    return f"""{head}
 <div class="card"><h2>Быстрый ответ</h2>
-<form method="post" action="/panel/tickets/{ticket_id}/reply">{csrf(request)}
+<form method="post" action="/panel/tickets/{ticket_id}/reply" class="wb-reply">{csrf(request)}
 <textarea name="text" rows="3" required placeholder="Ответ студенту — уйдёт в MAX"></textarea>
 <div class="grid" style="margin-top:10px">
 <div><button class="btn-ok">Отправить</button></div>
@@ -1233,12 +1637,14 @@ async def college_page(request: Request):
                     f"<td class='small mut'>{mark}</td></tr>")
     enabled = await faq.ask_enabled()
     for row in await faq.active_items():
-        toggle = _action_form(request, "/panel/faq/" + str(to_int(row["id"])) + "/toggle", "🔁",
+        toggle = _action_form(request, "/panel/faq/" + str(to_int(row["id"])) + "/toggle",
+                              f'{icon("refresh", 16)} Вкл/выкл',
                               confirm_text="Включить или выключить этот вопрос?")
         faq_rows.append(
             f"<tr><td><b>{esc(row['question'])}</b>"
             f"<div class='small mut'>{esc(row['keywords'])}</div></td>"
-            f"<td>{esc(row['answer'])}</td><td>{'✅' if row['active'] else '—'}</td>"
+            f"<td>{esc(row['answer'])}</td>"
+            f"<td>{state_pill("on", "включён") if row["active"] else state_pill("off", "выключен")}</td>"
             f"<td>{toggle}</td></tr>")
     rows_html = "".join(rows)
     faq_html = "".join(faq_rows) or (
@@ -1254,32 +1660,12 @@ async def college_page(request: Request):
 а предлагает написать сотруднику.</p>
 <form method="post" action="/panel/faq/toggle">{csrf(request)}
 <input type="hidden" name="enabled" value="{"0" if enabled else "1"}">
-<button class="{"btn-bad" if enabled else "btn-ok"}">{"Выключить" if enabled else "Включить"}</button>
+<button class="{"btn-bad" if enabled else "btn-ok"}">{icon("close" if enabled else "check", 16)} {"Выключить" if enabled else "Включить"}</button>
 <span class="small mut">сейчас: {"включены" if enabled else "выключены"}</span></form>
 <form method="post" action="/panel/faq/seed">{csrf(request)}<button class="btn-grey" style="margin-top:8px">
-Залить вопросы с сайта</button></form>
+{icon("download", 16)} Залить вопросы с сайта</button></form>
 <table style="margin-top:12px"><tr><th>Вопрос и ключевые слова</th><th>Ответ</th><th>Вкл.</th><th></th></tr>
 {faq_html}</table>
-<p class="small mut">Черновик — {len(college.DEFAULT_FAQ)} вопросов с сайта колледжа.
-Кнопка «Залить» добавляет только новые и не трогает правки сис-админа.</p></div>"""
-    return page("Колледж", body, user, "/college")
-    body = f"""<div class="card"><h2>Контакты колледжа</h2>
-<p class="small mut">Значения взяты с официального сайта {esc(college.SITE)}. Пустое поле
-возвращает к данным сайта. То, что изменено, отмечено в третьей колонке.</p>
-<form method="post" action="/panel/college">{csrf(request)}<table>{rows}</table>
-<div class="grid" style="margin-top:10px"><button class="btn-ok">Сохранить справочник</button></div>
-</form></div>
-<div class="card"><h2>Частые вопросы</h2>
-<p class="small mut">Бот ищет ответ по ключевым словам. Если не нашёл — не выдумывает,
-а предлагает написать сотруднику.</p>
-<form method="post" action="/panel/faq/toggle">{csrf(request)}
-<input type="hidden" name="enabled" value="{"0" if enabled else "1"}">
-<button class="{"btn-bad" if enabled else "btn-ok"}">{"Выключить" if enabled else "Включить"}</button>
-<span class="small mut">сейчас: {"включены" if enabled else "выключены"}</span></form>
-<form method="post" action="/panel/faq/seed">{csrf(request)}<button class="btn-grey" style="margin-top:8px">
-Залить вопросы с сайта</button></form>
-<table style="margin-top:12px"><tr><th>Вопрос и ключевые слова</th><th>Ответ</th><th>Вкл.</th><th></th></tr>
-{faq_rows}</table>
 <p class="small mut">Черновик — {len(college.DEFAULT_FAQ)} вопросов с сайта колледжа.
 Кнопка «Залить» добавляет только новые и не трогает правки сис-админа.</p></div>"""
     return page("Колледж", body, user, "/college")
@@ -1346,17 +1732,19 @@ async def students(request: Request, group: str = "", consent: str = ""):
     groups = await repo.top_groups(300)
     options = {"": "все группы"} | {row["group_code"]: row["group_code"] for row in groups}
     head = ('<form method="get" action="/panel/students" class="grid" style="margin-bottom:14px">'
-            f'<div>{select("group", options, norm_group(group))}</div>'
-            f'<div>{select("consent", {"": "все", "0": "только без согласия"}, consent)}</div>'
-            "<div><button>Показать</button></div></form>")
+            f'<div>{select("group", options, norm_group(group), label="Группа")}</div>'
+            f'<div>{select("consent", {"": "все", "0": "только без согласия"}, consent, label="Согласие")}</div>'
+            f"<div><button>{icon('search', 16)} Показать</button></div></form>")
+    # ✅ в колонке согласия остаётся: так эту отметку ждут в отчётах и в тестах
     body = "".join(
-        f"<tr><td>{esc(row['full_name']) or '<span class=\'mut\'>без ФИО</span>'}</td>"
-        f"<td>{esc(row['user_id'])}</td><td>{esc(row['group_code']) or '<span class=\'mut\'>—</span>'}</td>"
+        f"<tr data-hk><td>{esc(row['full_name']) or '<span class=\'mut\'>без ФИО</span>'}</td>"
+        f"<td>{code_cell(row['user_id'], 'MAX ID скопирован')}</td>"
+        f"<td>{esc(row['group_code']) or '<span class=\'mut\'>—</span>'}</td>"
         f"<td>{esc(row.get('tickets', 0))}</td>"
-        f"<td>{'✅' if row.get('consent_at') else '<span class=\'mut\'>нет</span>'}</td>"
+        f"<td>{pill('✅ согласие есть', 'on') if row.get('consent_at') else pill('нет', 'off')}</td>"
         f"<td class='small mut'>{esc(row['created_at'])}</td>"
         f"<td><a class='btn-grey' href='/panel/people/{esc(row['user_id'])}'>Открыть</a> "
-        f"{_action_form(request, f'/panel/people/{esc(row['user_id'])}/delete', '🗑', confirm_text=f'Удалить {row['full_name']} ({row['user_id']})? Обращения останутся.')}</td></tr>"
+        f"{_action_form(request, f'/panel/people/{esc(row['user_id'])}/delete', icon('delete', 16), confirm_text=f'Удалить {row['full_name']} ({row['user_id']})? Обращения останутся.')}</td></tr>"
         for row in rows
     ) or "<tr><td class='mut'>Студентов не найдено</td></tr>"
     table = (f"<table><tr><th>ФИО</th><th>MAX ID</th><th>Группа</th><th>Обращений</th>"
@@ -1390,19 +1778,19 @@ async def staff_list(request: Request, q: str = ""):
         if away:
             until = as_str(row["vacation_until"])
             replacement = await repo.vacation_replacement(row)
-            vacation_mark = (f" <span class='mut small'>🏖 в отпуске до {esc(until)}"
+            vacation_mark = (f" <span class='mut small'>{icon('clock', 14)} в отпуске до {esc(until)}"
                              + (f", ведёт {esc(as_str(replacement['full_name']))}" if replacement
                                 else ", заместитель не назначен")
                              + "</span>")
         head_row = f"""
-<tr><td><b>{esc(row['full_name'])}</b>{vacation_mark}<div class="small mut">ID {esc(uid)}</div></td>
+<tr data-hk><td><b>{esc(row['full_name'])}</b>{vacation_mark}<div class="small mut">ID {esc(uid)}</div></td>
 <td>{"сис-админ" if super_row else "сотрудник"}</td>
 <td>{esc(as_str(row['position']) or STAFF_ROLES.get(row['role'], '—'))}<div class="small mut">{esc(row['role'])}</div></td>
 <td>{esc(as_str(row['department']) or '—')}</td>
 <td>{esc(as_str(row['office']) or '—')}</td>
-<td>{esc(STAFF_CATS.get(row['ticket_category'], row['ticket_category']))}</td>
+<td>{esc(plain(STAFF_CATS.get(row['ticket_category'], row['ticket_category'])))}</td>
 <td class="small">{tickets_90} / {load.get('open', 0)}<div class="small mut">{esc(fmt_when(load['last_reply'])) if load.get('last_reply') else 'не отвечал'}</div></td>
-<td>{"✅" if flag(row['can_broadcast']) else "—"}</td></tr>"""
+<td>{pill("разрешена", "on") if flag(row["can_broadcast"]) else pill("нет", "off")}</td></tr>"""
         if super_row:
             body += head_row
             continue
@@ -1415,16 +1803,16 @@ async def staff_list(request: Request, q: str = ""):
             f"{select('ticket_category', cat_options, row['ticket_category'])}"
             f"{select('can_broadcast', {'0': 'нет', '1': 'да'}, '1' if flag(row['can_broadcast']) else '0')}"
         )
-        body += (f"{head_row}<tr><td colspan='8' style='background:#f8fafc;padding:10px'>"
+        body += (f"{head_row}<tr><td colspan='8' style='background:var(--surface-sunken);padding:10px'>"
                  f"{form(request, f'/panel/staff/{esc(uid)}', fields)}"
                  f"<form method='post' action='/panel/staff/promote/{esc(uid)}' class='inline'>{csrf(request)}"
-                 f"<button class='btn-grey'>🔐 Сделать сис-админом</button></form> "
+                 f"<button class='btn-grey'>{icon('access', 16)} Сделать сис-админом</button></form> "
                  f"<form method='post' action='/panel/staff/{esc(uid)}/delete' class='inline' "
                  f"onclick=\"return confirm('Удалить сотрудника {esc(row['full_name'])}?')\">"
-                 f"{csrf(request)}<button class='btn-bad'>Удалить</button></form></td></tr>")
+                 f"{csrf(request)}<button class='btn-bad'>{icon('delete', 16)} Удалить</button></form></td></tr>")
     search = ('<form method="get" action="/panel/staff" class="grid" style="margin-bottom:14px">'
               f'<div><input name="q" value="{esc(q)}" placeholder="Поиск: ФИО, ID, должность, отдел, кабинет"></div>'
-              "<div><button>Найти</button></div></form>")
+              f"<div><button>{icon('search', 16)} Найти</button></div></form>")
     table = f'{search}<table><tr><th>Сотрудник</th><th>Роль в боте</th><th>Должность</th><th>Отдел</th><th>Кабинет</th>' \
             f"<th>Обращения</th><th>За 90 дней / открытых</th><th>Рассылка</th></tr>{body}</table>"
     add = form(
@@ -1473,7 +1861,7 @@ async def staff_list(request: Request, q: str = ""):
         for uid in sorted(revoked)
     )
     sysadmins_card = f"""
-<div class="card"><h2>🔐 Сис-админы</h2>
+<div class="card"><h2>{icon("access", 20)} Сис-админы</h2>
 <table><tr><th>Кто</th><th>Источник</th><th>Профиль MAX</th><th>Был в боте</th><th></th></tr>{sys_rows}</table>
 {('<table><tr><th>Отозванные</th><th>Почему</th><th></th></tr>' + revoked_rows + '</table>') if revoked_rows else ''}
 <div class="grid" style="margin-top:12px">{add_sys}{revoke_sys}
@@ -1483,7 +1871,7 @@ async def staff_list(request: Request, q: str = ""):
 Можно выдать и снять права сразу у нескольких человек — впишите ID через запятую.</p></div></div>"""
     body_all = f"""
 {sysadmins_card}
-<div class="card"><h2>Сотрудники</h2>{table}</div>
+<div class="card"><h2>{icon("staff", 20)} Сотрудники</h2>{table}</div>
 <div class="grid" style="align-items:stretch">
   <div class="card" style="flex:2"><h2>Добавить сотрудника</h2>{add}
   <p class="small mut">Можно вписать сразу несколько ID через запятую — должность, отдел и категория
@@ -1699,10 +2087,11 @@ def profile_cell(username) -> str:
 
 def _people_table(rows) -> str:
     body = "".join(
-        f"<tr><td><a href='/panel/people/{esc(row['user_id'])}'><b>{esc(row['fio'] or row['staff_name'] or row['display_name'])}</b></a>"
+        f"<tr data-hk><td><a href='/panel/people/{esc(row['user_id'])}'><b>{esc(row['fio'] or row['staff_name'] or row['display_name'])}</b></a>"
         f"<div class='small mut'>{esc(repo.KIND_TITLES.get(repo.contact_kind(row), '—'))}</div></td>"
         f"<td>{esc(row['group_code'] or row['position'] or '—')}</td>"
-        f"<td>{esc(row['user_id'])}</td><td>{profile_cell(row['username'])}</td>"
+        f"<td>{code_cell(row['user_id'], 'MAX ID скопирован')}</td>"
+        f"<td>{profile_cell(row['username'])}</td>"
         f"<td>{esc(row['tickets'])}</td><td class='small mut'>{esc(fmt_when(row['last_seen']))}</td></tr>"
         for row in rows
     ) or "<tr><td class='mut'>Никого не найдено</td></tr>"
@@ -1722,13 +2111,15 @@ async def people_list(request: Request, kind: str = "", q: str = ""):
     )
     filters = f"""
 <form method="get" action="/panel/people" class="grid" style="margin-bottom:14px">
-<div>{select("kind", dict(repo.CONTACT_KIND_LABELS), kind)}</div>
+<div>{select("kind", dict(repo.CONTACT_KIND_LABELS), kind, label="Кто это")}</div>
 <div><label>Поиск: ФИО, ID, @ник, группа, должность</label><input name="q" value="{esc(q)}"></div>
-<div><button>Найти</button></div>
-<div><a class="btn-grey" href="/panel/people.csv?kind={esc(kind)}&q={esc(q)}">⬇️ CSV</a></div>
+<div><button>{icon("search", 16)} Найти</button></div>
 </form>"""
     body = f'<div class="card"><p class="small mut">{esc(stats)} · показано {len(rows)} из {total}</p>{filters}{_people_table(rows)}</div>'
-    return page("Пользователи", body, user, "/people")
+    return page("Люди", body, user, "/people",
+                actions=f'<a class="btn" href="/panel/people.csv?kind={esc(kind)}&q={esc(q)}">'
+                        f'{icon("download", 16)} Выгрузить в CSV</a>'
+                        f'<span class="small mut">реестр с никами и ссылками на профиль MAX, до 5000 строк</span>')
 
 
 @router.get("/people.csv")
@@ -1773,8 +2164,8 @@ async def person_card(request: Request, user_id: str):
     request_row = ""
     if card["request"]:
         request_row = f"""
-<div class="card"><h2>Заявка на роль сотрудника</h2>
-<table><tr><th>Статус</th><td>{esc(REQUEST_STATUS_LABEL.get(card['request']['status'], card['request']['status']))}</td></tr>
+<div class="card"><h2>{icon("access", 20)} Заявка на роль сотрудника</h2>
+<table><tr><th>Статус</th><td>{request_status_cell(card['request']['status'])}</td></tr>
 <tr><th>Должность</th><td>{esc(card['request']['position'] or '—')}</td></tr>
 <tr><th>Кабинет</th><td>{esc(card['request']['office'] or '—')}</td></tr>
 <tr><th>Комментарий</th><td>{esc(card['request']['note'] or '—')}</td></tr>
@@ -1794,7 +2185,7 @@ async def person_card(request: Request, user_id: str):
                    f'<button class="btn-ok">Сделать сотрудником</button></form>'
                    f'<form method="post" action="/panel/access/sysadmin/{esc(user_id)}" class="inline">{csrf(request)}'
                    f'<input name="full_name" value="{esc(name)}">'
-                   f'<button class="btn-grey">🔐 Сделать сис-админом</button></form>')
+                   f'<button class="btn-grey">{icon("access", 16)} Сделать сис-админом</button></form>')
     tickets_count = len(card["tickets_list"])
     delete_note = ("Сис-админа удаляют во вкладке «Сотрудники»."
                    if is_sysadmin_role(as_str(card["role_type"])) else
@@ -1804,11 +2195,13 @@ async def person_card(request: Request, user_id: str):
     remove = ""
     if not is_sysadmin_role(as_str(card["role_type"])):
         remove = f"""
-<div class="card"><h2>Удаление</h2>
+<div class="card"><h2>{icon("warning", 20)} Удаление</h2>
 <p class="small mut">{esc(delete_note)}</p>
-{_action_form(request, f'/panel/people/{user_id}/delete', '🗑 Удалить пользователя',
+{_action_form(request, f'/panel/people/{user_id}/delete',
+              f'{icon("delete", 16)} Удалить пользователя',
               confirm_text=f"Удалить {name} ({user_id})? Действие необратимо.")}
-{_action_form(request, f'/panel/people/{user_id}/delete', '🗑 Удалить вместе с обращениями',
+{_action_form(request, f'/panel/people/{user_id}/delete',
+              f'{icon("delete", 16)} Удалить вместе с обращениями',
               '<input type="hidden" name="with_tickets" value="1">',
               f"Удалить {name} вместе с {tickets_count} обращениями и перепиской? Действие необратимо.",
               "btn-bad")}
@@ -1817,7 +2210,7 @@ async def person_card(request: Request, user_id: str):
 <div class="card"><h2>{esc(name)}</h2>
 <table>
 <tr><th>Роль в боте</th><td>{esc(repo.KIND_TITLES.get(card['kind'], card['kind']))}</td></tr>
-<tr><th>MAX ID</th><td>{esc(user_id)}</td></tr>
+<tr><th>MAX ID</th><td>{code_cell(user_id, "MAX ID скопирован")}</td></tr>
 <tr><th>Профиль MAX</th><td>{profile_cell(card['username'])}</td></tr>
 <tr><th>Студент</th><td>{esc(card['fio'] or '—')}, группа {esc(card['group_code'] or '—')}</td></tr>
 <tr><th>Сотрудник</th><td>{esc(card['staff_name'] or '—')}, {esc(card['position'] or 'должность не назначена')}</td></tr>
@@ -1855,8 +2248,24 @@ async def people_delete(request: Request, user_id: str):
 
 
 # ── коды и заявки на роль сотрудника ──────────────────────────────────────────
-INVITE_STATE_LABEL = {"active": "🟢 активен", "used": "⚪ использован", "expired": "🔴 истёк", "unknown": "—"}
-REQUEST_STATUS_LABEL = {"new": "📥 новая", "approved": "✅ одобрена", "rejected": "❌ отклонена"}
+# Состояния показываем цветной точкой и словом, а не эмодзи: в тёмной теме
+# точка читается ровнее, а «зелёный кружок» в разных браузерах выглядит по-разному.
+INVITE_STATE = {"active": ("on", "активен"), "used": ("off", "использован"),
+                "expired": ("bad", "истёк"), "unknown": ("off", "не найден")}
+REQUEST_STATUS = {"new": ("", "новая"), "approved": ("on", "одобрена"),
+                  "rejected": ("", "отклонена")}
+
+
+def invite_state_cell(state) -> str:
+    """Состояние кода приглашения точкой и словом."""
+    dot, label = INVITE_STATE.get(as_str(state), ("off", as_str(state) or "—"))
+    return state_pill(dot, label)
+
+
+def request_status_cell(status) -> str:
+    """Состояние заявки на роль сотрудника."""
+    kind, label = REQUEST_STATUS.get(as_str(status), ("", as_str(status) or "—"))
+    return pill(label, kind)
 
 
 @router.get("/access")
@@ -1874,13 +2283,13 @@ async def access_page(request: Request):
         if state == "active":
             revoke = (f'<form method="post" action="/panel/access/code/delete" class="inline">{csrf(request)}'
                       f'<input type="hidden" name="code" value="{esc(row["code"])}">'
-                      f'<button class="btn-grey">Отозвать</button></form>')
+                      f'<button class="btn-grey">{icon("close", 16)} Отозвать</button></form>')
             invite = (f'<div class="small mut">{esc(join_link(row["code"]))}</div>')
         else:
             invite = ""
         code_rows.append(
-            f"<tr><td><b>{esc(row['code'])}</b>{invite}</td><td>{esc(who)}</td>"
-            f"<td>{esc(INVITE_STATE_LABEL.get(state, state))}</td>"
+            f"<tr data-hk><td>{code_cell(row['code'], 'Код скопирован')}{invite}</td><td>{esc(who)}</td>"
+            f"<td>{invite_state_cell(state)}</td>"
             f"<td class='small mut'>{esc(row['expires_at'] or 'бессрочный')}</td>"
             f"<td class='small mut'>{esc(row['used_by_name'] or row['used_by'] or '—')}</td><td>{revoke}</td></tr>"
         )
@@ -1900,7 +2309,7 @@ async def access_page(request: Request):
     ) or "<tr><td class='mut'>Новых заявок нет</td></tr>"
     closed_rows = "".join(
         f"<tr><td>{esc(row['full_name'] or row['display_name'] or '—')}</td>"
-        f"<td>{esc(REQUEST_STATUS_LABEL.get(row['status'], row['status']))}</td>"
+        f"<td>{request_status_cell(row['status'])}</td>"
         f"<td class='small mut'>{esc(fmt_when(row['updated_at']))}</td></tr>"
         for row in requests_closed if as_str(row["status"]) != "new"
     ) or ""
@@ -1911,20 +2320,20 @@ async def access_page(request: Request):
         for row in attempts
     ) or "<tr><td class='mut'>Попыток не было</td></tr>"
     body = f"""
-<div class="card"><h2>🗝 Коды сотрудников</h2>
+<div class="card"><h2>{icon("access", 20)} Коды сотрудников</h2>
 <form method="post" action="/panel/access/code" class="grid" style="margin-bottom:14px">
 {csrf(request)}
 <div><label>MAX ID (пусто — код для любого, у кого есть код)</label><input name="user_id" value=""></div>
 <div><label>ФИО для списка</label><input name="full_name" value=""></div>
 <div>{select("ttl_hours", {hours: label for hours, label in CODE_TTL_CHOICES}, config.STAFF_CODE_TTL)}</div>
-<div><button class="btn-ok">Выдать код</button></div></form>
+<div><button class="btn-ok">{icon("plus", 16)} Выдать код</button></div></form>
 <p class="small mut">Одноразовый. Срок выбирается рядом; в боте то же самое кнопками под кодом.
 В MAX сотрудник выбирает «👔 Я сотрудник» и вводит код.</p>
 {code_table}</div>
-<div class="card"><h2>📥 Заявки на роль сотрудника</h2>
+<div class="card"><h2>{icon("inbox", 20)} Заявки на роль сотрудника</h2>
 <table><tr><th>Человек</th><th>Должность</th><th>Кабинет</th><th>Комментарий</th><th>Подана</th><th></th></tr>{request_rows}</table>
 {('<table><tr><th>Человек</th><th>Статус</th><th>Обновлена</th></tr>' + closed_rows + '</table>') if closed_rows else ''}</div>
-<div class="card"><h2>⚠️ Попытки ввода кода за сутки</h2>
+<div class="card"><h2>{icon("warning", 20)} Попытки ввода кода за сутки</h2>
 <table><tr><th>Человек</th><th>Попыток</th><th>Последняя</th></tr>{attempt_rows}</table>
 <p class="small mut">Больше {esc(config.STAFF_CODE_ATTEMPTS)} попыток в час — ввод блокируется до истечения часа.</p></div>"""
     return page("Коды и заявки", body, user, "/access")
@@ -2092,11 +2501,11 @@ async def nostaff_page(request: Request):
     total = await repo.people_without_staff_count(q)
     head = ('<form method="get" action="/panel/nostaff" class="grid" style="margin-bottom:14px">'
             f'<div><input name="q" value="{esc(q)}" placeholder="Поиск: ФИО, ID, ник или группа"></div>'
-            "<div><button>Найти</button></div></form>")
+            f"<div><button>{icon('search', 16)} Найти</button></div></form>")
     body = "".join(
-        f"<tr><td><b>{esc(row['fio'] or row['display_name'] or 'без имени')}</b>"
+        f"<tr data-hk><td><b>{esc(row['fio'] or row['display_name'] or 'без имени')}</b>"
         f"<div class='small mut'>{esc(repo.KIND_TITLES.get(repo.contact_kind(row), '-'))}</div></td>"
-        f"<td>{esc(row['user_id'])}</td>"
+        f"<td>{code_cell(row['user_id'], 'MAX ID скопирован')}</td>"
         f"<td>{esc(row['group_code'] or '—')}</td>"
         f"<td>{profile_cell(row['username'])}</td>"
         f"<td class='small mut'>{esc(fmt_when(row['last_seen']))}</td>"
@@ -2107,7 +2516,7 @@ async def nostaff_page(request: Request):
     table = ("<table><tr><th>Кто</th><th>MAX ID</th><th>Группа</th><th>Профиль MAX</th><th>Был в боте</th><th></th></tr>"
              f"{body}</table>")
     body_all = f"""
-<div class="card"><h2>👤 Без прав сотрудника: {total}</h2>{head}{table}
+<div class="card"><h2>{icon("user-off", 20)} Без прав сотрудника: {total}</h2>{head}{table}
 <p class="small mut">Сотсортировано по последнему обращению. Нажмите «Сделать сотрудником» — карточка
 создастся с именем из реестра, должность и отдел можно поправить там же.</p></div>"""
     return page("Без прав", body_all, user, "/nostaff")
@@ -2142,10 +2551,15 @@ def human_bytes(value) -> str:
 
 def _action_form(request: Request, action: str, label: str, fields: str = "",
                  confirm_text: str = "", cls: str = "btn-grey") -> str:
-    """Кнопка-действие: одна форма на действие, с подтверждением в браузере."""
+    """Кнопка-действие: одна форма на действие, с подтверждением в браузере.
+
+    В ``label`` можно передать готовую иконку ``icon(...)`` - такие подписи
+    вставляются как есть, всё остальное экранируется.
+    """
     script = f" onclick=\"return confirm('{confirm_text}')\"" if confirm_text else ""
+    body = label if label.lstrip().startswith("<svg") else esc(label)
     return (f'<form method="post" action="{esc(action)}" class="inline"{script}>{csrf(request)}'
-            f'{fields}<button class="{esc(cls)}">{esc(label)}</button></form>')
+            f'{fields}<button class="{esc(cls)}">{body}</button></form>')
 
 
 def _prune_form(request: Request, table: str, default_days: int) -> str:
@@ -2159,7 +2573,7 @@ def _prune_form(request: Request, table: str, default_days: int) -> str:
             f"onclick=\"return confirm('{esc(question)}')\">"
             f'{csrf(request)}<input type="hidden" name="table" value="{esc(table)}">'
             f"<select name='days'>{options}</select>"
-            f"<button class='btn-grey'>Очистить</button></form>")
+            f"<button class='btn-grey'>{icon("delete", 16)} Очистить</button></form>")
 
 
 def schema_broken_page(request: Request, detail: str, missing: list[str]):
@@ -2167,14 +2581,14 @@ def schema_broken_page(request: Request, detail: str, missing: list[str]):
     items = "".join(f"<li><code>{esc(item)}</code></li>" for item in missing) or "<li>—</li>"
     return page(
         "База требует восстановления",
-        f"""<div class="card"><h2>⚠️ В базе не хватает объектов</h2>
+        f"""<div class="card"><h2>{icon("warning", 20)} В базе не хватает объектов</h2>
 <p>Бот не может работать, пока схема неполна: {esc(detail)}.</p>
 <p>Чего не хватает:</p><ul>{items}</ul>
 <p>Кнопка создаёт недостающие таблицы, индексы и колонки. Данные, которые уже
 есть, не меняются, но удалённую таблицу придётся наполнить заново (например,
 заново зарегистрировать студентов) — либо восстановить базу из резервной копии.</p>
 <div class="grid">
-{_action_form(request, '/panel/database/repair', '🔧 Восстановить схему', cls='btn-ok')}
+{_action_form(request, '/panel/database/repair', f'{icon("settings", 16)} Восстановить схему', cls='btn-ok')}
 <a class="btn-grey" href="/panel/database">Вкладка «База данных»</a>
 </div></div>""",
     )
@@ -2193,11 +2607,11 @@ async def database_page(request: Request):
     banner = ""
     if missing:
         banner = f"""
-<div class="card" style="border-left:4px solid var(--bad)"><h2>⚠️ Схема базы неполна</h2>
+<div class="card" style="border-left:4px solid var(--bad)"><h2>{icon("warning", 20)} Схема базы неполна</h2>
 <p>Не хватает: {esc(', '.join(missing))}. Из-за этого часть страниц панели и бот могут падать.</p>
-{_action_form(request, '/panel/database/repair', '🔧 Восстановить схему', cls='btn-ok')}</div>"""
+{_action_form(request, '/panel/database/repair', f'{icon("settings", 16)} Восстановить схему', cls='btn-ok')}</div>"""
 
-    verdict = "✅ цела" if check == "ok" else f"⚠️ {check}"
+    verdict = pill("цела", "on") if check == "ok" else pill(as_str(check))
     state_rows = "".join(
         f"<tr><td>Файл базы</td><td><code>{esc(db.database_file())}</code></td></tr>"
         f"<tr><td>Размер (с журналом WAL)</td><td>{esc(human_bytes(sizes['total']))} "
@@ -2206,8 +2620,9 @@ async def database_page(request: Request):
         f"<tr><td>Режим журнала</td><td>{esc(storage['journal_mode'])}</td></tr>"
         f"<tr><td>Страниц / свободно</td><td>{storage['page_count']} / {storage['freelist_count']}</td></tr>"
         f"<tr><td>Можно освободить сжатием</td><td>{esc(human_bytes(storage['reclaimable']))}</td></tr>"
-        f"<tr><td>Проверка целостности</td><td>{esc(verdict)}</td></tr>"
-        f"<tr><td>Схема</td><td>{'✅ соответствует коду' if not missing else '⚠️ не хватает: ' + esc(', '.join(missing))}</td></tr>"
+        f"<tr><td>Проверка целостности</td><td>{verdict}</td></tr>"
+        f"<tr><td>Схема</td><td>{pill("соответствует коду", "on") if not missing else
+        f'{icon("warning", 14)} не хватает: {esc(", ".join(missing))}'}</td></tr>"
         f"<tr><td>Резервных копий</td><td>{len(backups)} (хранится {config.BACKUP_KEEP}, "
         f"папка <code>{esc(db.backups_folder())}</code>)</td></tr>"
     )
@@ -2221,35 +2636,35 @@ async def database_page(request: Request):
     backup_rows = "".join(
         f"<tr><td><b>{esc(item['name'])}</b></td><td>{esc(human_bytes(item['size']))}</td>"
         f"<td class='small mut'>{esc(fmt_time(item['mtime']))}</td>"
-        f"<td><a class='btn-grey' href='/panel/database/backup/{esc(item['name'])}'>⬇️ Скачать</a> "
-        f"{_action_form(request, '/panel/database/restore', '♻️ Восстановить', f'<input type=\"hidden\" name=\"name\" value=\"{esc(item['name'])}\">', 'Восстановить базу из этой копии? Текущие данные будут заменены, перед этим бот сделает страховочную копию.')}"
-        f" {_action_form(request, '/panel/database/backup/delete', '🗑', f'<input type=\"hidden\" name=\"name\" value=\"{esc(item['name'])}\">', 'Удалить копию?', 'btn-bad')}</td></tr>"
+        f"<td><a class='btn-grey' href='/panel/database/backup/{esc(item['name'])}'>{icon("download", 16)} Скачать</a> "
+        f"{_action_form(request, '/panel/database/restore', f'{icon("refresh", 16)} Восстановить', f'<input type=\"hidden\" name=\"name\" value=\"{esc(item['name'])}\">', 'Восстановить базу из этой копии? Текущие данные будут заменены, перед этим бот сделает страховочную копию.')}"
+        f" {_action_form(request, '/panel/database/backup/delete', icon("delete", 16), f'<input type=\"hidden\" name=\"name\" value=\"{esc(item['name'])}\">', 'Удалить копию?', 'btn-bad')}</td></tr>"
         for item in backups
     ) or "<tr><td colspan='4' class='mut'>Копий пока нет</td></tr>"
 
     body = f"""
 {banner}
-<div class="card"><h2>Состояние базы</h2>
+<div class="card"><h2>{icon("database", 20)} Состояние базы</h2>
 <table>{state_rows}</table>
 <div style="margin-top:12px" class="grid">
-  {_action_form(request, '/panel/database/backup', '📦 Создать копию', cls='btn-ok')}
-  <a class="btn-grey" href="/panel/database/download">⬇️ Скачать текущую базу</a>
+  {_action_form(request, '/panel/database/backup', f'{icon("database", 16)} Создать копию', cls='btn-ok')}
+  <a class="btn-grey" href="/panel/database/download">{icon("download", 16)} Скачать текущую базу</a>
 </div></div>
 <div class="grid" style="align-items:stretch">
-  <div class="card" style="flex:2"><h2>Обслуживание</h2>
+  <div class="card" style="flex:2"><h2>{icon("settings", 20)} Обслуживание</h2>
   <p class="small mut">Сжатие безопасно: освободившиеся страницы уходят в конец файла, данные не меняются.
   Слияние журнала WAL нужно, если вы копируете файл базы вручную.</p>
   <div class="grid">
-    {_action_form(request, '/panel/database/vacuum', '🧹 Сжать (VACUUM)')}
-    {_action_form(request, '/panel/database/checkpoint', '📥 Слить журнал WAL')}
+    {_action_form(request, '/panel/database/vacuum', f'{icon("check", 16)} Сжать (VACUUM)')}
+    {_action_form(request, '/panel/database/checkpoint', f'{icon("download", 16)} Слить журнал WAL')}
   </div>
   <h2>Чистка служебных таблиц</h2>
   <table>{prune_rows}</table>
   <p class="small mut">Обращения, сообщения, сотрудники и реестр пользователей чистка не трогает.</p></div>
-  <div class="card" style="flex:1"><h2>Данные по таблицам</h2>
+  <div class="card" style="flex:1"><h2>{icon("database", 20)} Данные по таблицам</h2>
   <table><tr><th>Таблица</th><th>Строк</th></tr>{counts_rows}</table></div>
 </div>
-<div class="card"><h2>Резервные копии</h2>
+<div class="card"><h2>{icon("archive", 20)} Резервные копии</h2>
 <table><tr><th>Файл</th><th>Размер</th><th>Создан</th><th>Действия</th></tr>{backup_rows}</table></div>"""
     return page("База данных", body, user, "/database")
 
@@ -2362,20 +2777,21 @@ async def groups_list(request: Request):
     user = await require_user(request)
     rows = await repo.groups(active_only=False, limit=300)
     body = "".join(
-        f"""<tr><td><b>{esc(row['group_code'])}</b></td><td>{esc(row['title'])}</td>
+        f"""<tr data-hk><td>{code_cell(row['group_code'], 'Код группы скопирован')}</td>
+        <td>{esc(row['title'])}</td>
 <td>{"<span class='pill pill-on'>активна</span>" if flag(row['active']) else "<span class='pill pill-off'>скрыта</span>"}</td>
 <td class="small mut">{esc(row['created_at'])}</td>
 <td class="small">
 <form method="post" action="/panel/groups/rename" class="inline">{csrf(request)}
 <input type="hidden" name="old" value="{esc(row['group_code'])}">
 <input name="code" value="{esc(row['group_code'])}" style="width:110px;display:inline-block">
-<button class="btn-grey">Переименовать</button></form>
+<button class="btn-grey">{icon("edit", 16)} Переименовать</button></form>
 <form method="post" action="/panel/groups/toggle" class="inline">{csrf(request)}
 <input type="hidden" name="code" value="{esc(row['group_code'])}">
-<button class="btn-grey">{"Скрыть" if flag(row['active']) else "Показать"}</button></form>
+<button class="btn-grey">{icon("eye-off" if flag(row['active']) else "eye", 16)}{"Скрыть" if flag(row['active']) else "Показать"}</button></form>
 <form method="post" action="/panel/groups/delete" class="inline" onclick="return confirm('Удалить группу?')">
 {csrf(request)}<input type="hidden" name="code" value="{esc(row['group_code'])}">
-<button class="btn-bad">Удалить</button></form></td></tr>"""
+<button class="btn-bad">{icon("delete", 16)} Удалить</button></form></td></tr>"""
         for row in rows
     ) or "<tr><td class='mut'>Справочник пуст</td></tr>"
     table = f"<table><tr><th>Код</th><th>Название</th><th>Состояние</th><th>Создана</th><th>Действия</th></tr>{body}</table>"
@@ -2386,8 +2802,8 @@ async def groups_list(request: Request):
         "Добавить группу", "btn-ok",
     )
     body_all = f"""
-<div class="card"><h2>Справочник групп</h2>{table}</div>
-<div class="card" style="max-width:560px"><h2>Добавить группу</h2>{add}
+<div class="card"><h2>{icon("groups", 20)} Справочник групп</h2>{table}</div>
+<div class="card" style="max-width:560px"><h2>{icon("plus", 20)} Добавить группу</h2>{add}
 <p class="small mut">Переименование меняет код и у студентов, и в расписаниях, и в подписках.
 Скрытая группа не показывается в подсказках бота.</p></div>"""
     return page("Группы", body_all, user, "/groups")
@@ -2475,8 +2891,8 @@ async def schedules_list(request: Request):
         body += (
             f"<tr><td><b>{esc(code)}</b></td><td class='small'>{esc(short(full['pdf_url'], 70))}</td>"
             f"<td>{state}</td><td class='small mut'>{esc(found)}</td>"
-            f"<td>{_action_form(request, '/panel/schedules/parse', '🔍 Разобрать', f'<input type=\"hidden\" name=\"group_code\" value=\"{esc(code)}\">')}"
-            f" {_action_form(request, '/panel/schedules/delete', '🗑', f'<input type=\"hidden\" name=\"group_code\" value=\"{esc(code)}\">', f'Удалить расписание группы {code}?', 'btn-bad')}</td></tr>"
+            f"<td>{_action_form(request, '/panel/schedules/parse', f'{icon("search", 16)} Разобрать', f'<input type=\"hidden\" name=\"group_code\" value=\"{esc(code)}\">')}"
+            f" {_action_form(request, '/panel/schedules/delete', icon("delete", 16), f'<input type=\"hidden\" name=\"group_code\" value=\"{esc(code)}\">', f'Удалить расписание группы {code}?', 'btn-bad')}</td></tr>"
         )
     table = (f"<table><tr><th>Группа</th><th>Ссылка на PDF</th><th>Разбор</th><th>Группы в PDF</th><th></th></tr>"
              f"{body or '<tr><td colspan=5 class=mut>Расписаний пока нет</td></tr>'}</table>")
@@ -2491,20 +2907,20 @@ async def schedules_list(request: Request):
         ('<div class="full"><label>Адрес страницы с расписаниями или список ссылок на PDF '
          '(по одной в строке)</label>'
          f'<textarea name="source">{esc(COLLEGE_SCHEDULE_PAGE)}</textarea></div>'),
-        "⬇️ Импортировать с сайта", "btn-ok",
+        f'{icon("download", 16)} Импортировать с сайта', "btn-ok",
     )
     body_all = f"""
-<div class="card"><h2>Расписания</h2>{table}
+<div class="card"><h2>{icon("schedules", 20)} Расписания</h2>{table}
 <p class="small mut">Разобранных пар: {parsed_total}. Скачанные PDF лежат рядом с базой в папке
 <code>schedules</code> и перечитываются, когда файл по ссылке меняется.</p>
-{_action_form(request, '/panel/schedules/parse_all', '🔄 Обновить все расписания')}</div>
+{_action_form(request, '/panel/schedules/parse_all', f'{icon("refresh", 16)} Обновить все расписания')}</div>
 <div class="grid" style="align-items:stretch">
   <div class="card" style="flex:2"><h2>Сохранить расписание</h2>{save}
   <p class="small mut">Ссылку достаёт преподаватель или бот. Сначала проверяем, что по ней отдаётся PDF,
   затем разбираем файл в занятия — студенты увидят расписание текстом, а не ссылкой.</p></div>
-  <div class="card" style="flex:1"><h2>Звонки (время пар)</h2>{bells}</div>
+  <div class="card" style="flex:1"><h2>{icon("clock", 20)} Звонки (время пар)</h2>{bells}</div>
 </div>"""
-    body_all = f"""<div class="card"><h2>Импорт с сайта колледжа</h2>{import_box}
+    body_all = f"""<div class="card"><h2>{icon("download", 20)} Импорт с сайта колледжа</h2>{import_box}
 <p class="small mut">Бот скачает указанные PDF, найдёт в них группы и заведёт их расписание
 вместе со справочником кодов. Дальше файлы обновляются на стороне колледжа: бот сам
 перечитывает PDF, когда файл меняется, - руками ничего обновлять не нужно.</p></div>
@@ -2556,14 +2972,14 @@ async def schedule_card(request: Request, group_code: str):
             f"<input type='hidden' name='lesson_num' value='{esc(lesson['lesson_num'])}'>"
             f"<input name='start' value='{esc(lesson['start'])}' size='5'>"
             f"<input name='end' value='{esc(lesson['end'])}' size='5'>"
-            f"<button class='btn-grey'>✓</button></form></td></tr>"
+            f"<button class='btn-grey' title='Сохранить время' aria-label='Сохранить время'>{icon("check", 16)}</button></form></td></tr>"
             for lesson in by_day[weekday]
         )
         days += (f"<h3>{esc(WEEKDAYS_FULL[weekday].capitalize())}</h3>"
                  f"<table><tr><th>Пара</th><th>Предмет</th><th>Преподаватель</th><th>Ауд.</th><th>Время</th></tr>"
                  f"{lessons}</table>")
     return page(f"Расписание {code}", f'<div class="card">{days}'
-                                       f'<p><a class="btn-grey" href="/panel/schedules">← К списку</a></p></div>',
+                                       f'<p><a class="btn-grey" href="/panel/schedules">{icon("chevron-left", 16)} К списку</a></p></div>',
                 user, "/schedules")
 
 
@@ -2732,16 +3148,16 @@ async def broadcasts_list(request: Request):
     for row in await repo.top_groups(300):
         audience_options[row["group_code"]] = f"группе {row['group_code']} ({row['students']} чел.)"
     body = f"""
-<div class="card"><h2>Новая рассылка</h2>
+<div class="card"><h2>{icon("send", 20)} Новая рассылка</h2>
 <form method="post" action="/panel/broadcasts/send">{csrf(request)}<div class="grid">
-<div>{select('audience', audience_options, 'all')}</div>
+<div>{select('audience', audience_options, 'all', label="Кому")}</div>
 <div><label>MAX ID для проверки (необязательно)</label><input name="test_to" placeholder="проверить на себе"></div>
 <div class="full"><label>Текст объявления</label><textarea name="text" maxlength="3500"
   placeholder="Уважаемые студенты…"></textarea></div></div>
 <p class="small mut">Объявление придёт с подписью «— ФИО, должность». Отправка идёт в фоне,
 итог придёт вам в MAX и появится в истории ниже.</p>
-<div class="grid" style="margin-top:10px"><button>Отправить рассылку</button></div></form></div>
-<div class="card"><h2>История рассылок</h2>{_broadcasts_table(rows)}</div>"""
+<div class="grid" style="margin-top:10px"><button>{icon("send", 16)} Отправить рассылку</button></div></form></div>
+<div class="card"><h2>{icon("logs", 20)} История рассылок</h2>{_broadcasts_table(rows)}</div>"""
     return page("Рассылки", body, user, "/broadcasts")
 
 
@@ -2793,27 +3209,27 @@ async def settings_page(request: Request):
         for action, number in counts.items()
     ) or "<tr><td class='mut'>Пусто</td></tr>"
     body = f"""
-<div class="card"><h2>Приём обращений</h2>
+<div class="card"><h2>{icon("tickets", 20)} Приём обращений</h2>
 <form method="post" action="/panel/settings/tickets">{csrf(request)}
 <input type="hidden" name="enabled" value="{"0" if tickets_enabled else "1"}">
-<button class="{"btn-bad" if tickets_enabled else "btn-ok"}">{"Выключить" if tickets_enabled else "Включить"}</button>
+<button class="{"btn-bad" if tickets_enabled else "btn-ok"}">{icon("close" if tickets_enabled else "check", 16)} {"Выключить" if tickets_enabled else "Включить"}</button>
 <span class="small mut">сейчас: {"включён" if tickets_enabled else "выключен"}</span></form></div>
-<div class="card"><h2>Согласие на обработку данных</h2>
+<div class="card"><h2>{icon("check", 20)} Согласие на обработку данных</h2>
 <p class="small mut">Этот текст студент видит при регистрации. Пустое поле - бот покажет
 свою заготовку. Согласие хранится с датой и редакцией текста.</p>
 <form method="post" action="/panel/settings/consent">{csrf(request)}
 <textarea name="value" maxlength="1000" style="min-height:110px">{esc(consent_text)}</textarea>
 <div class="grid" style="margin-top:10px"><button>Сохранить</button></div></form></div>
-<div class="card"><h2>Приветствие студентов</h2>
+<div class="card"><h2>{icon("info", 20)} Приветствие студентов</h2>
 <form method="post" action="/panel/settings/welcome">{csrf(request)}
 <textarea name="value" maxlength="500">{esc(welcome)}</textarea>
 <div class="grid" style="margin-top:10px"><button>Сохранить</button></div></form></div>
 <div class="grid" style="align-items:stretch">
-  <div class="card" style="flex:2"><h2>Действия сис-админов</h2>
+  <div class="card" style="flex:2"><h2>{icon("logs", 20)} Действия сис-админов</h2>
   <table><tr><th>Когда</th><th>Кто</th><th>Что сделал</th><th>Подробности</th></tr>{action_rows}</table>
   <p class="small mut">Кто и когда менял должности, выдавал коды, удалял людей и трогал базу.
   Записи ведутся при каждом действии и не удаляются вместе с данными.</p></div>
-  <div class="card" style="flex:1"><h2>За 30 дней</h2>
+  <div class="card" style="flex:1"><h2>{icon("analytics", 20)} За 30 дней</h2>
   <table><tr><th>Действие</th><th>Раз</th></tr>{count_rows}</table></div>
 </div>
 <div class="card"><h2>Прочие настройки (ключ → значение)</h2>
@@ -2824,7 +3240,7 @@ async def settings_page(request: Request):
     body += f"""</table>
 <div class="grid" style="margin-top:10px"><button>Сохранить</button>
 <a class="btn btn-grey" href="/panel/settings">Обновить список</a></div></form></div>
-<div class="card"><h2>Служебное</h2><table>
+<div class="card"><h2>{icon("settings", 20)} Служебное</h2><table>
 <tr><th>Режим</th><td>{"webhook" if config.WEBHOOK_URL else "long polling"}</td></tr>
 <tr><th>Адрес API</th><td>{esc(config.MAX_API_URL)}</td></tr>
 <tr><th>Файл журнала</th><td>{esc(config.LOG_FILE)}</td></tr>
@@ -2893,24 +3309,24 @@ async def logs_page(request: Request, lines: int = LOG_LINES, level: str = ""):
     recent = await repo.broadcast_history(5)
     tail = "\n".join(records) or "Журнал пуст — бот ещё ничего не писал."
     body = f"""
-<div class="card"><h2>Проверки</h2>
+<div class="card"><h2>{icon("check", 20)} Проверки</h2>
 <form method="post" action="/panel/logs/test" class="grid">
 {csrf(request)}
 <div><label>Отправить тестовое сообщение сис-админу (MAX ID)</label><input name="to" value="{esc(user)}"></div>
-<div><button>Отправить</button></div>
-<div><button name="action" value="api" class="btn-grey">Проверить API MAX</button></div>
-<div><button name="action" value="ping" class="btn-grey">Записать строку в журнал</button></div>
+<div><button>{icon("send", 16)} Отправить</button></div>
+<div><button name="action" value="api" class="btn-grey">{icon("check", 16)} Проверить API MAX</button></div>
+<div><button name="action" value="ping" class="btn-grey">{icon("logs", 16)} Записать строку в журнал</button></div>
 </form>
 <table style="margin-top:12px">
 <tr><th>Обработано событий</th><td>{esc(dedupe['processed'])}</td></tr>
 <tr><th>Самое новое событие</th><td>{esc(dedupe['newest'] or '—')}</td></tr>
 <tr><th>Самое старое в очистке</th><td>{esc(dedupe['oldest'] or '—')}</td></tr>
 </table></div>
-<div class="card"><h2>Журнал: {esc(config.LOG_FILE)}</h2>
+<div class="card"><h2>{icon("logs", 20)} Журнал: {esc(config.LOG_FILE)}</h2>
 <form method="get" action="/panel/logs" class="grid" style="margin-bottom:10px">
-<div>{select('level', options, level)}</div>
+<div>{select('level', options, level, label="Уровень")}</div>
 <div><label>Строк</label><input name="lines" type="number" value="{lines}" min="20" max="2000"></div>
-<div><button>Показать</button></div></form>
+<div><button>{icon("search", 16)} Показать</button></div></form>
 <pre>{esc(tail)}</pre></div>
 <div class="card"><h2>Последние рассылки</h2>{_broadcasts_table(recent)}</div>"""
     return page("Журнал", body, user, "/logs")

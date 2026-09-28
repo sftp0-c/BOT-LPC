@@ -17,6 +17,11 @@
   запоминает выбор в ``localStorage`` и подсвечивает найденные строки.
 * ``icon()`` - готовая ``<svg>`` по имени; на неизвестное имя не падает.
 
+Три маленьких скрипта дополняют ``theme_script()`` и живут рядом с ним:
+``hotkeys_script()`` (клавиши и палитра разделов по Ctrl+K), ``actions_script()``
+(копирование значения по клику и сохранённые фильтры рабочего места) и общий
+``panel_toast_js()`` - всплывающее сообщение, которым они оба пользуются.
+
 Как подключить (в ``webpanel.py``):
 
     from panel_theme import (ICON_NAMES_BY_PATH, ICONS, STYLESHEET,
@@ -33,6 +38,9 @@
 ``data-theme="dark"``, чтобы тема не мигала до загрузки скрипта.
 """
 from __future__ import annotations
+
+import json
+from collections.abc import Iterable, Sequence
 
 # ── токены оформления ────────────────────────────────────────────────────────
 # Тёмная тема - основная: панель чаще открывают ночью, и тёмный фон не бьёт
@@ -379,6 +387,26 @@ ICONS: dict[str, str] = {
     "more": '<path d="M6 12h.02"/><path d="M12 12h.02"/><path d="M18 12h.02"/>',
     "user": '<circle cx="12" cy="8.2" r="3.6"/>'
             '<path d="M4.8 20c0-3.6 3.2-6 7.2-6s7.2 2.4 7.2 6"/>',
+    # ── лента, мелочи и обслуживание ─────────────────────────────────────
+    "eye": '<path d="M2.6 12S6 6.4 12 6.4 21.4 12 21.4 12 18 17.6 12 17.6 2.6 12 2.6 12Z"/>'
+           '<circle cx="12" cy="12" r="2.9"/>',
+    "eye-off": '<path d="M9.5 6.8A8.9 8.9 0 0 1 12 6.6c6 0 9.4 5.4 9.4 5.4'
+               'a15.6 15.6 0 0 1-2.7 3.3"/>'
+               '<path d="M6.4 8.2A15.4 15.4 0 0 0 2.6 12S6 17.4 12 17.4a9 9 0 0 0 3.2-.6"/>'
+               '<path d="M9.9 9.9a2.9 2.9 0 0 0 4.1 4.1"/>'
+               '<path d="M4.4 4.4 19.6 19.6"/>',
+    "activity": '<path d="M3.4 12.4h3.2l2.4-6.6 3.4 12 2.6-8.4 1.6 3h3.9"/>',
+    "inbox": '<path d="M3.6 13.4 6 5.6h12l2.4 7.8v5a1.8 1.8 0 0 1-1.8 1.8H5.4'
+             'a1.8 1.8 0 0 1-1.8-1.8Z"/>'
+             '<path d="M3.6 13.4h4.2l1 2.4h6.4l1-2.4h4.2"/>',
+    "print": '<path d="M7.4 9.4V4.6h9.2v4.8"/>'
+             '<rect x="3.6" y="9.4" width="16.8" height="7.2" rx="1.8"/>'
+             '<path d="M7.4 14.4h9.2v5H7.4Z"/>',
+    "keyboard": '<rect x="2.6" y="6.4" width="18.8" height="11.2" rx="2.2"/>'
+               '<path d="M6.4 10.2h.02"/><path d="M9.6 10.2h.02"/><path d="M12.8 10.2h.02"/>'
+               '<path d="M16 10.2h.02"/>'
+               '<path d="M6.4 13.4h.02"/><path d="M17.6 13.4h.02"/><path d="M9.6 15.2h4.8"/>',
+
     "empty": '<path d="M7.6 5.2h8.8l2 8.2v5.2a1.7 1.7 0 0 1-1.7 1.7H7.3a1.7 1.7 0 0 1-1.7-1.7'
              'v-5.2l2-8.2Z"/>'
              '<path d="M5.6 13.4h4.4l1.4 2.2h1.2l1.4-2.2h4.4"/>',
@@ -525,11 +553,35 @@ nav a:hover .nav-ico{color:var(--ink-soft)}
 nav a.on .nav-ico{color:var(--acc)}
 .nav-txt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
+/* ── меню по группам: пять разделов вместо шестнадцати вкладок ────────────── */
+.nav-groups{display:flex;flex-direction:column;gap:var(--space-lg)}
+.nav-group{display:flex;flex-direction:column;gap:2px;min-width:0}
+.nav-group-items{display:flex;flex-direction:column;gap:2px}
+.nav-group-label{display:flex;align-items:center;gap:7px;padding:0 11px 3px;color:var(--mut);
+     font-size:var(--text-xs);font-weight:var(--weight-semi);letter-spacing:.7px;
+     text-transform:uppercase;white-space:nowrap;
+     transition:color var(--motion-fast) var(--ease-standard)}
+.nav-group.on .nav-group-label{color:var(--acc)}
+/* бейдж: сколько ждёт внимания. Мелкий, но читаемый в тёмной теме */
+.nav-badge{min-width:21px;padding:0 6px;border:1px solid var(--line);border-radius:var(--radius-pill);
+     background:var(--surface-raised);color:var(--ink-soft);font-size:11px;line-height:17px;
+     text-align:center;font-variant-numeric:tabular-nums;text-transform:none;letter-spacing:0;
+     transition:background-color var(--motion-fast) var(--ease-standard),
+                border-color var(--motion-fast) var(--ease-standard),
+                color var(--motion-fast) var(--ease-standard)}
+.nav-badge.hot{background:var(--bad-soft);border-color:var(--bad-line);color:var(--bad-ink)}
+
 /* ── основная область ────────────────────────────────────────────────────── */
 main{margin-left:var(--sidebar);padding:var(--space-xl) 26px var(--space-xxl);
      max-width:var(--content-max);animation:page-in var(--motion-slow) var(--ease-standard) both}
 .page-title{margin:0 0 var(--space-lg);display:flex;align-items:center;gap:10px;flex-wrap:wrap;
      font-size:var(--text-xxl);font-weight:var(--weight-bold);letter-spacing:-.2px}
+/* шапка страницы: заголовок слева, действия справа - экспорт и печать на виду */
+.dochead{display:flex;align-items:center;gap:var(--space-md);flex-wrap:wrap;margin:0 0 var(--space-lg)}
+.dochead .page-title{margin:0;min-width:0}
+.dochead .page-actions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-sm);
+     margin-left:auto;padding:0}
+.dochead .page-actions .small{margin:0}
 footer{margin-left:var(--sidebar);padding:var(--space-lg) 26px 30px;color:var(--mut);font-size:var(--text-xs)}
 h3{margin:var(--space-xl) 0 var(--space-sm);color:var(--mut);font-size:var(--text-xs);
    font-weight:var(--weight-semi);letter-spacing:.6px;text-transform:uppercase}
@@ -644,6 +696,120 @@ button:active,.btn:active{transform:translateY(0);box-shadow:var(--shadow-sm)}
 .kpi .warn b{color:var(--bad)}
 .kpi .good b{color:var(--ok)}
 
+/* ── крупные счётчики «Пульта»: каждый ведёт в свой раздел ────────────────── */
+.big-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(186px,1fr));
+     gap:var(--space-md);margin-bottom:var(--space-lg)}
+.big-stat{position:relative;display:flex;flex-direction:column;gap:1px;padding:15px 17px;
+     border:1px solid var(--line);border-radius:var(--radius-md);background:var(--surface);
+     box-shadow:var(--shadow-sm);color:inherit;overflow:hidden;text-decoration:none;
+     transition:transform var(--motion-base) var(--ease-standard),
+                box-shadow var(--motion-base) var(--ease-standard),
+                border-color var(--motion-base) var(--ease-standard)}
+.big-stat::after{content:"";position:absolute;inset:0 auto 0 0;width:3px;
+     background:var(--acc);opacity:.55;
+     transition:opacity var(--motion-base) var(--ease-standard)}
+.big-stat:hover{transform:translateY(-2px);box-shadow:var(--shadow-lg);
+     border-color:var(--line-strong);text-decoration:none}
+.big-stat:hover::after{opacity:1}
+.big-stat .big-ico{color:var(--mut);margin-bottom:2px}
+.big-stat b{font-size:var(--text-num);line-height:1.12;letter-spacing:-.5px;
+     font-weight:var(--weight-bold);font-variant-numeric:tabular-nums}
+.big-stat .big-txt{font-size:var(--text-xl);line-height:1.25}
+.big-stat span{color:var(--mut);font-size:var(--text-sm)}
+.big-stat.warn::after{background:var(--warn)}
+.big-stat.bad::after{background:var(--bad)}
+.big-stat.good::after{background:var(--ok)}
+.big-stat.zero{opacity:.72}
+/* мелкая полоса «масштаба» под счётчиками: сколько всего в базе */
+.scale-line{display:flex;flex-wrap:wrap;gap:var(--space-lg);padding:11px 15px;margin-bottom:var(--space-lg);
+     border:1px solid var(--line);border-radius:var(--radius-md);background:var(--surface-sunken);
+     color:var(--mut);font-size:var(--text-sm)}
+.scale-line b{color:var(--ink-soft);font-weight:var(--weight-semi);font-variant-numeric:tabular-nums}
+
+/* ── «Что требует действия»: строки-ссылки с числом ───────────────────────── */
+.todo{margin:0;padding:0;list-style:none}
+.todo li+li{margin-top:2px}
+.todo-row{display:flex;align-items:center;gap:var(--space-md);padding:10px 12px;
+     border:1px solid var(--line-soft);border-radius:var(--radius-sm);background:var(--surface-sunken);
+     transition:background-color var(--motion-fast) var(--ease-standard),
+                border-color var(--motion-fast) var(--ease-standard),
+                border-color var(--motion-fast) var(--ease-standard)}
+.todo-row:hover{background:var(--surface-raised);border-color:var(--line-strong)}
+.todo-ico{color:var(--mut)}
+.todo-name{flex:1;min-width:0;color:var(--ink-soft);font-size:var(--text-sm);
+     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.todo-n{flex:0 0 auto;min-width:34px;padding:1px 9px;border-radius:var(--radius-pill);
+     background:var(--surface-raised);border:1px solid var(--line);color:var(--ink);
+     font-size:var(--text-sm);text-align:center;font-variant-numeric:tabular-nums}
+.todo-row.hot .todo-n{background:var(--bad-soft);border-color:var(--bad-line);color:var(--bad-ink)}
+.todo-row.zero .todo-name{color:var(--mut)}
+.todo-go{flex:0 0 auto;color:var(--mut);opacity:.35;
+     transition:opacity var(--motion-fast) var(--ease-standard)}
+.todo-row:hover .todo-go{opacity:1}
+.todo-empty{display:flex;align-items:center;gap:var(--space-sm);padding:var(--space-lg);
+     color:var(--mut);font-size:var(--text-sm)}
+
+/* ── лента событий ────────────────────────────────────────────────────────── */
+.feed{margin:0;padding:0;list-style:none}
+.feed li{display:flex;align-items:baseline;gap:var(--space-sm);padding:7px 2px;
+     border-bottom:1px solid var(--line-soft)}
+.feed li:last-child{border-bottom:0}
+.feed-time{flex:0 0 auto;color:var(--mut);font-size:var(--text-xs);white-space:nowrap;
+     font-variant-numeric:tabular-nums}
+.feed-what{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+     color:var(--ink-soft)}
+.feed-what b{color:var(--ink);font-weight:var(--weight-semi)}
+.pager{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-sm);margin-top:var(--space-lg);
+     padding-top:var(--space-md);border-top:1px solid var(--line)}
+
+/* ── копирование значения по клику ────────────────────────────────────────── */
+.copy-btn{display:inline-grid;place-items:center;width:26px;height:26px;padding:0;vertical-align:middle;
+     border:1px solid var(--line);border-radius:var(--radius-xs);background:var(--surface-raised);
+     color:var(--mut);cursor:pointer;
+     transition:background-color var(--motion-fast) var(--ease-standard),
+                border-color var(--motion-fast) var(--ease-standard),
+                color var(--motion-fast) var(--ease-standard)}
+.copy-btn:hover{background:var(--acc-soft);border-color:var(--acc-line);color:var(--acc)}
+.copy-btn .ico{width:14px;height:14px}
+.copy-btn.is-done{background:var(--ok-soft);border-color:var(--ok-line);color:var(--ok-ink)}
+.code-cell{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
+
+/* ── точки состояния вместо цветных кружков эмодзи ────────────────────────── */
+.dot-state{display:inline-block;width:9px;height:9px;flex:0 0 9px;border-radius:50%;
+     background:var(--line-strong);vertical-align:middle}
+.dot-state.on{background:var(--ok)}
+.dot-state.off{background:var(--mut)}
+.dot-state.bad{background:var(--bad)}
+.dot-state.warn{background:var(--warn)}
+
+/* ── палитра разделов (Ctrl+K) ────────────────────────────────────────────── */
+.palette{position:fixed;inset:0;z-index:70;display:none;align-items:flex-start;justify-content:center;
+     padding:var(--space-xxl) var(--space-lg);background:var(--overlay)}
+.palette.is-open{display:flex}
+.palette-box{width:min(560px,100%);border:1px solid var(--line);border-radius:var(--radius-lg);
+     background:var(--surface);box-shadow:var(--shadow-lg);overflow:hidden;
+     animation:card-in var(--motion-base) var(--ease-out) both}
+.palette-box input{width:100%;border:0;border-bottom:1px solid var(--line);border-radius:0;
+     background:var(--surface-sunken);padding:13px var(--space-lg)}
+.palette-list{max-height:56vh;margin:0;padding:var(--space-sm);overflow-y:auto;list-style:none}
+.palette-list li{margin:0}
+.palette-list a{display:flex;align-items:center;gap:var(--space-sm);padding:9px 11px;
+     border-radius:var(--radius-sm);color:var(--ink-soft);font-size:var(--text-sm);text-decoration:none;
+     transition:background-color var(--motion-fast) var(--ease-standard),
+                color var(--motion-fast) var(--ease-standard)}
+.palette-list a .ico{color:var(--mut)}
+.palette-list a.on{background:var(--acc-soft);color:var(--acc)}
+.palette-list a.on .ico{color:var(--acc)}
+.palette-list .pal-group{padding:8px 11px 3px;color:var(--mut);font-size:var(--text-xs);
+     letter-spacing:.7px;text-transform:uppercase}
+.palette-foot{padding:var(--space-sm) var(--space-lg);border-top:1px solid var(--line);
+     color:var(--mut);font-size:var(--text-xs)}
+
+/* ── выделение строки горячими клавишами ──────────────────────────────────── */
+[data-hk].hk-on{background:var(--glow);box-shadow:inset 3px 0 0 var(--acc)}
+tr.hk-on td{background:var(--glow)}
+tr.hk-on td:first-child{box-shadow:inset 3px 0 0 var(--acc)}
+
 /* ── графики ─────────────────────────────────────────────────────────────── */
 .charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:var(--space-lg)}
 .chart-box{min-width:0;margin:0;padding:13px 15px;border:1px solid var(--line);
@@ -694,6 +860,8 @@ button:active,.btn:active{transform:translateY(0);box-shadow:var(--shadow-sm)}
 .wb-head{display:flex;align-items:baseline;gap:6px;white-space:nowrap}
 .wb-head b{flex:0 0 auto;font-weight:var(--weight-semi)}
 .wb-status{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--mut)}
+.wb-wait{display:inline-flex;align-items:center;gap:4px;color:var(--warn);white-space:nowrap}
+.wb-wait .ico{width:14px;height:14px}
 .wb-date{flex:0 0 auto;margin-left:auto;color:var(--mut);font-size:var(--text-xs)}
 .wb-text{display:block;margin-top:1px;overflow:hidden;text-overflow:ellipsis;
      white-space:nowrap;color:var(--mut)}
@@ -804,6 +972,11 @@ pre{max-height:560px;margin:0;padding:var(--space-lg);overflow:auto;border:1px s
         scroll-snap-align:start}
   nav a:hover{transform:none}
   .nav-txt{white-space:nowrap}
+  .nav-groups{flex-direction:row;flex-wrap:nowrap;align-items:center;gap:var(--space-md)}
+  .nav-group{flex-direction:row;align-items:center;gap:4px}
+  .nav-group-items{flex-direction:row;gap:4px}
+  .nav-group-name{display:none}
+  .nav-group-label{padding:0 2px}
   .workbench{grid-template-columns:1fr}
   .wb-queue{position:static}
   .wb-list{max-height:40vh}
@@ -829,6 +1002,16 @@ pre{max-height:560px;margin:0;padding:var(--space-lg);overflow:auto;border:1px s
   .gsearch input{padding-left:12px}
   nav{padding:7px 10px;gap:5px}
   nav a{padding:11px 13px;font-size:var(--text-base);min-height:44px}
+  .nav-groups{gap:var(--space-md)}
+  .nav-group-label{padding:0 1px;font-size:10.5px;letter-spacing:.4px}
+  .nav-badge{min-width:19px;padding:0 5px;font-size:10.5px;line-height:16px}
+  .dochead{gap:var(--space-sm)}
+  .dochead .page-actions{margin-left:0;width:100%}
+  .big-stats{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+  .big-stat b{font-size:23px}
+  .big-stat .big-txt{font-size:var(--text-lg)}
+  .copy-btn{width:36px;height:36px;min-height:0}
+  .wb-edit,.wb-reply{display:none}
   main{padding:12px 10px 44px}
   .page-title{font-size:var(--text-lg);margin-bottom:var(--space-md)}
   .card{padding:13px 12px;margin-bottom:var(--space-md);border-radius:var(--radius-md)}
@@ -873,8 +1056,12 @@ pre{max-height:560px;margin:0;padding:var(--space-lg);overflow:auto;border:1px s
 }
 
 @media print{
-  header,nav,footer,.gsearch,.theme-toggle,.toast-stack{display:none}
+  header,nav,footer,.gsearch,.theme-toggle,.toast-stack,.palette,.copy-btn,
+  .dochead .page-actions,.wb-queue,.wb-edit,.wb-reply,.wb-access,.wb-bulk,.wb-tools,
+  .no-print{display:none!important}
   main{margin:0;padding:0;max-width:none}
+  .workbench{grid-template-columns:1fr}
+  .wb-list{max-height:none;overflow:visible}
   .card{break-inside:avoid;box-shadow:none}
   .card:hover{transform:none}
 }
@@ -976,12 +1163,356 @@ _THEME_SCRIPT = """
 """
 
 
+# ── всплывающее сообщение: общее для всех скриптов панели ─────────────────────
+# Тосты в разметке не живут (их пока нет ни на одной странице), поэтому стек
+# создаётся при первом сообщении. Повторный вызов с тем же текстом не дублирует
+# подсказку, а просто обновляет её.
+_PANEL_TOAST_JS = """
+window.panelToast = window.panelToast || function (text, kind) {
+  var stack = document.querySelector(".toast-stack");
+  if (!stack) {
+    stack = document.createElement("div");
+    stack.className = "toast-stack";
+    document.body.appendChild(stack);
+  }
+  var found = null;
+  for (var i = 0; i < stack.children.length; i++) {
+    if (stack.children[i].getAttribute("data-toast") === text) { found = stack.children[i]; }
+  }
+  if (!found) {
+    found = document.createElement("div");
+    found.setAttribute("data-toast", text);
+    found.className = "toast";
+    stack.appendChild(found);
+  }
+  found.className = "toast" + (kind ? " toast-" + kind : "");
+  found.innerHTML = (kind === "bad" ? "/*ICON_WARN*/" : "/*ICON_OK*/") +
+      '<span></span>';
+  found.lastChild.textContent = text;
+  if (found._panelTimer) { clearTimeout(found._panelTimer); }
+  found._panelTimer = setTimeout(function () {
+    found.classList.add("is-out");
+    setTimeout(function () { if (found.parentNode) { found.parentNode.removeChild(found); } },
+        /*DELAY*/);
+  }, 3200);
+};
+"""
+
+
+def panel_toast_js(delay_ms: int = 260) -> str:
+    """JS-функция ``window.panelToast(text, kind)``: всплывающая подсказка.
+
+    Кладётся один раз на страницу; остальные скрипты панели только вызывают её,
+    поэтому стек тостов создаётся один и наполняется по мере надобности.
+    """
+    return (_PANEL_TOAST_JS
+            .replace("/*ICON_OK*/", icon("check", 16))
+            .replace("/*ICON_WARN*/", icon("warning", 16))
+            .replace("/*DELAY*/", str(int(delay_ms))))
+
+
+# ── горячие клавиши и палитра разделов ───────────────────────────────────────
+# Клавиши работают в рабочем месте с обращениями и на страницах списков:
+#   j / k  - вверх и вниз по очереди,   Enter - открыть выбранное,
+#   a      - в архив,                    r     - к полю ответа,
+#   e      - к правке обращения,          ?     - подсказка,
+#   /      - строка поиска (её обрабатывает theme_script),
+#   Ctrl+K - поиск по разделам панели.
+# Пока фокус в поле ввода, все клавиши молчат - иначе нельзя было бы печатать.
+_HOTKEYS_SCRIPT = """
+(function () {
+  var SECTIONS = /*SECTIONS*/;
+  var HINT = /*HINT*/;
+
+  function editing(target) {
+    if (!target) { return false; }
+    var tag = target.tagName || "";
+    return /^(INPUT|TEXTAREA|SELECT|OPTION)$/.test(tag) || target.isContentEditable === true;
+  }
+  /* нажатый Enter должен сработать на самой кнопке, а не открывать обращение */
+  function clickable(target) {
+    var tag = (target && target.tagName) || "";
+    return /^(BUTTON|A|SUMMARY|LABEL)$/.test(tag);
+  }
+  function rows() { return document.querySelectorAll("[data-hk]"); }
+  function quiet() {
+    return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  }
+  function mark(node) {
+    var items = rows();
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].classList.contains("hk-on") !== (items[i] === node)) {
+        items[i].classList.toggle("hk-on", items[i] === node);
+      }
+    }
+    if (node && node.scrollIntoView) {
+      try { node.scrollIntoView({block: "nearest", behavior: quiet() ? "auto" : "smooth"}); }
+      catch (err) { node.scrollIntoView(false); }
+    }
+  }
+  function picked() {
+    var items = rows(), found = null;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].classList.contains("hk-on")) { found = items[i]; break; }
+    }
+    return found;
+  }
+  function move(step) {
+    var items = rows();
+    if (!items.length) { return; }
+    var index = 0;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].classList.contains("hk-on")) { index = i; break; }
+    }
+    mark(items[Math.min(items.length - 1, Math.max(0, index + step))]);
+  }
+  function open(node) {
+    if (!node) { return; }
+    var link = node.querySelector("a[href]");
+    var href = node.getAttribute("data-hk-open") || (link ? link.getAttribute("href") : "");
+    if (href) { window.location.href = href; }
+  }
+  /* кнопки-действия на карточке: архив, ответ, правка */
+  function send(action) {
+    var box = document.querySelector('.wb-card form[action$="/' + action + '"]');
+    if (box) { box.submit(); }
+  }
+  function field(name) {
+    var box = document.querySelector('.wb-card [name="' + name + '"]');
+    if (box) {
+      box.focus();
+      if (box.select) { try { box.select(); } catch (err) {} }
+    }
+  }
+  function help() {
+    var parts = [];
+    for (var i = 0; i < HINT.length; i++) { parts.push(HINT[i][0] + " — " + HINT[i][1]); }
+    panelToast(parts.join(" · "), null);
+  }
+
+  /* ── палитра разделов (Ctrl+K) ─────────────────────────────────────────── */
+  var box = null, list = null, field_ = null, chosen = 0, shown = [];
+  function build() {
+    if (box) { return; }
+    box = document.createElement("div");
+    box.className = "palette";
+    box.innerHTML = '<div class="palette-box"><input type="text" placeholder="Куда перейти?" ' +
+        'autocomplete="off" aria-label="Поиск по разделам панели"><ul class="palette-list"></ul>' +
+        '<div class="palette-foot">↑ и ↓ — выбор, Enter — открыть, Esc — закрыть</div></div>';
+    document.body.appendChild(box);
+    field_ = box.querySelector("input");
+    list = box.querySelector("ul");
+    box.addEventListener("click", function (event) {
+      if (event.target === box) { close(); }
+    });
+    field_.addEventListener("input", function () { paint(field_.value); });
+    field_.addEventListener("keydown", function (event) {
+      if (event.key === "Escape") { close(); return; }
+      if (event.key === "ArrowDown") { move(1); event.preventDefault(); return; }
+      if (event.key === "ArrowUp") { move(-1); event.preventDefault(); return; }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        if (shown[chosen]) { window.location.href = shown[chosen].getAttribute("href"); }
+      }
+    });
+  }
+  function paint(needle) {
+    var want = (needle || "").trim().toLowerCase();
+    list.innerHTML = "";
+    shown = [];
+    for (var g = 0; g < SECTIONS.length; g++) {
+      var group = SECTIONS[g];
+      var head = null;
+      for (var i = 0; i < group[1].length; i++) {
+        var item = group[1][i];
+        if (want && item[0].toLowerCase().indexOf(want) < 0) { continue; }
+        if (!head) {
+          head = document.createElement("li");
+          head.className = "pal-group";
+          head.textContent = group[0];
+          list.appendChild(head);
+        }
+        var row = document.createElement("li");
+        var link = document.createElement("a");
+        link.href = item[1];
+        link.innerHTML = item[2] + "<span></span>";
+        link.lastChild.textContent = item[0];
+        row.appendChild(link);
+        list.appendChild(row);
+        shown.push(link);
+      }
+    }
+    if (!shown.length) {
+      var empty = document.createElement("li");
+      empty.className = "pal-group";
+      empty.textContent = "Ничего не нашлось";
+      list.appendChild(empty);
+    }
+    chosen = 0;
+    paintChoice();
+  }
+  function paintChoice() {
+    for (var i = 0; i < shown.length; i++) { shown[i].classList.toggle("on", i === chosen); }
+  }
+  function move(step) {
+    if (!shown.length) { return; }
+    chosen = Math.min(shown.length - 1, Math.max(0, chosen + step));
+    paintChoice();
+    try { shown[chosen].scrollIntoView({block: "nearest"}); } catch (err) {}
+  }
+  function open() { build(); paint(""); box.classList.add("is-open"); field_.focus(); }
+  function close() { if (box) { box.classList.remove("is-open"); } }
+
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "k" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      if (box && box.classList.contains("is-open")) { close(); } else { open(); }
+      return;
+    }
+    if (box && box.classList.contains("is-open")) { return; }
+    if (editing(event.target) || event.ctrlKey || event.metaKey || event.altKey) { return; }
+    var key = event.key;
+    if (key === "?") { event.preventDefault(); help(); return; }
+    if (key === "j") { event.preventDefault(); move(1); return; }
+    if (key === "k") { event.preventDefault(); move(-1); return; }
+    if (key === "a") { event.preventDefault(); send("archive"); return; }
+    if (key === "r") { event.preventDefault(); field("text"); return; }
+    if (key === "e") { event.preventDefault(); field("text_content"); return; }
+    if (key === "Enter" && !clickable(event.target)) { event.preventDefault(); open(picked()); }
+  });
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", function () { if (picked()) { mark(picked()); } });
+  } else if (picked()) { mark(picked()); }
+}());
+"""
+
+# Подсказка по «?»: короткая, помещается в тост на любом экране.
+HOTKEY_HINT: tuple[tuple[str, str], ...] = (
+    ("j / k", "по очереди"),
+    ("Enter", "открыть"),
+    ("a", "в архив"),
+    ("r", "ответ"),
+    ("e", "правка"),
+    ("/", "поиск"),
+    ("Ctrl+K", "разделы"),
+)
+
+
+def hotkeys_script(groups: Iterable[Sequence[Sequence[str]]] = ()) -> str:
+    """JS для конца ``<body>``: горячие клавиши и палитра разделов по ``Ctrl+K``.
+
+    ``groups`` - разделы панели как ``[(группа, [(название, путь, иконка), ...]), ...]``;
+    из них собирается палитра, поэтому список разделов не дублируется в скрипте.
+    Клавиши игнорируются, когда фокус в поле ввода, а при выключенной анимации
+    (``prefers-reduced-motion``) прокрутка к выбранной строке идёт без сглаживания.
+    """
+    sections = [[str(group[0]), [[str(item[0]), str(item[1]), str(item[2])]
+                                for item in group[1]]]
+                for group in groups if group and group[1]]
+    payload = json.dumps(sections, ensure_ascii=False).replace("<", "\\u003c")
+    hint = json.dumps([list(item) for item in HOTKEY_HINT], ensure_ascii=False)
+    return (_HOTKEYS_SCRIPT
+            .replace("/*SECTIONS*/", payload)
+            .replace("/*HINT*/", hint))
+
+
+# ── копирование по клику и сохранённые фильтры ───────────────────────────────
+_ACTIONS_SCRIPT = """
+(function () {
+  /* ── копирование значения: MAX ID, код группы, код приглашения, ссылка ── */
+  function put(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise(function (resolve, reject) {
+      var box = document.createElement("textarea");
+      box.value = text;
+      box.setAttribute("readonly", "readonly");
+      box.style.position = "fixed";
+      box.style.opacity = "0";
+      document.body.appendChild(box);
+      box.select();
+      var ok = false;
+      try { ok = document.execCommand("copy"); } catch (err) { ok = false; }
+      document.body.removeChild(box);
+      if (ok) { resolve(); } else { reject(new Error("copy")); }
+    });
+  }
+  document.addEventListener("click", function (event) {
+    var button = event.target && event.target.closest ? event.target.closest("[data-copy]") : null;
+    if (!button) { return; }
+    event.preventDefault();
+    var note = button.getAttribute("data-copy-note") || "Скопировано";
+    put(button.getAttribute("data-copy") || "").then(function () {
+      button.classList.add("is-done");
+      panelToast(note, "ok");
+    }, function () {
+      panelToast("Браузер не дал скопировать - выделите значение вручную", "bad");
+    });
+  });
+
+  /* ── сохранённые фильтры рабочего места ───────────────────────────────── */
+  var KEY = "panel-filters";
+  var form = document.querySelector("[data-filters]");
+  if (!form) { return; }
+  var names = (form.getAttribute("data-filters") || "status,category,q").split(",");
+  function read() {
+    var saved = {};
+    try { saved = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (err) { saved = {}; }
+    return saved;
+  }
+  function write() {
+    var data = {};
+    for (var i = 0; i < names.length; i++) {
+      var box = form.querySelector('[name="' + names[i] + '"]');
+      if (box && box.value) { data[names[i]] = box.value; }
+    }
+    try { localStorage.setItem(KEY, JSON.stringify(data)); } catch (err) {}
+  }
+  function apply(saved) {
+    var changed = false;
+    for (var i = 0; i < names.length; i++) {
+      var box = form.querySelector('[name="' + names[i] + '"]');
+      if (box && !box.value && saved[names[i]]) { box.value = saved[names[i]]; changed = true; }
+    }
+    return changed;
+  }
+  /* восстанавливаем только когда в адресе фильтров не было: ссылка с фильтром
+     должна побеждать, иначе «/?scope=waiting» открывался бы чужим фильтром */
+  if (form.getAttribute("data-filters-saved") === "1") {
+    if (apply(read())) { form.submit(); return; }
+  }
+  form.addEventListener("change", write);
+  form.addEventListener("submit", write);
+  var reset = document.querySelector("[data-filters-reset]");
+  if (reset) {
+    reset.addEventListener("click", function () {
+      try { localStorage.removeItem(KEY); } catch (err) {}
+      panelToast("Фильтры сброшены", null);
+    });
+  }
+}());
+"""
+
+
+def actions_script() -> str:
+    """JS для конца ``<body>``: копирование по клику и сохранённые фильтры.
+
+    Копирование живёт на кнопках ``[data-copy]`` (MAX ID, код группы, код
+    приглашения, ссылка на обращение) и подтверждается тостом. Фильтры рабочего
+    места лежат в ``localStorage`` под ключом ``panel-filters`` и возвращаются при
+    следующем открытии страницы, если в адресе фильтра не было.
+    """
+    return _ACTIONS_SCRIPT
+
+
 def theme_script() -> str:
     """Маленький JS для конца ``<body>``: переключение темы и подсветка поиска.
 
     Выбор темы пишется в ``localStorage`` под ключом ``panel-theme`` и
     возвращается как ``data-theme`` на ``<html>``. Если выбор не делали, тема
-    следует за системной настройкой.
+    следует за системной настройкой. Клавиша ``/`` (фокус в поиск) остаётся
+    здесь: остальные клавиши живут в ``hotkeys_script()`` и ``/`` не трогают.
     """
     return (_THEME_SCRIPT
             .replace("/*ICON_LIGHT*/", icon("moon", 18))
