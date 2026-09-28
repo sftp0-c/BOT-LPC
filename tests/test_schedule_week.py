@@ -1,4 +1,4 @@
-"""Тесты недели расписания: неделя из PDF, устаревание, подсветка сегодня."""
+﻿"""Тесты недели расписания: неделя из PDF, устаревание, подсветка сегодня."""
 from datetime import date, timedelta
 
 
@@ -33,9 +33,15 @@ def test_build_schedule_keeps_week():
 
 
 # ── шапка ────────────────────────────────────────────────────────────────────
-def make_week(week: date, lessons=1) -> tt.GroupSchedule:
+def make_week(week: date, lessons=1, weekday: int = 0) -> tt.GroupSchedule:
+    """Неделя с одним днём. weekday по умолчанию 0 - понедельник.
+
+    Параметр нужен для проверок подписи «сегодня»: раньше день недели был
+    зашит в ноль, и тест «в шапке есть • сегодня» проходил только по
+    понедельникам, а в остальные шесть дней «понедельник» не сегодня.
+    """
     return tt.GroupSchedule(group="24-23П", week=week, days={
-        0: tt.DaySchedule(weekday=0, lessons=[
+        weekday: tt.DaySchedule(weekday=weekday, lessons=[
             tt.Lesson(number=i + 1, subject=f"Предмет {i + 1}") for i in range(lessons)]),
     })
 
@@ -67,10 +73,14 @@ def test_schedule_without_week_falls_back_to_today():
     assert "свежее расписание" not in text
 
 
-def test_today_is_marked_in_the_day_header():
-    monday = tt.today_monday()
-    text = tt.format_schedule(make_week(monday))
-    assert "• сегодня" in text
+def test_today_is_marked_in_the_day_header(frozen_college_clock):
+    today = frozen_college_clock.date()
+    monday = today - timedelta(days=today.weekday())
+    text = tt.format_schedule(make_week(monday, weekday=today.weekday()))
+    assert "• сегодня" in text, text
+    # а чужой день недели в той же неделе помечен не как сегодня
+    other = make_week(monday, weekday=(today.weekday() + 1) % 7)
+    assert "• сегодня" not in tt.format_schedule(other)
 
 
 def test_explicit_week_argument_still_wins():

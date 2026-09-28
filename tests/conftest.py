@@ -1,3 +1,4 @@
+﻿from datetime import datetime
 from itertools import count
 import logging
 from logging.handlers import RotatingFileHandler
@@ -47,6 +48,27 @@ class FakeAPI:
         kb = self.last(uid)[2] or []
         return [b["payload"] for row in kb for b in row if b["type"] == "callback"]
 
+
+
+# Момент, на котором замирают часы в frozen_college_clock. Середина недели,
+# вторник: понедельник и пятница ломают проверки дней недели по краям.
+FROZEN = datetime(2026, 9, 29, 10, 15, 0)
+
+
+@pytest.fixture
+def frozen_college_clock(monkeypatch):
+    """Одна выборка времени на тест и на код под ним.
+
+    clock.now() - единственное место, откуда проект берёт «сейчас» (все
+    clock.today/stamp/stamp_at идут через него), поэтому одной подмены
+    достаточно: тест и код гарантированно видят один и тот же момент, и
+    тест не краснеет, когда прогон пришёлся на полночь.
+
+    Фикстура не автоматическая намеренно: в тестах, где важны интервалы
+    («5 дней назад», порядок событий по времени), время должно идти вперёд.
+    """
+    monkeypatch.setattr(clock, "now", lambda: FROZEN)
+    return FROZEN
 
 
 def _clear_flashes() -> None:

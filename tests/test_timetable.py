@@ -1,4 +1,4 @@
-"""Расписание: разбор PDF в занятия и выдача текстом.
+﻿"""Расписание: разбор PDF в занятия и выдача текстом.
 
 Разбор проверяется на двух уровнях. Первый — настоящий PDF, собранный
 tests/pdf_helper.py: из него pdfplumber реально извлекает текст и таблицы.
@@ -148,23 +148,27 @@ def test_format_day_and_week():
     assert week.index("Понедельник") < week.index("Четверг")
 
 
-def test_day_title_marks_today_and_tomorrow():
+def test_day_title_marks_today_and_tomorrow(frozen_college_clock):
     """Подписи «сегодня» и «завтра» - проверяем у самой функции.
 
     Раньше тест собирал неделю вокруг текущего дня и падал по выходным: в
     воскресенье «сегодня» и «завтра» попадают в разные недели, и в одном
     расписании обе подписи не появляются никогда.
+
+    Дата берётся из clock, а не из date.today(): в контейнере машинные часы -
+    это UTC, на пять часов позади часов колледжа, и на стыке суток день
+    недели не совпадал с подписью.
     """
-    today = date.today()
+    today = frozen_college_clock.date()
     assert tt.day_title(today.weekday(), today).endswith("сегодня")
     assert tt.day_title((today.weekday() + 1) % 7, today + timedelta(days=1)).endswith("завтра")
     past = today - timedelta(days=7)
     assert tt.day_title(past.weekday(), past).endswith(past.strftime("%d.%m"))
 
 
-def test_format_shows_today_lesson_in_week_view():
+def test_format_shows_today_lesson_in_week_view(frozen_college_clock):
     """В недельном виде занятие сегодняшнего дня помечено, даже если оно единственное."""
-    today = date.today()
+    today = frozen_college_clock.date()
     monday = today - timedelta(days=today.weekday())
     schedule = tt.GroupSchedule(group="ИС-21", days={
         today.weekday(): tt.DaySchedule(weekday=today.weekday(), lessons=[tt.Lesson(1, "Физика")]),

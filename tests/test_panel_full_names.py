@@ -242,9 +242,35 @@ NAME_HINTS = ("fio", "full_name", "student_name", "person", "sender_name",
               "staff_name", "display_name")
 
 
+PANEL_SOURCES = [Path("webpanel.py")] + sorted(Path("web").glob("*.py"))
+"""Файлы панели: фасад и все модули web/.
+
+Один только webpanel.py после разбиения - это 249 строк реэкспорта: читая
+его, проверка «ФИО нигде не режут» обходила пустоту вместо панели. utf-8-sig:
+файл панели сохранён с BOM, модули пакета - без.
+"""
+
+
+def panel_text(name: str) -> str:
+    """Исходник панели по имени файла, где он теперь лежит."""
+    return next(path.read_text(encoding="utf-8-sig")
+                for path in PANEL_SOURCES if path.name == name)
+
+
 def source_tree() -> ast.Module:
-    # utf-8-sig: файл панели сохранён с BOM
-    return ast.parse(Path("webpanel.py").read_text(encoding="utf-8-sig"))
+    """Дерево разбора всей панели: фасад плюс модули web/.
+
+    Имена импортированных помощников перекрываются, поэтому достаточно
+    дерева самого большого по числу вызовов модуля разбора: проверка ниже
+    ищет вызовы short()/cut_plain() по именам-подсказкам, а не сравнивает
+    определения. Модулей ровно столько, сколько файлов в PANEL_SOURCES, и
+    каждый входит ровно один раз.
+    """
+    trees = [ast.parse(path.read_text(encoding="utf-8-sig")) for path in PANEL_SOURCES]
+    biggest = max(trees, key=lambda tree: sum(1 for _ in ast.walk(tree)))
+    merged = ast.Module(body=sum((tree.body for tree in trees), []), type_ignores=[])
+    merged.name = "panel"
+    return merged if biggest is not None else merged
 
 
 def test_no_shortening_of_names_in_webpanel():
@@ -262,7 +288,7 @@ def test_no_shortening_of_names_in_webpanel():
         if node.func.id not in SHORTENERS:
             continue
         if any(hint in ast.dump(node) for hint in NAME_HINTS):
-            found.append(f"webpanel.py:{node.lineno} {node.func.id}(...)")
+            found.append(f"панель:{node.lineno} {node.func.id}(...)")
     assert not found, "ФИО снова сокращают: " + "; ".join(found)
 
 
@@ -272,9 +298,11 @@ def test_fio_helper_never_uses_ellipsis():
     Всё остальное панель обязана звать именно его: иначе обрезание вернётся
     в обход проверки выше.
     """
-    rule = re.search(r"def fio\(.*?(?=\ndef )", Path("webpanel.py").read_text(
-        encoding="utf-8-sig"), re.S)
-    assert rule, "в webpanel.py нет помощника fio()"
+    holders = [name for name in (path.name for path in PANEL_SOURCES)
+               if re.search(r"\ndef fio\(", panel_text(name))]
+    assert holders, "в панели нет помощника fio() - проверяем все файлы: " + ", ".join(
+        path.name for path in PANEL_SOURCES)
+    rule = re.search(r"def fio\(.*?(?=\ndef |\Z)", panel_text(holders[0]), re.S)
     body = rule.group(0)
     assert "short(" not in body, "fio() снова зовёт short() - это многоточие"
     assert "cut_plain(" in body, "fio() должен резать по границе слова"
@@ -282,7 +310,10 @@ def test_fio_helper_never_uses_ellipsis():
 
 def test_no_ellipsis_left_in_queue_markup():
     """В очереди не осталось склейки «имя · текст» через многоточие."""
-    text = Path("webpanel.py").read_text(encoding="utf-8-sig")
-    block = text[text.index("def _tickets_queue("):text.index("async def _ticket_workbench(")]
+    holders = [panel_text(path.name) for path in PANEL_SOURCES
+               if "def _tickets_queue(" in panel_text(path.name)]
+    assert holders, "в панели нет очереди _tickets_queue()"
+    whole = "\n".join(holders)
+    block = whole[whole.index("def _tickets_queue("):]
     assert "short(" not in block, "в очереди снова появился short()"
     assert 'class="wb-who"' in block and 'class="wb-fio"' in block

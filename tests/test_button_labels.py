@@ -1,4 +1,4 @@
-"""Ни одна подпись кнопки не должна обрезаться многоточием в MAX.
+﻿"""Ни одна подпись кнопки не должна обрезаться многоточием в MAX.
 
 MAX рисует кнопку в одну строку и обрезает подпись. Чтобы это не повторилось,
 проверяем дважды: текстом в исходниках (статически) и живым проходом по экранам.
@@ -21,8 +21,11 @@ DIRECTOR = "501"
 SYS = "1"
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCES = [path for path in list(ROOT.glob("*.py")) + list((ROOT / "handlers").glob("*.py"))
-           if not path.name.startswith("test_")]
+# Папки с исходниками. Список явный: новый модуль нельзя забыть молча, как
+# случилось с web/ и store/ - их файлы не попадали в glob верхнего уровня.
+SOURCE_DIRS = ("handlers", "store", "web")
+SOURCES = ([path for path in ROOT.glob("*.py") if not path.name.startswith("test_")]
+           + [path for name in SOURCE_DIRS for path in (ROOT / name).glob("*.py")])
 
 
 def labels_of(api, user) -> list[str]:

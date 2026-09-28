@@ -14,7 +14,7 @@ from utils import (STAFF_CATS, STATUS, as_str, fmt_when, is_sysadmin_role, norm_
 from .access import request_status_cell
 from .common import (_action_form, code_cell, csrf, esc, fio_brief, flag, flash, form, input, log,
                      minutes_text, page, page_window, pager, pages_of, pill, plain, redirect,
-                     require_form, require_user, select, value, window_tail)
+                     require_form, require_user, select, value, window_tail, fio)
 from .router import router
 
 
@@ -538,7 +538,6 @@ def profile_cell(username) -> str:
 
 
 def _people_table(rows) -> str:
-    from webpanel import fio   # см. комментарий в webpanel.py
     body = []
     for row in rows:
         # Полное ФИО - то, по чему человека ищут в записи, поэтому целиком;
@@ -621,7 +620,6 @@ async def people_csv(request: Request, kind: str = "", q: str = ""):
 
 @router.get("/people/{user_id}")
 async def person_card(request: Request, user_id: str):
-    from webpanel import fio   # см. комментарий в webpanel.py
     user = await require_user(request)
     card = await repo.user_card(user_id)
     if not card:

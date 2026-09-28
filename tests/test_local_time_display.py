@@ -88,9 +88,12 @@ def test_timetable_today_uses_college_zone():
 def test_panel_shows_the_same_time_as_the_bot():
     """Панель и бот обязаны показывать время одинаково - оба через utils."""
     from pathlib import Path
-    source = Path("webpanel.py").read_text(encoding="utf-8-sig")
-    assert "from utils import" in source
+    # Панель разложена по web/*.py: читать один webpanel.py - значит не
+    # смотреть на панель вовсе, фасад занимает 249 строк реэкспорта.
+    sources = [Path("webpanel.py")] + sorted(Path("web").glob("*.py"))
+    whole = "\n".join(path.read_text(encoding="utf-8-sig") for path in sources)
+    assert "from utils import" in whole
     # в панели нет собственного разбора времени в обход clock
-    assert "datetime.now(" not in source
-    assert "date.today(" not in source
-    assert "fmt_when(" in source, "панель показывает время через fmt_when"
+    assert "datetime.now(" not in whole
+    assert "date.today(" not in whole
+    assert "fmt_when(" in whole, "панель показывает время через fmt_when"

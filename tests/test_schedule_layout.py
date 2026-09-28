@@ -1,4 +1,4 @@
-"""Тесты: разделитель между парами в тексте расписания.
+﻿"""Тесты: разделитель между парами в тексте расписания.
 
 Пара — это два урока, поэтому день читается парами: перед каждым нечётным уроком
 после первого (3, 5, 7) стоит пустая строка. Перед первым уроком и после
@@ -8,6 +8,7 @@
 from datetime import date, timedelta
 
 import timetable as tt
+from timetable import WEEKDAYS_FULL
 
 LESSONS = 11
 
@@ -111,7 +112,10 @@ def test_days_in_a_week_are_separated_by_one_blank_line():
         [1, 2], [3, 4], [1, 2], [3, 4]]
 
 
-def test_today_view_of_one_day_has_no_gap_before_the_title():
-    text = tt.format_day(make_day(6, 2), date(2026, 9, 30), today=True)
-    assert text.startswith("📅 Среда 30.09  • сегодня")
+def test_today_view_of_one_day_has_no_gap_before_the_title(frozen_college_clock):
+    # дата за неделю от замороженного «сегодня»: зашитая 30.09 превращалась в
+    # «завтра» на следующие же сутки, и проверка падала сама по себе
+    day = frozen_college_clock.date() + timedelta(days=7)
+    text = tt.format_day(make_day(6, day.weekday()), day, today=True)
+    assert text.startswith(f"📅 {WEEKDAYS_FULL[day.weekday()].capitalize()} {day:%d.%m}  • сегодня"), text
     assert len(chunks(text)) == 3

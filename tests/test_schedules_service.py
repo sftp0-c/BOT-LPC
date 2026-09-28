@@ -1,4 +1,4 @@
-"""Сервис расписания: скачивание PDF, кэш, запись в БД и уведомления.
+﻿"""Сервис расписания: скачивание PDF, кэш, запись в БД и уведомления.
 
 Сеть в тестах не используется: download подменяется, разбор страниц — тоже,
 чтобы проверять поведение сервиса (кэш, отпечаток файла, запись в базу,
@@ -227,7 +227,7 @@ async def test_refresh_all_reports_broken_groups(api, fake_pdf):
 
 
 # ── расписание в боте ─────────────────────────────────────────────────────────
-async def test_bot_shows_parsed_schedule_instead_of_link(api, fake_pdf):
+async def test_bot_shows_parsed_schedule_instead_of_link(api, fake_pdf, frozen_college_clock):
     await register(STUDENT)
     await repo.upsert_schedule("ИС-21", PDF_URL)
     await press(STUDENT, "sched")
@@ -235,7 +235,9 @@ async def test_bot_shows_parsed_schedule_instead_of_link(api, fake_pdf):
     assert "Расписание группы ИС-21" in text
     assert "Математика" in text and "08:00–08:45" in text and "ауд. 204" in text
     assert "Иванова А. А." in text
-    assert f"schedday:ИС-21:{__import__('datetime').datetime.now().weekday()}" in api.payloads(STUDENT)
+    # день недели - из часов колледжа, а не из datetime.now(): в контейнере
+    # машинные часы это UTC, и кнопка «сегодня» вела бы на другой день
+    assert f"schedday:ИС-21:{frozen_college_clock.weekday()}" in api.payloads(STUDENT)
 
 
 async def test_bot_schedule_buttons_work(api, fake_pdf):

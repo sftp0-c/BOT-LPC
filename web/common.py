@@ -22,7 +22,7 @@ import database as db
 import repository as repo
 from panel_theme import (ICON_NAMES_BY_PATH, STYLESHEET, actions_script, hotkeys_script, icon,
                           panel_toast_js, theme_script)
-from utils import as_str, norm_code, short_name, to_int
+from utils import as_str, cut_plain, norm_code, person_label, short_name, to_int
 
 from .router import router
 
@@ -665,3 +665,18 @@ def _action_form(request: Request, action: str, label: str, fields: str = "",
     body = label if label.lstrip().startswith("<svg") else esc(label)
     return (f'<form method="post" action="{esc(action)}" class="inline"{script}>{csrf(request)}'
             f'{fields}<button class="{esc(cls)}">{body}</button></form>')
+
+
+def fio(name, user_id: str = "", limit: int = 0) -> str:
+    """ФИО для панели: целиком, а если ФИО не заполнено - по MAX ID.
+
+    Сокращать ФИО в панели нельзя: сотрудник приёмной комиссии сверяет
+    обращение с человеком по записи, и «Ковалевский Ко…» для этого бесполезно.
+    Имя переносится по словам средствами темы (``.wb-fio``), а ``limit`` -
+    последняя страховка для мест, где переноса не будет (выпадающий список):
+    обрезка идёт по границе слова и без многоточия (``utils.cut_plain``).
+    """
+    label = " ".join(as_str(name).split())
+    if not label:
+        return person_label("", user_id, limit)   # ФИО не заполнено: «ID 300»
+    return cut_plain(label, limit) if limit else label
