@@ -381,6 +381,39 @@ async def test_student_cannot_press_ready_button(api, fake_repo):
     assert not fake_repo.ready_calls
 
 
+# ── кабинет выдачи: 115 только под справки ─────────────────────────────────
+async def test_ready_status_flow_never_invents_room_115(api, fake_repo):
+    """«Готово к выдаче» кабинет не придумывает даже для справки.
+
+    115 ставит кнопка «Готово» (см. tests/test_pickup_place_bot.py), а здесь
+    сотрудник сам называет время: без кабинета в карточке сотрудника заявка
+    остаётся в работе, как и раньше.
+    """
+    tid = await make_ticket(api, cat="certificates", text="Нужна справка", office="")
+    await press(STAFF, f"st:{tid}:accepted")
+    await press(STAFF, f"st:{tid}:ready")
+    assert tickets.OFFICE_REQUIRED in api.last(STAFF)[1]
+    assert not fake_repo.ready_calls
+
+    await repository.set_admin_profile(STAFF, office="каб. 204")
+    await press(STAFF, f"st:{tid}:ready")
+    await press(STAFF, f"rt:{tid}:today")
+    assert fake_repo.ready_calls[-1][2] == "каб. 204"     # кабинет сотрудника, не 115
+
+
+async def test_closed_ticket_has_no_ready_button(api, fake_repo):
+    """Отклонённое или завершённое дело «Готово» не предлагает: там нечего закрывать."""
+    tid = await make_ticket(api)
+    await press(STAFF, f"st:{tid}:rejected")
+    await press(STAFF, f"t:{tid}")
+    assert not [p for p in api.payloads(STAFF) if p.startswith("tdready:")]
+
+    tid = await make_ticket(api, staff_id=STAFF2)
+    await press(STAFF2, f"st:{tid}:completed")
+    await press(STAFF2, f"t:{tid}")
+    assert not [p for p in api.payloads(STAFF2) if p.startswith("tdready:")]
+
+
 def test_ready_deadline_rolls_over(monkeypatch):
     class Late(datetime):
         @classmethod

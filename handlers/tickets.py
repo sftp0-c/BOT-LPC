@@ -27,6 +27,7 @@ from utils import (
     as_str,
     cut_plain,
     fmt_when,
+    person_label,
     short,
     short_name,
     to_int,
@@ -52,6 +53,7 @@ CLOSED_STATUSES = ("completed", "rejected")   # дела закрыты: отв�
 # (21 ячейка) обрезалось до «✅ Ответить и…»
 CLOSE_BTN = "✅ Ответ и закрыть"             # ответ шаблоном и статус «завершено» сразу
 ARCHIVE_VIEW = "archive"        # значение фильтра очереди: архив обращений
+MINE_VIEW = "mine"              # значение фильтра очереди: только свои обращения
 ARCHIVE_LIMIT = 200             # сколько архивных обращений держим в одном экране
 ARCHIVE_BTN = "🗄 В архив"      # закрытое дело - в архив
 RESTORE_BTN = "📂 Вернуть из архива"
@@ -140,12 +142,16 @@ async def load_ticket(x: str, ticket_id: int, include_archived: bool = False):
          else await repo.get_ticket(ticket_id, include_archived=True))
     if not t:
         return None, False
-    if t["student_id"] == x:
+    if as_str(t["student_id"]) == str(x):
         return t, False
     a = await admin_of(x)
-    if a and (is_super(a) or t["target_admin_id"] == x):
+    if not a:
+        return None, False
+    if is_super(a) or as_str(t["target_admin_id"]) == str(x):
         return t, True
-    return None, False
+    # право «видит все обращения»: очередь та же, что у сис-админа, поэтому и
+    # карточка чужого дела открывается - иначе кнопка в очереди вела бы враньё
+    return (t, True) if await repo.staff_sees_all(x) else (None, False)
 
 
 async def may_archive(x: str, t) -> bool:
@@ -163,7 +169,85 @@ async def may_archive(x: str, t) -> bool:
     return await repo.staff_sees_all(x)
 
 
-PICKUP_PLACE = "115"    # кабинет выдачи по умолчанию; исключения - в панели
+# Кабинет 115 зашит ТОЛЬКО под справки - так и было сказано приёмной.
+# Для остального это не константа: сотрудник выбирает кабинет, иначе «готово»
+# отправляло бы студенту «Заберите в кабинете 115», то есть враньё. Та же мысль
+# есть в webpanel.py, но код дублируется намеренно: бот не должен зависеть
+# от панели, иначе получится круг на импорте.
+CERT_PICKUP = "115"
+CERT_CATEGORIES = ("certificates", "certificate", "spravka", "справка", "docs", "documents")
+CERT_WORDS = ("справк", "справка", "справки")
+PICKUP_ASK = "Укажите кабинет выдачи: 115 зашит только под справки"
+TAKE_BTN = "✋ Взять"             # взять чужое обращение в работу
+PLACE_MAX = 40                   # длиннее «каб. 204» кабинет в колледже не бывает
+
+
+def is_certificate(t) -> bool:
+    """Обращение про справку - и только для них 115 остаётся зашитым.
+
+    Раздел, тема или текст: студент пишет «нужна справка» в любом разделе и
+    раздел выбирает наугад, а вопрос про учёбу приходит в раздел «Справка».
+    """
+    if not t:
+        return False
+    if _row_value(t, "category").lower() in CERT_CATEGORIES:
+        return True
+    text = f"{_row_value(t, 'topic')} {_row_value(t, 'text_content')}".lower()
+    return any(word in text for word in CERT_WORDS)
+
+
+def pickup_hint(t) -> str:
+    """Подсказка про кабинет: что подставится, если его не указали."""
+    if is_certificate(t):
+        return f"справка — {CERT_PICKUP}"
+    return "кабинет ответственного сотрудника"
+
+
+def default_place(t) -> str:
+    """Кабинет, который подставляется сам. Для не-справок его нет."""
+    return CERT_PICKUP if is_certificate(t) else ""
+
+
+def ready_label(t) -> str:
+    """Подпись кнопки «Готово»: известный кабинет видно прямо в кнопке."""
+    place = _row_value(t, "pickup_place") or default_place(t)
+    return f"✅ Готово · {place}" if place else "✅ Готово"
+
+
+def ready_needed(t) -> bool:
+    """Показывать ли кнопку «Готово» в карточке.
+
+    Закрытое дело (завершено или отклонено) её не получает: там нечего ни
+    отвечать, ни переоткрывать. Готовое - только когда кабинет так и не
+    указан: документ объявлен готовым, а сказать студенту, где его забрать,
+    нечем. Всё остальное кнопку получает.
+    """
+    status = as_str(_get(t, "status")).strip()
+    if status in CLOSED_STATUSES:
+        return False
+    return status != "ready" or not _row_value(t, "pickup_place")
+
+
+def room_label(room: str) -> str:
+    """Кабинет в кнопку выбора: в ряду из двух помещается 16 ячеек."""
+    room = " ".join(as_str(room).split())
+    if max_api.display_width(room) > max_api.row_limit(2):
+        room = cut_plain(room, max_api.row_limit(2))
+    return room or max_api.EMPTY_LABEL
+
+
+async def pickup_rooms() -> list[str]:
+    """Кабинеты для выбора: из карточек сотрудников плюс 115.
+
+    Спрашивать «какой кабинет» без списка бесполезно: сотрудник не помнит, в
+    каком кабинете сидит коллега, а набирать номер вручную каждый раз долго.
+    """
+    rooms = {CERT_PICKUP}
+    for row in await repo.list_staff():
+        office = office_of(row).strip()
+        if office and office != PICKUP_FALLBACK:
+            rooms.add(office)
+    return sorted(rooms)
 
 
 def _chunk(buttons: list, per_row: int = 2) -> list:
@@ -171,12 +255,15 @@ def _chunk(buttons: list, per_row: int = 2) -> list:
     return [buttons[i : i + per_row] for i in range(0, len(buttons), per_row)]
 
 
-def ticket_kb(t, staff_side: bool, can_delete: bool = False, can_archive: bool = False):
+def ticket_kb(t, staff_side: bool, can_delete: bool = False, can_archive: bool = False,
+              can_take: bool = False):
     """Кнопки карточки обращения.
 
     can_delete - удалить может только сис-админ; can_archive - убрать в архив
-    и вернуть обратно ответственный за обращение и тот, кому открыта вся очередь.
-    Студенту ни того, ни другого: архив закрывает сотрудник, а не автор.
+    и вернуть обратно ответственный за обращение и тот, кому открыта вся очередь;
+    can_take - взять чужое обращение в работу (сис-админ или право «видит все
+    обращения»). Студенту ни того, ни другого: архив закрывает сотрудник, а не
+    автор, и чужие дела студенту не видны.
     """
     tid, status = t["ticket_id"], t["status"]
     if not staff_side:
@@ -203,8 +290,12 @@ def ticket_kb(t, staff_side: bool, can_delete: bool = False, can_archive: bool =
     # поэтому дальше этот список нарезается парами
     tail = [btn("↩️ К списку", "staff"), btn("⚡ Шаблоны", f"tpl:{tid}"),
             btn("📝 Заметка", f"note:{tid}"), btn("↪️ Переслать", f"fwd:{tid}")]
-    if as_str(t.get("pickup_place")).strip() != PICKUP_PLACE or status not in ("ready", "completed"):
-        tail.append(btn(f"✅ Готово · {PICKUP_PLACE}", f"tdready:{tid}"))
+    if can_take:
+        tail.append(btn(TAKE_BTN, f"ttake:{tid}"))
+    # кабинет в кнопке виден сразу: для справки это 115, для остального - тот,
+    # что в обращении, а если его нет, сотрудника спросят на следующем экране
+    if ready_needed(t):
+        tail.append(btn(ready_label(t), f"tdready:{tid}"))
     if can_archive:
         tail.append(btn(ARCHIVE_BTN, f"tarch:{tid}"))
     if can_delete:
@@ -214,25 +305,90 @@ def ticket_kb(t, staff_side: bool, can_delete: bool = False, can_archive: bool =
 
 @callback("tdready")
 async def cb_ticket_ready(x, arg):
-    """«Справка готова»: закрываем обращение и пишем студенту, где забрать.
+    """«Готово»: закрываем обращение и пишем студенту, где забрать.
 
-    Кабинет по умолчанию 115; если в обращении проставлен другой - уважаем
-    исключение, это правится в панели.
+    Кабинет 115 зашит только под справки. Кабинет, указанный в обращении,
+    уважается всегда, в том числе для справки. А для остального обращения без
+    кабинета закрывать молча нельзя: студент получил бы «Заберите в кабинете
+    115», то есть не в том месте. Поэтому вместо закрытия спрашиваем кабинет
+    (см. ask_pickup_place).
     """
-    if not await admin_of(x):
-        return
-    tid = to_int(arg)
-    t = await repo.get_ticket(tid)
-    if not t:
-        return await api.send(x, "Обращение не найдено.", [[btn("↩️ В меню", "staff")]])
-    place = as_str(t.get("pickup_place")).strip() or PICKUP_PLACE
+    t, staff_side = await load_ticket(x, to_int(arg))
+    if not t or not staff_side:
+        return await api.send(x, "Обращение не найдено.", [[btn("↩️ К списку", "staff")]])
+    place = _row_value(t, "pickup_place") or default_place(t)
+    if not place:
+        return await ask_pickup_place(x, t)
+    return await finish_ready(x, t, place)
+
+
+async def finish_ready(x: str, t, place: str) -> None:
+    """Закрываем обращение как готовое и пишем студенту, где забрать."""
+    tid = t["ticket_id"]
     await repo.update_ticket(tid, x, status="ready", pickup_place=place)
     await repo.add_ticket_message(tid, x, "staff",
                                   f"✅ Документ готов. Заберите в кабинете {place}.")
     await notify(t["student_id"],
                  f"✅ Документ по обращению №{tid} готов. Заберите в кабинете {place}.",
                  [[btn("📂 Открыть обращение", f"t:{tid}")]])
+    await repo.log_action(x, "документ готов", f"№{tid}, кабинет {place}")
     await send_ticket(x, await repo.get_ticket(tid), True)
+
+
+async def ask_pickup_place(x: str, t) -> None:
+    """Кабинет выдачи не указан: 115 зашит только под справки, дальше - выбор.
+
+    Список кабинетов собирается из карточек сотрудников (pickup_rooms): вопрос
+    «какой кабинет?» без списка сотрудник не осилит, а выбор из списка - да.
+    """
+    tid = t["ticket_id"]
+    rooms = await pickup_rooms()
+    keyboard = _chunk([btn(room_label(room), f"tdplace:{tid}:{room}") for room in rooms], 2)
+    keyboard += [[btn("✏️ Ввести свой", f"tdplacex:{tid}")],
+                 [btn("↩️ К обращению", f"t:{tid}")]]
+    await api.send(x, f"{PICKUP_ASK}.\n"
+                      f"Обращение №{tid} пока не закрыто. Выберите кабинет, где документ "
+                      "заберёт студент, — «Готово» его закроет и напишет адрес.",
+                   keyboard)
+
+
+@callback("tdplace")
+async def cb_ticket_place(x, arg):
+    """Сотрудник выбрал кабинет из списка: обращение закрывается как готовое."""
+    tid, _, room = as_str(arg).partition(":")
+    return await _place_and_close(x, to_int(tid), room)
+
+
+@callback("tdplacex")
+async def cb_ticket_place_own(x, arg):
+    """Кабинет вручную: ждём следующего сообщения."""
+    tid = to_int(arg)
+    t, staff_side = await load_ticket(x, tid)
+    if not t or not staff_side:
+        return await api.send(x, "Обращение не найдено.", [[btn("↩️ К списку", "staff")]])
+    await db.set_state(x, "ticket_place", {"tid": tid})
+    await api.send(x, f"Кабинет выдачи по обращению №{tid}.\n"
+                      "Напишите его так, как его называют: «каб. 204», «115». "
+                      "Отмена — /cancel.")
+
+
+@state("ticket_place")
+async def st_ticket_place(x, text, p):
+    """Кабинет введён вручную: сохраняем его и закрываем обращение."""
+    await db.clear_state(x)
+    return await _place_and_close(x, to_int(p.get("tid")), text)
+
+
+async def _place_and_close(x: str, tid: int, room: str) -> None:
+    """Общая часть выбора кабинета: из списка или введённого вручную."""
+    room = " ".join(as_str(room).split())[:PLACE_MAX]
+    t, staff_side = await load_ticket(x, tid)
+    if not t or not staff_side:
+        return await api.send(x, "Обращение не найдено.", [[btn("↩️ К списку", "staff")]])
+    if not room:
+        return await api.send(x, "Кабинет не указан — обращение осталось в работе.",
+                              [[btn("↩️ К обращению", f"t:{tid}")], *BACK])
+    return await finish_ready(x, t, room)
 
 
 @callback("tdel")
@@ -306,6 +462,51 @@ async def cb_ticket_archive(x, arg):
     return await api.send(x, f"🗄 {message}", [[btn("🗄 Архив", f"staff:{ARCHIVE_VIEW}")]])
 
 
+async def may_take(x: str, t) -> bool:
+    """Может ли сотрудник взять это обращение в работу.
+
+    Только тот, кому открыта вся очередь (сис-админ или право «видит все
+    обращения»): остальным чужие дела и не видны. Своё обращение брать нечего,
+    архивное - нечем.
+    """
+    if is_archived(t) or as_str(_get(t, "target_admin_id")) == str(x):
+        return False
+    return is_super(await admin_of(x)) or await repo.staff_sees_all(x)
+
+
+@callback("ttake")
+async def cb_ticket_take(x, arg):
+    """Взять чужое обращение в работу: оно переходит в очередь сотрудника.
+
+    Системные права и право «видит все обращения» дают право не только
+    посмотреть чужое дело, но и взять его: иначе ответ сис-админа остаётся
+    в чужой очереди, а студент не понимает, кто теперь ведёт обращение.
+    """
+    tid = to_int(arg)
+    t, staff_side = await load_ticket(x, tid)
+    if not t or not staff_side:
+        return await api.send(x, "Обращение не найдено.", [[btn("↩️ К списку", "staff")]])
+    if not await may_take(x, t):
+        return await api.send(
+            x, "🔒 Взять чужое обращение в работу может только тот, кому открыта вся "
+               "очередь: сис-админ или сотрудник с правом «видит все обращения».",
+            [[btn("↩️ К обращению", f"t:{tid}")], *BACK])
+    previous = as_str(_get(t, "target_admin_id"))
+    done, message = await repo.update_ticket(tid, x, target_admin_id=x)
+    if not done:
+        return await api.send(x, f"❌ {message}", [[btn("↩️ К обращению", f"t:{tid}")]])
+    await repo.log_action(x, "обращение взято в работу", f"№{tid} (был {previous or '—'})")
+    if previous and previous != str(x):
+        me = await admin_of(x)
+        await notify(
+            previous,
+            f"↪️ Обращение №{tid} взял в работу {person_label(_row_value(me, 'full_name'), x)}.\n"
+            "Автор и переписка те же — отвечать теперь будет он.",
+            [[btn("📂 Открыть обращение", f"t:{tid}")]],
+        )
+    return await send_ticket(x, await repo.get_ticket(tid), True)
+
+
 MESSAGE_LABEL = {"student": "уточнение студента", "staff": "ответ сотрудника"}
 EVENT_LABEL = {"status": "статус", "ready": "документ готов", "created": "создано",
                "message_student": "сообщение студента", "message_staff": "ответ сотрудника",
@@ -354,6 +555,10 @@ async def ticket_text(t, staff_side: bool) -> str:
     if when:
         place = _row_value(t, "pickup_place") or office_of(staff) or PICKUP_FALLBACK
         lines.append(f"Готово: {when} · {place}")
+    if staff_side and not _row_value(t, "pickup_place"):
+        # кабинет ещё не выбран: говорим прямо, что будет, если нажать «Готово».
+        # Студенту это не нужно - кнопки «Готово» у него нет.
+        lines.append(f"Кабинет выдачи: {pickup_hint(t)}")
     msgs = list(reversed(await repo.ticket_thread(t["ticket_id"], 10)))
     lines.append("")
     for index, m in enumerate(msgs):
@@ -376,8 +581,9 @@ async def send_ticket(x: str, t, staff_side: bool):
     """Карточка обращения. Кнопку удаления показываем только сис-админу."""
     can_delete = staff_side and is_super(await admin_of(x))
     can_archive = staff_side and await may_archive(x, t)
+    can_take = staff_side and await may_take(x, t)
     await api.send(x, await ticket_text(t, staff_side),
-                   ticket_kb(t, staff_side, can_delete, can_archive))
+                   ticket_kb(t, staff_side, can_delete, can_archive, can_take))
 
 
 def staff_roster(rows) -> str:
@@ -429,7 +635,8 @@ STAFF_QUEUE_VIEWS = (("waiting", "🔔 Ждут ответа"), ("in_progress", 
 # поэтому «Фильтр: waiting» студенту показывать нельзя.
 STAFF_VIEW_LABEL = {"waiting": "🔔 Ждут ответа", "in_progress": "🔧 В работе",
                     "ready": "📄 Готовы", "": "🗂 Все", "open": "🔓 Открытые",
-                    "new": "🆕 Без ответа", "completed": "✅ Завершённые"}
+                    "new": "🆕 Без ответа", "completed": "✅ Завершённые",
+                    MINE_VIEW: "📥 Только мои"}
 STAFF_QUEUE_FILTERS = (("open", "🔓 Открытые"), ("new", "🆕 Без ответа"),
                        ("ready", "📄 К выдаче"), ("completed", "✅ Завершённые"))
 
@@ -438,12 +645,13 @@ async def archive_rows(x: str, a) -> list:
     """Архивные обращения, которые сотрудник может открыть и вернуть в работу.
 
     admin_tickets(archived=True) отдаёт архив целиком, поэтому лишнее отсекаем
-    сами: весь архив видят системные права, остальные - только свои дела.
+    сами: весь архив видят системные права и те, кому открыт весь список
+    обращений (как в may_archive), остальные - только свои дела.
     Кнопка «📂 Вернуть из архива» в чужом деле всё равно была бы враньём:
     карточку чужого обращения сотрудник не открывает.
     """
     rows = list(await repo.admin_tickets(None, ARCHIVE_LIMIT, archived=True))
-    if is_super(a):
+    if is_super(a) or await repo.staff_sees_all(x):
         return rows
     return [row for row in rows if as_str(_get(row, "target_admin_id")) == str(x)]
 
@@ -475,9 +683,14 @@ async def send_staff_queue(x: str, view: str = "") -> None:
         return await api.send(x, "Сотрудник не найден.", BACK)
     # Системные права видят всё; остальным достаточно выданного права:
     # scope=None в admin_tickets отдаёт всю очередь, scope=x - только свои.
-    scope = None if (is_super(a) or await repo.staff_sees_all(x)) else x
+    # Право «видит все обращения» проверяется и в load_ticket: очередь, в
+    # которой нельзя открыть карточку, - это кнопка, ведущая в «не найдено».
+    super_view = is_super(a)
+    sees_all = super_view or await repo.staff_sees_all(x)
+    scope = None if sees_all else x
     if view == ARCHIVE_VIEW:
         return await send_staff_archive(x, a)
+    mine = view == MINE_VIEW
     arch_n = len(await archive_rows(x, a))
     all_rows = await repo.admin_tickets(scope)
     counts = await repo.status_counts(scope)
@@ -485,6 +698,9 @@ async def send_staff_queue(x: str, view: str = "") -> None:
         latest = await repo.latest_message_roles([row["ticket_id"] for row in all_rows])
         rows = [row for row in all_rows if latest.get(int(row["ticket_id"])) == "student"]
         view = "waiting"
+    elif mine:
+        # «Только мои»: право видеть все обращения не значит права отвечать за всех
+        rows = [row for row in all_rows if as_str(row["target_admin_id"]) == str(x)]
     elif view == "open":
         rows = [row for row in all_rows if row["status"] in OPEN_STATUSES]
     elif view in dict(STAFF_QUEUE_FILTERS):
@@ -496,7 +712,13 @@ async def send_staff_queue(x: str, view: str = "") -> None:
     lines = ["📬 Очередь обращений"]
     lines.append(" · ".join(f"{STATUS[code]} — {counts.get(code, 0)}"
                             for code in ("new", "accepted", "in_progress", "ready", "completed")))
-    if view:
+    # кто что видит - говорим прямо: молчаливый чужой список пугает людей
+    lines.append("👁 Все обращения: у вас системные права" if super_view else
+                 "👁 Все обращения: право выдано сис-админом" if sees_all else
+                 "👁 Только обращения, назначенные вам")
+    if mine:
+        lines.append(f"\nФильтр: {STAFF_VIEW_LABEL[MINE_VIEW]} — {len(rows)}")
+    elif view:
         title = STAFF_VIEW_LABEL.get(view) or CATS.get(view) or dict(STAFF_QUEUE_FILTERS).get(view)
         lines.append(f"\nФильтр: {title or view} — {len(rows)}")
     else:
@@ -515,6 +737,11 @@ async def send_staff_queue(x: str, view: str = "") -> None:
     keyboard = [[item] for item in views]
     keyboard.append([btn(f"🗄 Архив: {arch_n}", f"staff:{ARCHIVE_VIEW}")])
     keyboard.append([btn("👥 По отделам", "staffcat"), btn("🔄 Обновить", f"staff:{view}")])
+    if sees_all:
+        # право «видит все» без переключателя превращает чужую очередь в
+        # ежедневную: вернуться к своим делам можно одним нажатием
+        keyboard.append([btn("👁 Все обращения" if mine else "📥 Только мои",
+                             f"staff:{'' if mine else MINE_VIEW}")])
     if view:
         keyboard.append([btn("Сбросить фильтр", "staff:")])
     if rows:
