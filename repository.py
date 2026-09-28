@@ -1835,6 +1835,58 @@ async def list_users(limit: int = 200, group_code: str = "") -> list:
     )
 
 
+async def recent_ticket_events(limit: int = 30) -> list:
+    """Сквозная лента событий по всем обращениям: кто что сделал и когда.
+
+    Раньше события читались только по одному обращению, а ленты на главной
+    странице панели не было вовсе - «кто чем занимался» приходилось искать
+    вручную в журнале.
+    """
+    return await db.many(
+        "SELECT e.ticket_id, e.event, e.detail, e.actor_id, e.actor_name, e.created_at, "
+        "t.category, t.topic, t.student_id, "
+        "COALESCE(u.full_name, '') student_name, COALESCE(u.group_code, '') student_group "
+        "FROM ticket_events e "
+        "LEFT JOIN tickets t ON t.ticket_id = e.ticket_id "
+        "LEFT JOIN users u ON u.user_id = t.student_id "
+        "ORDER BY e.id DESC LIMIT ?", (int(limit),))
+
+
+async def event_feed_label(row) -> str:
+    """Человеческая строка ленты: кто и что сделал с обращением."""
+    who = as_str(_row_value(row, "actor_name")) or as_str(_row_value(row, "actor_id")) or "кто-то"
+    event = as_str(_row_value(row, "event"))
+    ticket_id = to_int(_row_value(row, "ticket_id"), 0)
+    labels = {
+        "created": "создал", "status": "сменил статус", "ready": "документ готов",
+        "message_student": "ответил студенту", "message_staff": "ответил сотруднику",
+        "archive": "в архив", "restore": "вернул из архива", "assign": "назначил",
+    }
+    tail = labels.get(event, event or "что-то сделал")
+    return f"№{ticket_id} · {who} {tail}"
+
+
+async def staff_sees_all_bulk() -> dict[str, bool]:
+    """Кто из сотрудников видит чужие обращения - одним запросом.
+
+    Панель спрашивала каждого сотрудника по отдельности, то есть делала
+    столько же запросов, сколько сотрудников, на самой посещаемой странице.
+    """
+    rows = await db.many("SELECT user_id, see_all_tickets FROM admins "
+                         "WHERE role_type NOT IN ('sysadmin','owner','superadmin')")
+    return {as_str(row["user_id"]): bool(row["see_all_tickets"]) for row in rows}
+
+
+async def vacations_bulk() -> dict[str, dict]:
+    """Отпуска всех сотрудников одним проходом: {user_id: {...}}.
+
+    Заменяет два запроса на каждого сотрудника при открытии списка.
+    """
+    rows = await db.many("SELECT user_id, full_name, role, position, vacation_until "
+                         "FROM admins WHERE COALESCE(vacation_until, '')<>''")
+    return {as_str(row["user_id"]): {key: row[key] for key in row.keys()} for row in rows}
+
+
 async def data_gaps() -> list[dict]:
     """Незаполненные данные, из-за которых бот работает хуже.
 
