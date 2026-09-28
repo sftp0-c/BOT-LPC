@@ -15,7 +15,7 @@ from handlers import schedules
 from handlers.common import BACK, DEFAULT_WELCOME, admin_of, api, is_super, log, need_super, notify, spawn
 from handlers.registry import callback, state
 from max_api import btn
-from utils import (CODE_TTL_CHOICES, POSITION_HINTS, STAFF_CATS, STATUS, as_str, cut_plain, fmt_when, gen_code,
+from utils import (CODE_TTL_CHOICES, POSITION_HINTS, STAFF_CATS, STAFF_CATS_BTN, STATUS, as_str, cut_plain, fmt_when, gen_code,
                    group_code, is_sysadmin_role, norm_group, profile_url, short, short_name, tail_file, to_int,
                    ttl_label, valid_group)
 
@@ -171,9 +171,12 @@ def staff_list_kb(rows) -> list:
         for row in members:
             sid = _field(row, "user_id")
             cat = _field(row, "ticket_category", default="all") or "all"
-            # в кнопке только имя: «ФИО · должность» не влезает в строку MAX
-            label = short(_field(row, "full_name"), 22)
-            keyboard.append([btn(label, f"sf:{sid}"), btn(short(STAFF_CATS.get(cat, cat), 16), f"sf:{sid}")])
+            # Ряд из двух кнопок, значит предел 16 символов, а не 22: длинное
+            # ФИО укорачиваем до «Ковалевский К.», раздел берём короткий.
+            # short() тут не годится - он ставит многоточие.
+            label = short_name(_field(row, "full_name"), max_api.row_limit(2) - 1)
+            keyboard.append([btn(label, f"sf:{sid}"),
+                             btn(STAFF_CATS_BTN.get(cat, "📄 Справки"), f"sf:{sid}")])
     return keyboard
 
 
@@ -228,8 +231,9 @@ async def send_staff_card(x: str, staff_id: str):
         f"Рассылка: {'разрешена' if _flag(_field(a, 'can_broadcast', default='0')) else 'запрещена'}\n"
         f"{load}"
     )
-    cat_row = [btn(("● " if code == cat else "") + label, f"sfc:{sid}:{code}")
-               for code, label in STAFF_CATS.items()]
+    # по две кнопки в ряду: берём короткие подписи, полные - в тексте выше
+    cat_row = [btn(("● " if code == cat else "") + STAFF_CATS_BTN[code], f"sfc:{sid}:{code}")
+               for code in STAFF_CATS_BTN]
     cat_rows = [cat_row[i:i + 2] for i in range(0, len(cat_row), 2)]
     await api.send(
         x,
@@ -528,7 +532,8 @@ async def st_add_staff_batch(x, text, p):
 
 async def send_batch_category(x: str, ids: list, position: str) -> None:
     """Категория обращений для пачки: одна кнопка на всех."""
-    row = [btn(("● " if code == "all" else "") + label, f"sfbc:{code}") for code, label in STAFF_CATS.items()]
+    row = [btn(("● " if code == "all" else "") + STAFF_CATS_BTN[code], f"sfbc:{code}")
+           for code in STAFF_CATS_BTN]
     await api.send(
         x,
         f"Должность: {position or '—'} для {len(ids)} сотрудников.\nКому они будут отвечать?",
