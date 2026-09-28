@@ -25,8 +25,6 @@ BOT_COMMANDS: list[tuple[str, str, str]] = [
 # только сис-админам: MAX показывает меню всем, поэтому команды закрыты проверкой
 ADMIN_COMMANDS: list[tuple[str, str, str]] = [
     ("admin", "Панель сис-админа", "sysadm"),
-    ("demo", "Демо-стенд: показать бота", "demo"),
-    ("demo_off", "Выйти из демо-режима", "demooff"),
 ]
 
 MAX_COMMAND_NAME = 32      # ограничение MAX

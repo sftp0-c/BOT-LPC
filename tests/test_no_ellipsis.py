@@ -61,6 +61,9 @@ def _unknown_length(node) -> str:
             limit = node.args[position]
             if isinstance(limit, ast.Constant) and isinstance(limit.value, int):
                 return "Ф" * min(limit.value, 14)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "len":
+        # количество людей или строк: в кнопке это счётчик, а не ФИО
+        return "9" * 6
     return "Ф" * 12
 
 
