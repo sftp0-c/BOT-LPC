@@ -128,17 +128,24 @@ def short_label(text: str, limit: int = BUTTON_TEXT) -> str:
     return cut.rstrip(" ,.;:—-") + "…"
 
 
+# Подпись, которая не может быть пустой. MAX отвечает 400 proto.payload
+# «Field 'text' size (0) must be at least 1» на кнопку без текста, и падает
+# при этом всё сообщение целиком, а не одна кнопка.
+EMPTY_LABEL = "·"
+
+
 def btn(text: str, payload: str) -> dict:
     """Callback-кнопка (payload ≤ 1024 символов — усекается при превышении).
 
     Здесь режется только предельный случай (кнопка одна в ряду), а настоящую
     подгонку под ширину ряда делает fit_keyboard перед отправкой.
     """
-    return {"type": "callback", "text": short_label(text), "payload": payload[:MAX_PAYLOAD]}
+    label = short_label(text) or EMPTY_LABEL
+    return {"type": "callback", "text": label, "payload": payload[:MAX_PAYLOAD]}
 
 
 def link_btn(text: str, url: str) -> dict:
-    return {"type": "link", "text": short_label(text), "url": url}
+    return {"type": "link", "text": short_label(text) or EMPTY_LABEL, "url": url}
 
 
 def fit_keyboard(keyboard: list | None) -> list:
@@ -152,7 +159,7 @@ def fit_keyboard(keyboard: list | None) -> list:
         if not row:
             continue
         limit = row_limit(len(row))
-        rows.append([dict(button, text=short_label(button.get("text", ""), limit))
+        rows.append([dict(button, text=short_label(button.get("text", ""), limit) or EMPTY_LABEL)
                      if isinstance(button, dict) else button for button in row])
     return rows
 

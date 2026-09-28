@@ -4,7 +4,6 @@ import os
 import re
 
 import clock
-import max_api
 import secrets
 from datetime import timedelta
 
@@ -95,10 +94,16 @@ def short_name(value, n: int = 0) -> str:
     списком, так что в кнопке имени хватает.
     Предел по умолчанию - ширина кнопки MAX (max_api.BUTTON_TEXT).
     """
-    n = n or max_api.BUTTON_TEXT
+    if not n:
+        # импорт локальный: на уровне модуля возникает круг
+        # utils -> max_api -> config -> utils
+        from max_api import BUTTON_TEXT
+        n = BUTTON_TEXT
     parts = [part for part in as_str(value).split() if part]
     if not parts:
-        return ""
+        # ФИО может быть не заполнено, а пустая подпись кнопки роняет всё
+        # сообщение в MAX - поэтому подставляем слово, а не пустую строку
+        return "Без имени"
     if len(" ".join(parts)) <= n:      # короткое ФИО показываем как есть
         return " ".join(parts)
     name = parts[0]
@@ -109,6 +114,20 @@ def short_name(value, n: int = 0) -> str:
         name = with_initials
     return cut_plain(name, n)
 
+
+
+def person_label(name, user_id: str = "", n: int = 0) -> str:
+    """Подпись человека в кнопке: «Ковалевский К. Ю.», а без ФИО - по MAX ID.
+
+    Без ФИО человека не опознать, тем более что ник в профиле MAX бывает
+    скрыт. MAX ID уникален и его видно в самой панели, поэтому он и идёт в
+    кнопку - остаётся скопировать и открыть карточку.
+    """
+    label = short_name(name, n)
+    if label == "Без имени":
+        digits = "".join(ch for ch in as_str(user_id) if ch.isdigit())
+        return f"ID {digits}" if digits else label
+    return label
 
 def tail_file(path, lines: int = 200, max_bytes: int = 262144) -> list[str]:
     """Последние строки файла (журнала). Читаем только хвост, а не файл целиком.

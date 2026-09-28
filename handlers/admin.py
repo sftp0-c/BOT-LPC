@@ -15,9 +15,9 @@ from handlers import schedules
 from handlers.common import BACK, DEFAULT_WELCOME, admin_of, api, is_super, log, need_super, notify, spawn
 from handlers.registry import callback, state
 from max_api import btn
-from utils import (CODE_TTL_CHOICES, POSITION_HINTS, STAFF_CATS, STAFF_CATS_BTN, STATUS, as_str, cut_plain, fmt_when, gen_code,
-                   group_code, is_sysadmin_role, norm_group, profile_url, short, short_name, tail_file, to_int,
-                   ttl_label, valid_group)
+from utils import (CODE_TTL_CHOICES, POSITION_HINTS, STAFF_CATS, STAFF_CATS_BTN, STATUS, as_str, cut_plain,
+                   fmt_when, gen_code, group_code, is_sysadmin_role, norm_group, person_label, profile_url,
+                   short, tail_file, to_int, ttl_label, valid_group)
 
 
 # ── общие мелочи для строк из БД ─────────────────────────────────────────────
@@ -175,7 +175,7 @@ def staff_list_kb(rows) -> list:
             # Ряд из двух кнопок, значит предел 16 символов, а не 22: длинное
             # ФИО укорачиваем до «Ковалевский К.», раздел берём короткий.
             # short() тут не годится - он ставит многоточие.
-            label = short_name(_field(row, "full_name"), max_api.row_limit(2) - 1)
+            label = person_label(_field(row, "full_name"), sid, max_api.row_limit(2) - 1)
             keyboard.append([btn(label, f"sf:{sid}"),
                              btn(STAFF_CATS_BTN.get(cat, "📄 Справки"), f"sf:{sid}")])
     return keyboard
@@ -641,7 +641,7 @@ async def send_people(x: str, kind: str = "", offset: int = 0):
     for row in rows:
         # в кнопке только фамилия с инициалами: полная строка с ником и группой
         # обрезалась многоточием и всё равно не читалась
-        keyboard.append([btn(short_name(_field(row, "full_name"), max_api.BUTTON_TEXT),
+        keyboard.append([btn(person_label(_field(row, "full_name"), _field(row, "user_id")),
                              f"person:{_field(row, 'user_id')}")])
     if offset > 0:
         keyboard.append([btn("⬅️ Назад", f"people:{kind}:{max(0, offset - PEOPLE_PAGE)}")])
@@ -898,7 +898,7 @@ async def send_nostaff(x: str):
     if not rows:
         return await api.send(x, "✅ Все, кто писал боту, уже сотрудники.",
                               [[btn("👥 Сотрудники", "admins")], *BACK])
-    keyboard = [[btn(short_name(_field(row, "full_name"), max_api.BUTTON_TEXT),
+    keyboard = [[btn(person_label(_field(row, "full_name"), _field(row, "user_id")),
                   f"make:{_field(row, 'user_id')}")]
                 for row in rows]
     await api.send(
