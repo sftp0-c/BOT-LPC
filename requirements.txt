@@ -5,3 +5,4 @@ aiosqlite>=0.21,<1
 python-dotenv>=1.1,<2
 python-multipart>=0.0.20,<1
 pdfplumber>=0.11,<1
+tzdata>=2025.2

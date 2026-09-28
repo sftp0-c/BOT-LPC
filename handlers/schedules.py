@@ -9,6 +9,7 @@
 Если разбор не удался (другой формат PDF, битый файл, нет pdfplumber), студент
 получает ссылку как раньше, а сис-админ — запись с причиной в панели.
 """
+import clock
 import hashlib
 import json
 import logging
@@ -119,7 +120,8 @@ async def parse_group(group: str, force: bool = False) -> ScheduleResult:
     digest = file_hash(data)
     if not force and repo.stamp_matches_file(stamp, digest):
         # файл не изменился — только освежаем время разбора
-        await db.run("UPDATE schedules SET parsed_at=datetime('now') WHERE group_code=?", (code,))
+        # время разбора - локальное, как и всё остальное в базе
+        await db.run("UPDATE schedules SET parsed_at=? WHERE group_code=?", (clock.stamp(), code))
         schedule = await schedule_from_db(code)
         if schedule.days:
             return ScheduleResult(group=code, schedule=schedule, url=url, from_cache=True)
@@ -160,9 +162,9 @@ async def parse_group(group: str, force: bool = False) -> ScheduleResult:
 async def _remember_failure(code: str, reason: str, digest: str = "", found: list[str] | None = None) -> None:
     """Запоминает неудачу, чтобы панель показала причину, а бот не дёргал сайт по каждому клику."""
     await db.run(
-        "UPDATE schedules SET parse_error=?, parsed_hash=?, found_groups=?, parsed_at=datetime('now') "
+        "UPDATE schedules SET parse_error=?, parsed_hash=?, found_groups=?, parsed_at=? "
         "WHERE group_code=?",
-        (reason[:200], digest, ",".join(found or []), code),
+        (reason[:200], digest, ",".join(found or []), clock.stamp(), code),
     )
     log.warning("расписание %s: %s", code, reason)
 

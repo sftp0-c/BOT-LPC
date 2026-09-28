@@ -36,6 +36,7 @@
 несёт только номер: номер не обрезается никогда, а длинный вопрос обрезался бы
 всегда.
 """
+import clock
 import logging
 import re
 
@@ -418,10 +419,11 @@ async def seed_defaults() -> int:
         # run_count возвращает, сколько строк запрос реально изменил: вставка
         # с WHERE NOT EXISTS не сделает ничего, если такой вопрос уже есть
         added += await db.run_count(
-            "INSERT INTO faq(question, answer, keywords, category) SELECT ?, ?, ?, ? "
+            "INSERT INTO faq(question, answer, keywords, category, created_at, updated_at) "
+            "SELECT ?, ?, ?, ?, ?, ? "
             "WHERE NOT EXISTS(SELECT 1 FROM faq WHERE question=?)",
             (item["question"], item["answer"], item["keywords"], item.get("category", ""),
-             item["question"]),
+             clock.stamp(), clock.stamp(), item["question"]),
         )
         await db.run(
             "UPDATE faq SET category=? WHERE question=? AND (category='' OR category IS NULL)",

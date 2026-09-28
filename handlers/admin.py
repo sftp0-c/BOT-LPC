@@ -1,11 +1,11 @@
 """Панель сис-админа: сотрудники, справочник групп, расписания, настройки, статистика."""
+import clock
 import ipaddress
 import time
 from urllib.parse import urlsplit
 
 import httpx
 
-import clock
 import config
 import database as db
 import max_api
@@ -1222,8 +1222,8 @@ async def st_req_position(x, text, p):
     if not row:
         await db.clear_state(x)
         return await api.send(x, "Заявка не найдена.")
-    await db.run("UPDATE staff_requests SET position=?, updated_at=datetime('now') WHERE user_id=?",
-                 (position, p["id"]))
+    await db.run("UPDATE staff_requests SET position=?, updated_at=? WHERE user_id=?",
+                 (position, clock.stamp(), p["id"]))
     await db.clear_state(x)
     await cb_request_card(p.get("actor", x), p["id"])
 
