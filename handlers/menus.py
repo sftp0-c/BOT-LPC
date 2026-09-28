@@ -6,24 +6,20 @@ import college
 import database as db
 import repository as repo
 import timetable as tt
-from handlers import demo, faq, schedules
+from handlers import faq, schedules
 from handlers.admin import audit, command as admin_command, sysadmin_ids
 from handlers.common import BACK, DEFAULT_WELCOME, admin_of, api, can_broadcast, is_super, log, need_super, notify
 from bot_commands import command_payload
 from handlers.registry import CALLBACKS, STATES, callback, state
-from max_api import MAX_ROWS, btn, link_btn
+from max_api import BUTTON_TEXT, MAX_ROWS, btn, link_btn
 from timetable import WEEKDAYS_FULL
-from utils import (OPEN_STATUSES, STATUS, as_str, fmt_time, group_code, group_digits, norm_code,
-                    norm_group, short, to_int, valid_group)
+from utils import (OPEN_STATUSES, STATUS, STATUS_SHORT, as_str, cut_plain, fmt_time, group_code,
+                    group_digits, norm_code, norm_group, short, to_int, valid_group)
 
 
 # ── входящие сообщения и команды ──────────────────────────────────────────────
 async def on_message(x: str, text: str):
     cmd = text.split()[0].lower().split("@")[0] if text.startswith("/") else ""
-    if cmd and await demo.command(x, cmd):
-        return                            # /demo и /demo_off
-    if await demo.guard_message(x, text):
-        return                            # в демо сценарии не запускаются
     if cmd == "/start":
         return await start(x)
     if cmd == "/id":
@@ -45,8 +41,6 @@ async def on_message(x: str, text: str):
     if cmd:
         payload = command_payload(cmd)
         if payload and payload.split(":")[0] in CALLBACKS:
-            if await demo.guard_callback(x, payload.split(":")[0]):
-                return                    # /new_request в демо обращение не создаёт
             if payload == "sysadm" and not is_super(await admin_of(x)):
                 return  # закрытая команда: молча, как и кнопка сис-админа
             if payload == "staff" and not (await admin_of(x)):
@@ -89,12 +83,14 @@ def student_menu():
     # «Ошибка в боте» живёт внутри «Обратной связи», а контакты - внутри
     # частых вопросов: меню студента не должно быть россыпью второстепенных
     # кнопок ради одной жалобы.
+    # Подпись в ряду из четырёх кнопок умещается в 12 символов, из двух - в 16
+    # (max_api.row_limit), поэтому «Обратная связь» стоит в своём ряду, а частые
+    # кнопки названы коротко. Полное название экрана остаётся в тексте.
     return [
-        [btn("📄 Справка", "sub:cert"), btn("💰 Бухгалтерия", "sub:acc"),
-         btn("💬 Обратная связь", "sub:fb")],
-        [btn("📅 Моё расписание", "sched"), btn("📋 Мои обращения", "tickets"),
-         btn("👤 Профиль", "profile")],
-        [btn("❓ Частые вопросы", "faq")],
+        [btn("📄 Справка", "sub:cert"), btn("💰 Бухгалтерия", "sub:acc")],
+        [btn("💬 Обратная связь", "sub:fb")],
+        [btn("📅 Расписание", "sched"), btn("📋 Обращения", "tickets"),
+         btn("👤 Профиль", "profile"), btn("❓ Вопросы", "faq")],
     ]
 
 
@@ -168,9 +164,22 @@ async def _active_group_rows():
 
 
 async def _schedule_subscription_label(x: str, group: str) -> str:
+    """Кнопка подписки на обновления расписания.
+
+    Подпись короткая: MAX рисует кнопку в одну строку и обрезает
+    «🔔 Подписаться на обновления» многоточием. Смысл кнопки объясняет
+    текст над ней - функция sub_hint.
+    """
     checker = getattr(repo, "is_schedule_subscribed", None)
     subscribed = bool(await checker(x, group)) if checker is not None else False
-    return "🔕 Отписаться от обновлений" if subscribed else "🔔 Подписаться на обновления"
+    return "🔕 Отписка" if subscribed else "🔔 Подписка"
+
+
+def sub_hint(label: str) -> str:
+    """Пояснение к кнопке подписки: в кнопке слова не помещаются."""
+    if label.startswith("🔕"):
+        return "🔕 «Отписка» — больше не присылать обновления расписания группы."
+    return "🔔 «Подписка» — бот напишет сам, когда расписание группы изменится."
 
 
 async def _group_allowed(group) -> bool:
@@ -357,11 +366,12 @@ async def view_switcher(x: str) -> list:
 async def super_menu(user_id: str) -> list:
     """Главное меню сис-админа: три блока и «ещё», чтобы не было простыни кнопок."""
     return [
-        [btn("🔔 Что сделать сегодня", "today"), btn("📋 Обращения", "staff")],
-        [btn("✍️ Создать обращение", "snew"), btn("👥 Расписания", "view_schedules")],
+        [btn("🔔 Что сделать сегодня", "today")],
+        [btn("✍️ Создать обращение", "snew")],
+        [btn("📋 Обращения", "staff"), btn("👥 Расписания", "view_schedules")],
         [btn("👥 Пользователи", "people"), btn("👥 Сотрудники", "admins")],
         [btn("🗝 Коды и заявки", "codes"), btn("👤 Кто без прав", "nostaff")],
-        [btn("⚙️ Ещё", "more"), btn("🎬 Демо-стенд", "demo")],
+        [btn("⚙️ Ещё", "more")],
         [btn("↩️ Кабинет сотрудника", "home")],
     ]
 
@@ -373,8 +383,9 @@ async def cb_more(x, arg):
         return await show_home(x)
     keyboard = [
         [btn("📊 Статистика", "stats"), btn("📢 Рассылка", "broadcast")],
-        [btn("📅 Расписания (PDF)", "schedules"), btn("👥 Группы", "groups")],
-        [btn("⚙️ Настройки", "settings"), btn("🧪 Тест и журнал", "diag")],
+        [btn("📅 Расписания (PDF)", "schedules")],
+        [btn("👥 Группы", "groups"), btn("⚙️ Настройки", "settings")],
+        [btn("🧪 Тест и журнал", "diag")],
         await view_switcher(x),
         [btn("🔐 Панель сис-админа", "sysadm")],
     ]
@@ -535,7 +546,6 @@ async def cb_help(x, arg):
 
 @callback("home")
 async def cb_home(x, arg):
-    await demo.leave(x, "кнопка «🏠 Меню»")
     await show_home(x)
 
 
@@ -592,7 +602,9 @@ async def cb_who(x, arg):
                 x,
                 f"Проверьте ФИО: {suggestion} — так вас видят в боте.\n"
                 "Если всё верно, нажмите кнопку. Иначе введите своё написание.",
-                [[btn(f"✅ {suggestion}", f"regname:{suggestion}")],
+                # ФИО может быть длиннее кнопки: полностью оно и так в тексте
+                [[btn(f"✅ {cut_plain(suggestion, BUTTON_TEXT - 2)}",
+                       f"regname:{suggestion}")],
                  [btn("✏️ Введу сам", "regname:")], *BACK],
             )
         await db.set_state(x, "reg_name")
@@ -673,7 +685,9 @@ async def _ask_group(x: str, name: str = "", typed: str = "", suggestions=None) 
     keyboard = [[btn(group["code"], f"regpick:{group['code']}")]
                 for group in suggestions[:8] if group.get("active")]
     if typed and not keyboard:
-        keyboard.append([btn(f"✍️ Создать {short(group_code(typed), 12)}", f"regnew:{group_code(typed)}")])
+        # код группы режем без многоточия: в кнопке он и так не помещается целиком
+        keyboard.append([btn(f"✍️ Создать {cut_plain(group_code(typed), 12)}",
+                             f"regnew:{group_code(typed)}")])
     keyboard.append([btn("🔤 Введу код вручную", "regpick:")])
     head = (f"{name}, группа «{typed}» в списке не найдена. Похожее — проверьте и выберите:"
             if typed else
@@ -693,7 +707,8 @@ async def _guest_home(x: str):
         "Позже сможете зарегистрироваться как студент.",
         [
             [btn("📚 Все расписания", "view_schedules")],
-            [btn("🎓 Я всё-таки студент", "who:student"), btn("👔 Я сотрудник", "who:staff")],
+            [btn("🎓 Я всё-таки студент", "who:student")],
+            [btn("👔 Я сотрудник", "who:staff")],
         ],
     )
 
@@ -866,7 +881,8 @@ async def cb_academic(x, arg):
         x,
         "🎓 Учебная часть\nВыберите тему обращения:",
         [
-            [btn("📚 Учёба", "topic:academic:study"), btn("🗓 Период обучения", "topic:academic:period")],
+            [btn("📚 Учёба", "topic:academic:study")],
+            [btn("🗓 Период обучения", "topic:academic:period")],
             [btn("💼 Вакансии", "topic:academic:vacancies"), btn("✍️ Подать заявку", "new:academic")],
             [btn("⬅️ Назад", "back")],
         ],
@@ -936,9 +952,11 @@ async def cb_profile(x, arg):
             x,
             f"👤 Профиль\nФИО: {full_name}\nГруппа: {group}\n"
             f"Учебная часть: {contact}",
-            [[btn("🗂 Всё моё", "myall"),
-              btn("✏️ Изменить ФИО", "pf:name"), btn("✏️ Изменить группу", "pf:group")],
-             [btn("🏫 Контакты колледжа", "college"), btn("❓ Частые вопросы", "faq")],
+            [[btn("🗂 Всё моё", "myall")],
+             [btn("✏️ Изменить ФИО", "pf:name")],
+             [btn("✏️ Изменить группу", "pf:group")],
+             [btn("🏫 Контакты колледжа", "college")],
+             [btn("❓ Частые вопросы", "faq")],
              *BACK],
         )
 
@@ -949,7 +967,8 @@ async def cb_college(x, arg):
     await api.send(
         x, await college.text(),
         [[btn("❓ Частые вопросы", "faq")],
-         [btn("✍️ В учебную часть", "new:certificates"), btn("🏠 Меню", "home")]],
+         [btn("✍️ В учебную часть", "new:certificates")],
+         [btn("🏠 Меню", "home")]],
     )
 
 
@@ -996,10 +1015,16 @@ async def _my_subscription_line(x: str, group: str) -> str:
     return f"подписка на обновления группы {group}" if subscribed else "подписок нет"
 
 
-def _ticket_label(row) -> str:
-    """«№12 · 🆕 Новое» — подпись обращения и в тексте сводки, и на кнопке."""
+def _ticket_label(row, short_status: bool = False) -> str:
+    """«№12 · 🆕 Новое» — подпись обращения и в тексте сводки, и на кнопке.
+
+    На кнопке статус короткий («📄 Готово»): «№1234 · 📄 Готово к выдаче» в одну
+    строку кнопки не влезает, и MAX обрезал бы его многоточием. Полный статус
+    остаётся в тексте сводки.
+    """
     status = as_str(_row_value(row, "status"))
-    return f"№{_row_value(row, 'ticket_id')} · {STATUS.get(status, status or 'без статуса')}"
+    table = STATUS_SHORT if short_status else STATUS
+    return f"№{_row_value(row, 'ticket_id')} · {table.get(status, status or 'без статуса')}"
 
 
 @callback("myall")
@@ -1032,7 +1057,7 @@ async def cb_my_all(x, arg):
         f"ID: {x}",
         f"В боте с: {fmt_time(_row_value(user, 'created_at'), '%d.%m.%Y') or 'неизвестно'}",
     ]
-    keyboard = [[btn(_ticket_label(row), f"t:{_row_value(row, 'ticket_id')}")]
+    keyboard = [[btn(_ticket_label(row, short_status=True), f"t:{_row_value(row, 'ticket_id')}")]
                 for row in rows[:MY_TICKETS_PREVIEW]]
     keyboard += [
         [btn("↩️ В меню", "home")],
@@ -1217,8 +1242,10 @@ async def cb_view_schedules(x, arg):
     page = min(page, pages - 1)
     chunk = codes[page * GROUPS_PAGE:(page + 1) * GROUPS_PAGE]
     keyboard = []
+    hint = ""
     for code in chunk:
         label = await _schedule_subscription_label(x, code)
+        hint = hint or sub_hint(label)      # смысл кнопки для всех групп один
         keyboard.append([btn(f"📅 {code}", f"sched:{code}"), btn(label, f"schedsub:{code}")])
     nav = []
     if page:
@@ -1230,7 +1257,7 @@ async def cb_view_schedules(x, arg):
     text = "📅 Выберите группу для расписания:"
     if pages > 1:
         text += f"\nГрупп: {len(codes)}, страница {page + 1} из {pages}."
-    await api.send(x, text, [*keyboard, *BACK])
+    await api.send(x, f"{text}\n{hint}", [*keyboard, *BACK])
 
 
 async def _schedule_group_codes() -> list[str]:
@@ -1286,9 +1313,9 @@ async def send_schedule(x: str, group: str, back_to_list: bool = False, view: st
 
     if not result.has_lessons:
         # разбор не получился — отдаём ссылку, как раньше, и честно говорим об этом
-        hint = f"\n(разобрать не удалось: {short(result.reason, 80)})" if result.reason else ""
+        note = f"\n(разобрать не удалось: {short(result.reason, 80)})" if result.reason else ""
         return await api.send(
-            x, f"📅 Расписание группы {group} — PDF{hint}\n{url}",
+            x, f"📅 Расписание группы {group} — PDF{note}\n{url}\n{sub_hint(label)}",
             [[link_btn("Открыть расписание", url)], tail],
         )
 
@@ -1306,7 +1333,7 @@ async def send_schedule(x: str, group: str, back_to_list: bool = False, view: st
          btn("⏰ Ближайшие", f"schednext:{group}")],
         [btn("📚 Вся неделя", f"sched:{group}")],
     ]
-    await api.send(x, text, [*keyboard, tail])
+    await api.send(x, f"{text}\n{sub_hint(label)}", [*keyboard, tail])
 
 
 @callback("schedday")
@@ -1321,7 +1348,7 @@ async def cb_schedule_day(x, arg):
     day = result.schedule.day(to_int(weekday, datetime.now().weekday()))
     text = tt.format_day(day) if day and not day.is_empty else "📅 На этот день пар нет"
     label = await _schedule_subscription_label(x, group)
-    return await api.send(x, text, [
+    return await api.send(x, f"{text}\n{sub_hint(label)}", [
         [btn("📚 Вся неделя", f"sched:{group}"), btn("⏰ Ближайшие", f"schednext:{group}")],
         [btn(label, f"schedsub:{group}"), btn("⬅️ К списку", "view_schedules")],
     ])

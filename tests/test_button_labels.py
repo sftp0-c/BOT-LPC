@@ -8,7 +8,12 @@ from pathlib import Path
 
 import max_api
 import pytest
+
+import database as db
+import repository as repo
 from conftest import add_staff, press, register, say
+from handlers import tickets
+from utils import short_name
 
 STUDENT = "100"
 STAFF = "500"
@@ -67,6 +72,42 @@ def test_btn_and_link_btn_both_cut():
     assert len(max_api.link_btn("б" * 80, "https://example.org")["text"]) <= max_api.BUTTON_TEXT
 
 
+# ── длинные ФИО в кнопках ───────────────────────────────────────────────────
+LONG_NAME = "Ковалевский Константин Юрьевич Петрович"   # 36 символов - 30 и больше
+async def jump_ticket_numbers(to: int = 1233) -> None:
+    """Довести счётчик обращений до четырёхзначных номеров.
+
+    Подпись кнопки собирается из номера, статуса и пометки, поэтому 1234 -
+    самый строгий случай: лишний знак съедает строку.
+    """
+    await db.run("DELETE FROM sqlite_sequence WHERE name='tickets'")
+    await db.run("INSERT INTO sqlite_sequence(name, seq) VALUES('tickets', ?)", (to,))
+
+
+def test_short_name_keeps_surname_and_initials():
+    assert short_name("Ковалевский Константин Юрьевич") == "Ковалевский К. Ю."
+
+
+def test_short_name_keeps_short_name_whole():
+    """Короткое ФИО кнопка вмещает целиком - сокращать его незачем."""
+    assert short_name("Соколова Мария") == "Соколова Мария"
+    assert short_name("Петрова Анна") == "Петрова Анна"
+
+
+def test_short_name_never_ends_with_dots():
+    for name in (LONG_NAME, "Иванов", "Иванов Иван Иванович", "Ф" * 40, ""):
+        label = short_name(name)
+        assert not label.endswith("…"), f"многоточие в подписи: «{label}»"
+        assert len(label) <= max_api.BUTTON_TEXT
+
+
+def test_short_name_keeps_surname_even_when_it_alone_is_long():
+    """Когда инициалы не влезают, остаётся узнаваемая фамилия, а не обрывок."""
+    label = short_name("Ковалевский-Абрамович Константин", 16)
+    assert label.startswith("Ковалевский")
+    assert not label.endswith("…")
+
+
 # ── статическая проверка исходников ────────────────────────────────────────
 @pytest.mark.parametrize("source", SOURCES, ids=lambda p: p.name)
 def test_no_button_label_longer_than_the_limit(source: Path):
@@ -115,7 +156,7 @@ async def test_staff_screens_have_short_labels(api):
 async def test_sysadmin_screens_have_short_labels(api):
     await add_staff(STAFF, "Соколова Мария Сергеевна", position="Методист учебной части")
     for payload in ("admins", "people", "codes", "settings", "groups", "today",
-                    "nostaff", "syslist", "demo", "more", "broadcast"):
+                    "nostaff", "syslist", "more", "broadcast"):
         await press(SYS, payload)
     for label in all_labels(api):
         assert len(label) <= max_api.BUTTON_TEXT, f"длинная подпись: «{label}»"
@@ -127,6 +168,112 @@ async def test_schedule_screens_have_short_labels(api):
         await press(STUDENT, payload)
     for label in all_labels(api):
         assert len(label) <= max_api.BUTTON_TEXT, f"длинная подпись: «{label}»"
+
+
+def fitted_labels(api) -> list[str]:
+    """Подписи после подгонки под ширину ряда - ровно то, что рисует MAX.
+
+    max_api.fit_keyboard режет подпись по числу кнопок в ряду (одна - 26 символов,
+    две - 16, три - 14, четыре и больше - 12), поэтому проверять надо результат
+    подгонки, а не то, что обработчик отдал в api.send.
+    """
+    out: list[str] = []
+    for _to, _text, keyboard in api.sent:
+        out += [b["text"] for row in max_api.fit_keyboard(keyboard or []) for b in row]
+    return out
+
+
+def assert_no_cut_labels(api, where: str = "") -> None:
+    """Ни одна подпись на экране не обрезана и не длиннее предела MAX."""
+    for label in fitted_labels(api):
+        assert len(label) <= max_api.BUTTON_TEXT, f"{where}: длинная подпись «{label}»"
+        assert not label.endswith("…"), f"{where}: обрезанная подпись «{label}»"
+
+
+async def ticket_with_long_names() -> int:
+    """Обращение №1234 к сотруднику с 36-символьным ФИО.
+
+    Номер в четыре знака и длинное ФИО - самые частые причины обрезки подписи:
+    «Ковалевский Константин Юрьевич…» и «№1234 · 📄 Готово к выдаче».
+    """
+    await register(STUDENT, "Иванов Иван Иванович", "ис-21")
+    await add_staff(STAFF, LONG_NAME, category="all", position="Методист учебной части")
+    await add_staff(DIRECTOR, LONG_NAME, category="all", position="Методист учебной части")
+    await repo.set_admin_profile(DIRECTOR, role="director", position="Методист")
+    await repo.add_template("Напоминание о сроках оплаты обучения", "Текст ответа", "feedback")
+    await jump_ticket_numbers()
+    await press(STUDENT, "sub:fb")
+    await press(STUDENT, "fbrole:director")        # список людей должности
+    await press(STUDENT, "new:certificates")        # список сотрудников раздела
+    await press(STUDENT, "ask:certificates:place")
+    await press(STUDENT, f"pick:feedback:{STAFF}")
+    await say(STUDENT, "Нужна справка")
+    await press(STUDENT, "ticketsend")
+    return 1234
+
+
+async def test_student_screens_have_no_cut_labels(api):
+    """Экраны студента: списки сотрудников, обращения, сводка - без многоточия."""
+    tid = await ticket_with_long_names()
+    api.sent.clear()          # проверяем экраны, а не подготовку данных
+    for payload in ("home", "sub:cert", "sub:acc", "sub:fb", "profile", "myall",
+                    "tickets", "tickets:archive", "college", "faq", "sched",
+                    f"t:{tid}"):
+        await press(STUDENT, payload)
+    assert_no_cut_labels(api, "студент")
+
+
+async def test_staff_screens_have_no_cut_labels(api):
+    """Экраны сотрудника: очередь, карточка, архив и шаблоны - без многоточия."""
+    tid = await ticket_with_long_names()
+    api.sent.clear()          # проверяем экраны, а не подготовку данных
+    for payload in ("home", "staff", "staffv:waiting", "staffv:in_progress",
+                    f"staff:{tid}", "staff:archive", f"t:{tid}", f"tpl:{tid}"):
+        await press(STAFF, payload)
+    assert_no_cut_labels(api, "сотрудник")
+
+
+async def test_queue_button_with_four_digit_number(api):
+    """«№1234 · 🔔 ждёт» и «№1234 · 🔧 В работе» влезают в строку кнопки MAX."""
+    await ticket_with_long_names()
+    api.sent.clear()          # проверяем экраны, а не подготовку данных
+    await press(STAFF, "staff")
+    assert "№1234 · 🔔 ждёт" in labels_of(api, STAFF)     # ждёт сотрудник
+    await press(STAFF, "rp:1234")
+    await say(STAFF, "Отвечаю")
+    await press(STAFF, "staff")
+    assert any(label.startswith("№1234 · ") and "Принято" in label
+               for label in labels_of(api, STAFF))
+    await press(STUDENT, "tickets")
+    assert "№1234 · 📌 ждёте" in labels_of(api, STUDENT)   # ждёт студент
+    assert_no_cut_labels(api, "очередь")
+
+
+async def test_queue_rows_stay_short_with_long_statuses(env, api):
+    """Даже самый длинный статус и номер в четыре знака не выталкивают многоточие."""
+    rows = [{"ticket_id": 1234, "status": "completed"},
+            {"ticket_id": 5678, "status": "in_progress"},
+            {"ticket_id": 9999, "status": "ready"}]
+    keyboard = await tickets.ticket_rows_kb(rows, staff_side=True)
+    labels = [b["text"] for row in keyboard for b in row]
+    assert "№1234 · ✅ Завершено" in labels
+    for label in labels:
+        assert len(label) <= max_api.BUTTON_TEXT
+        assert not label.endswith("…")
+
+
+async def test_subscription_button_is_short_and_explained(api):
+    """«🔔 Подписка» влезает в кнопку, а смысл объяснён текстом над ней."""
+    await register(STUDENT, "Иванов Иван Иванович", "ис-21")
+    await repo.upsert_group("ИС-21", "Информационные системы")
+    await repo.upsert_schedule("ИС-21", "https://college.example/is-21.pdf")
+    await press(STUDENT, "view_schedules")
+    assert "🔔 Подписка" in labels_of(api, STUDENT)
+    assert "Подписка" in api.last(STUDENT)[1]
+    await repo.set_schedule_subscription(STUDENT, "ИС-21")
+    await press(STUDENT, "view_schedules")
+    assert "🔕 Отписка" in labels_of(api, STUDENT)
+    assert "Отписка" in api.last(STUDENT)[1]
 
 
 async def test_labels_have_no_double_spaces(api):

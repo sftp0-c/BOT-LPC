@@ -67,6 +67,45 @@ def short(text: str, n: int) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
+def cut_plain(text: str, n: int) -> str:
+    """Обрезка без многоточия: режем по границе слова, хвост убираем молча.
+
+    short() оставляет «…», а в подписи кнопки многоточие читается как «имя
+    обрезалось» и ничего не сообщает. Здесь подпись просто заканчивается.
+    """
+    text = " ".join(as_str(text).split())
+    if len(text) <= n or n < 2:
+        return text
+    cut = text[:n].rstrip()
+    space = cut.rfind(" ")
+    if space >= n // 2:                       # не отбрасываем полслова ради пары букв
+        cut = cut[:space]
+    return cut.rstrip(" ,.;:—-") or text[:n]
+
+
+def short_name(value, n: int = 26) -> str:
+    """ФИО для кнопки: целиком, если влезает, иначе фамилия с инициалами.
+
+    «Соколова Мария» кнопка вмещает целиком, а «Ковалевский Константин Юрьевич»
+    пришлось бы обрезать многоточием - длинное ФИО сокращаем до «Ковалевский
+    К. Ю.». Полное ФИО и должность сотрудника и так перечислены текстом над
+    списком, так что в кнопке имени хватает.
+    Предел по умолчанию - ширина кнопки MAX (max_api.BUTTON_TEXT).
+    """
+    parts = [part for part in as_str(value).split() if part]
+    if not parts:
+        return ""
+    if len(" ".join(parts)) <= n:      # короткое ФИО показываем как есть
+        return " ".join(parts)
+    name = parts[0]
+    for part in parts[1:]:
+        with_initials = f"{name} {part[0].upper()}."
+        if len(with_initials) > n:            # инициалы лишние - оставляем как есть
+            break
+        name = with_initials
+    return cut_plain(name, n)
+
+
 def tail_file(path, lines: int = 200, max_bytes: int = 262144) -> list[str]:
     """Последние строки файла (журнала). Читаем только хвост, а не файл целиком.
 
@@ -243,6 +282,16 @@ STATUS = {
     "accepted": "👌 Принято",
     "in_progress": "🔧 В работе",
     "ready": "📄 Готово к выдаче",
+    "completed": "✅ Завершено",
+    "rejected": "❌ Отклонено",
+}
+# Подпись статуса в кнопке: «№1234 · 📄 Готово к выдаче» в одну строку не
+# влезает, MAX обрезал бы её многоточием. В тексте статус остаётся полным.
+STATUS_SHORT = {
+    "new": "🆕 Новое",
+    "accepted": "👌 Принято",
+    "in_progress": "🔧 В работе",
+    "ready": "📄 Готово",
     "completed": "✅ Завершено",
     "rejected": "❌ Отклонено",
 }

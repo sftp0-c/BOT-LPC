@@ -7,7 +7,6 @@ import os
 import database as db
 import repository as repo
 from handlers.admin import STAFF_ROLES, audit
-from handlers import demo
 from handlers.common import BACK, admin_of, api, is_super, log, notify
 from handlers.menus import need_author
 from handlers.registry import callback, state
@@ -18,10 +17,13 @@ from utils import (
     CATS,
     OPEN_STATUSES,
     STATUS,
+    STATUS_SHORT,
     TOPIC_CATS,
     as_str,
+    cut_plain,
     fmt_when,
     short,
+    short_name,
     to_int,
     topic_title,
 )
@@ -40,6 +42,10 @@ READY_MAX = 100
 PICKUP_FALLBACK = "кабинет не указан"
 OFFICE_REQUIRED = "Сначала укажите кабинет в карточке сотрудника"
 LEGACY_COMPLETED_FROM = ("new", "accepted", "in_progress")
+ARCHIVE_VIEW = "archive"        # значение фильтра очереди: архив обращений
+ARCHIVE_LIMIT = 200             # сколько архивных обращений держим в одном экране
+ARCHIVE_BTN = "🗄 В архив"      # закрытое дело - в архив
+RESTORE_BTN = "📂 Вернуть из архива"
 
 
 def _get(row, key: str, default=None):
@@ -74,13 +80,14 @@ def role_label(person) -> str:
 
 
 def staff_pick_label(person) -> str:
-    """Подпись кнопки выбора сотрудника - только имя.
+    """Подпись кнопки выбора сотрудника - фамилия с инициалами.
 
-    Должность в кнопку не влезает: MAX рисует подпись в одну строку и обрезает
-    многоточием, а «Петрова Мария Сергее…» не отличить ни от кого. Должность
-    показывается текстом над списком, там места хватает.
+    Ни должность, ни полное ФИО в кнопку не влезают: MAX рисует подпись в одну
+    строку и обрезает, а «Соколова Мария Сергее…» не отличить ни от кого.
+    Инициалы помещаются всегда («Соколова М. С.»), а полное ФИО и должность
+    показываются текстом над списком - там места хватает.
     """
-    return short(_row_value(person, "full_name"), max_api.BUTTON_TEXT)
+    return short_name(_row_value(person, "full_name"), max_api.BUTTON_TEXT)
 
 
 async def ticket_people(t) -> dict:
@@ -113,9 +120,15 @@ def ready_deadline(kind: str) -> str:
     return f"{day:%d.%m.%Y} до {READY_HOUR}:00"
 
 
-async def load_ticket(x: str, ticket_id: int):
+def is_archived(t) -> bool:
+    """Обращение убрано в архив (deleted_at проставлен)."""
+    return bool(as_str(_get(t, "deleted_at")).strip())
+
+
+async def load_ticket(x: str, ticket_id: int, include_archived: bool = False):
     """→ (обращение, сторона_сотрудника). (None, False), если обращения нет или доступа нет."""
-    t = await repo.get_ticket(ticket_id)
+    t = (await repo.get_ticket(ticket_id) if not include_archived
+         else await repo.get_ticket(ticket_id, include_archived=True))
     if not t:
         return None, False
     if t["student_id"] == x:
@@ -126,27 +139,61 @@ async def load_ticket(x: str, ticket_id: int):
     return None, False
 
 
+async def may_archive(x: str, t) -> bool:
+    """Кто убирает обращение в архив и возвращает его обратно.
+
+    Ответственный за обращение и тот, кому открыта вся очередь (staff_sees_all).
+    Студенту архив недоступен: закрытое дело убирает сотрудник, который его вёл,
+    иначе архив стал бы кнопкой «спрятать неудобное».
+    """
+    a = await admin_of(x)
+    if not a:
+        return False
+    if is_super(a) or as_str(_get(t, "target_admin_id")) == str(x):
+        return True
+    return await repo.staff_sees_all(x)
+
+
 PICKUP_PLACE = "115"    # кабинет выдачи по умолчанию; исключения - в панели
 
 
-def ticket_kb(t, staff_side: bool, can_delete: bool = False):
+def _chunk(buttons: list, per_row: int = 2) -> list:
+    """Ряды по per_row кнопок: чем их больше в ряду, тем короче подпись (max_api.row_limit)."""
+    return [buttons[i : i + per_row] for i in range(0, len(buttons), per_row)]
+
+
+def ticket_kb(t, staff_side: bool, can_delete: bool = False, can_archive: bool = False):
+    """Кнопки карточки обращения.
+
+    can_delete - удалить может только сис-админ; can_archive - убрать в архив
+    и вернуть обратно ответственный за обращение и тот, кому открыта вся очередь.
+    Студенту ни того, ни другого: архив закрывает сотрудник, а не автор.
+    """
     tid, status = t["ticket_id"], t["status"]
     if not staff_side:
         rows = [[btn("✍️ Написать сотруднику", f"rp:{tid}")]] if status in OPEN_STATUSES else []
         return [*rows, [btn("↩️ К списку", "tickets")]]
+    if is_archived(t):
+        # архивное дело закрыто: ответить и сменить статус уже нельзя,
+        # остаётся только вернуть его в работу
+        rows = [[btn("↩️ К списку", "staff")]]
+        if can_archive:
+            rows.append([btn(RESTORE_BTN, f"tarch:{tid}")])   # подпись длинная - одна в ряду
+        return rows
     rows = [[btn("💬 Ответить", f"rp:{tid}")]]
-    changes = [btn(STATUS[code], f"st:{tid}:{code}") for code in NEXT_STATUSES.get(status, ())]
+    # статус в кнопке короткий: в ряду из двух кнопок помещается 16 символов,
+    # а «📄 Готово к выдаче» обрезалось бы многоточием (полный - в тексте карточки)
+    changes = [btn(STATUS_SHORT[code], f"st:{tid}:{code}") for code in NEXT_STATUSES.get(status, ())]
     rows += [changes[i : i + 2] for i in range(0, len(changes), 2)]
-    tail = [btn("↩️ К списку", "staff")]
+    tail = [btn("↩️ К списку", "staff"), btn("⚡ Шаблоны", f"tpl:{tid}"),
+            btn("📝 Заметка", f"note:{tid}"), btn("↪️ Переслать", f"fwd:{tid}")]
+    if as_str(t.get("pickup_place")).strip() != PICKUP_PLACE or status not in ("ready", "completed"):
+        tail.append(btn(f"✅ Готово · {PICKUP_PLACE}", f"tdready:{tid}"))
+    if can_archive:
+        tail.append(btn(ARCHIVE_BTN, f"tarch:{tid}"))
     if can_delete:
         tail.append(btn("🗑 Удалить", f"tdel:{tid}"))
-    if staff_side:
-        tail.insert(0, btn("⚡ Шаблоны", f"tpl:{tid}"))
-        tail.insert(1, btn("📝 Заметка", f"note:{tid}"))
-        tail.insert(2, btn("↪️ Переслать", f"fwd:{tid}"))
-        if as_str(t.get("pickup_place")).strip() != PICKUP_PLACE or status not in ("ready", "completed"):
-            tail.append(btn(f"✅ Готово · {PICKUP_PLACE}", f"tdready:{tid}"))
-    return [*rows, tail]
+    return [*rows, *_chunk(tail, 2)]
 
 
 @callback("tdready")
@@ -209,6 +256,40 @@ async def cb_ticket_delete_yes(x, arg):
     return await api.send(x, f"🗑 {message}", [[btn("↩️ К списку", "staff")]])
 
 
+@callback("tarch")
+async def cb_ticket_archive(x, arg):
+    """Сотрудник убирает закрытое обращение в архив и возвращает его в работу.
+
+    Архивирование - обычное дело, а не привилегия сис-админа: раньше закрытые
+    дела годами висели в общем списке просто потому, что убрать их было некому.
+    """
+    tid = to_int(arg)
+    t = await repo.get_ticket(tid, include_archived=True)
+    if not t:
+        return await api.send(x, "Обращение не найдено.", [[btn("↩️ В меню", "home")]])
+    if not await may_archive(x, t):
+        return await api.send(
+            x, "🔒 Убрать обращение в архив может только сотрудник, которому оно "
+               "назначено или у которого открыт весь список обращений.",
+            [[btn("↩️ В меню", "home")]])
+    if is_archived(t):
+        done, message = await repo.restore_ticket(tid, x)
+        if not done:
+            return await api.send(x, f"❌ {message}", [[btn("↩️ К обращению", f"t:{tid}")]])
+        await repo.log_action(x, "обращение возвращено из архива", f"№{tid}")
+        return await api.send(x, f"📂 {message}", [[btn("📬 К очереди", "staff")]])
+    done, message = await repo.archive_ticket(tid, x)
+    if not done:
+        return await api.send(x, f"❌ {message}", [[btn("↩️ К обращению", f"t:{tid}")]])
+    await repo.log_action(x, "обращение убрано в архив", f"№{tid} (автор {t['student_id']})")
+    # студенту говорим прямо: дело закрыто и лежит в архиве, а не пропало
+    await notify(t["student_id"],
+                 f"🗄 Обращение №{tid} убрано в архив: сотрудник закрыл его как решённое. "
+                 "Переписка сохранена, посмотреть его можно в «🗄 Архив» списка обращений.",
+                 [[btn("🗄 Мои архивные", f"tickets:{ARCHIVE_VIEW}")]])
+    return await api.send(x, f"🗄 {message}", [[btn("🗄 Архив", f"staff:{ARCHIVE_VIEW}")]])
+
+
 MESSAGE_LABEL = {"student": "уточнение студента", "staff": "ответ сотрудника"}
 EVENT_LABEL = {"status": "статус", "ready": "документ готов", "created": "создано",
                "message_student": "сообщение студента", "message_staff": "ответ сотрудника",
@@ -245,6 +326,9 @@ async def ticket_text(t, staff_side: bool) -> str:
     t = await ticket_people(t)
     lines = [f"📂 Обращение №{t['ticket_id']} · {STATUS.get(t['status'], t['status'])}",
              cat_topic_line(t["category"], _row_value(t, "topic"))]
+    if is_archived(t):
+        # и сотруднику, и студенту говорим правду: дело в архиве, но не удалено
+        lines.append("🗄 Обращение в архиве: убрано из очереди, переписка и история сохранены.")
     lines.append(f"Студент: {_person(_get(t, 'student'), 'group_code') or '—'}")
     staff = _get(t, "staff")
     lines.append(f"Ответственный: {_person(staff, 'user_id', 'ID ') or '—'}")
@@ -275,7 +359,9 @@ async def ticket_text(t, staff_side: bool) -> str:
 async def send_ticket(x: str, t, staff_side: bool):
     """Карточка обращения. Кнопку удаления показываем только сис-админу."""
     can_delete = staff_side and is_super(await admin_of(x))
-    await api.send(x, await ticket_text(t, staff_side), ticket_kb(t, staff_side, can_delete))
+    can_archive = staff_side and await may_archive(x, t)
+    await api.send(x, await ticket_text(t, staff_side),
+                   ticket_kb(t, staff_side, can_delete, can_archive))
 
 
 def staff_roster(rows) -> str:
@@ -290,22 +376,31 @@ def staff_roster(rows) -> str:
     return "Кто принимает:\n" + "\n".join(lines) if lines else ""
 
 
-async def ticket_rows_kb(rows, staff_side: bool = False):
-    """Кнопки списка обращений; помечает те, где последнее слово за сотрудником."""
-    latest = await repo.latest_message_roles([row["ticket_id"] for row in rows])
+async def ticket_rows_kb(rows, staff_side: bool = False, marks: bool = True):
+    """Кнопки списка обращений; помечает те, где последнее слово не за сотрудником.
+
+    Статус в кнопке короткий, а пометка «ждёт» заменяет его совсем: важнее
+    сказать, что дело ждёт, чем назвать статус - «№1234 · 🔔 ждёт» и
+    «№1234 · 🔧 В работе» помещаются в строку MAX, а «№1234 · 🔧 В работе ·
+    🔔 ждёт» обрезался бы многоточием. Полный статус остаётся в тексте карточки.
+    """
+    latest = await repo.latest_message_roles([row["ticket_id"] for row in rows]) if marks else {}
     buttons = []
     for r in rows:
         mark = ""
-        last = latest.get(int(r["ticket_id"]))
-        # пометки короткие: в кнопке помещается «№12 · В работе · 🔔 ждёт»,
-        # а длинная формулировка обрезалась бы многоточием
-        if last == "student":
-            mark = " · 🔔 ждёт" if staff_side else ""
-        elif last == "staff":
-            mark = " · 📌 ждёте" if not staff_side else ""
+        if marks:
+            last = latest.get(int(r["ticket_id"]))
+            # «🔔 ждёт» показываем сотруднику, «📌 ждёте» - студенту:
+            # иначе человек не понимает, кому теперь писать
+            if staff_side and last == "student":
+                mark = "🔔 ждёт"
+            elif not staff_side and last == "staff":
+                mark = "📌 ждёте"
         # раздел в кнопку не влезает (MAX обрезает), он и так виден в карточке
-        buttons.append(btn(f"№{r['ticket_id']} · {STATUS[r['status']]}{mark}",
-                           f"t:{r['ticket_id']}"))
+        number = f"№{r['ticket_id']} · "
+        status = as_str(r["status"])
+        label = f"{number}{mark}" if mark else f"{number}{STATUS_SHORT.get(status, status)}"
+        buttons.append(btn(label, f"t:{r['ticket_id']}"))
     return [[item] for item in buttons]
 
 
@@ -323,6 +418,36 @@ STAFF_QUEUE_FILTERS = (("open", "🔓 Открытые"), ("new", "🆕 Без �
                        ("ready", "📄 К выдаче"), ("completed", "✅ Завершённые"))
 
 
+async def archive_rows(x: str, a) -> list:
+    """Архивные обращения, которые сотрудник может открыть и вернуть в работу.
+
+    admin_tickets(archived=True) отдаёт архив целиком, поэтому лишнее отсекаем
+    сами: весь архив видят системные права, остальные - только свои дела.
+    Кнопка «📂 Вернуть из архива» в чужом деле всё равно была бы враньём:
+    карточку чужого обращения сотрудник не открывает.
+    """
+    rows = list(await repo.admin_tickets(None, ARCHIVE_LIMIT, archived=True))
+    if is_super(a):
+        return rows
+    return [row for row in rows if as_str(_get(row, "target_admin_id")) == str(x)]
+
+
+async def send_staff_archive(x: str, a) -> None:
+    """Экран архива: закрытые дела убраны из очереди, но их можно вернуть.
+
+    Отдельный экран обязателен: из очереди архивное обращение уже не открыть,
+    и без этого кнопка «📂 Вернуть из архива» ни к чему не вела бы.
+    """
+    rows = await archive_rows(x, a)
+    lines = [f"🗄 Архив обращений — {len(rows)}",
+             "Закрытые дела: они убраны из очереди, но переписка и история сохранены.",
+             "Вернуть обращение в работу можно кнопкой на его карточке."]
+    keyboard = await ticket_rows_kb(rows[:15], True, marks=False) if rows else \
+        [[btn("🗂 Архив пуст", "noop")]]
+    keyboard += [[btn("📬 К очереди", "staff"), btn("🔄 Обновить", f"staff:{ARCHIVE_VIEW}")], *BACK]
+    await api.send(x, "\n".join(lines), keyboard)
+
+
 async def send_staff_queue(x: str, view: str = "") -> None:
     """Очередь сотрудника: счётчики, фильтры и список.
 
@@ -335,6 +460,9 @@ async def send_staff_queue(x: str, view: str = "") -> None:
     # Системные права видят всё; остальным достаточно выданного права:
     # scope=None в admin_tickets отдаёт всю очередь, scope=x - только свои.
     scope = None if (is_super(a) or await repo.staff_sees_all(x)) else x
+    if view == ARCHIVE_VIEW:
+        return await send_staff_archive(x, a)
+    arch_n = len(await archive_rows(x, a))
     all_rows = await repo.admin_tickets(scope)
     counts = await repo.status_counts(scope)
     if view == "__waiting__":
@@ -366,7 +494,10 @@ async def send_staff_queue(x: str, view: str = "") -> None:
                  else sum(1 for row in all_rows
                           if not code or as_str(row["status"]) == code))
         views.append(btn(f"{'▸ ' if view == code else ''}{label} {count}", f"staffv:{code}"))
-    keyboard = [views[0:2], views[2:4]]
+    # счётчики - по одной кнопке в ряду: в паре помещается 16 символов, а
+    # «🔔 Ждут ответа 1234» в неё не влезает и обрезалось бы многоточием
+    keyboard = [[item] for item in views]
+    keyboard.append([btn(f"🗄 Архив: {arch_n}", f"staff:{ARCHIVE_VIEW}")])
     keyboard.append([btn("👥 По отделам", "staffcat"), btn("🔄 Обновить", f"staff:{view}")])
     if view:
         keyboard.append([btn("Сбросить фильтр", "staff:")])
@@ -402,8 +533,6 @@ async def cb_staff_filter(x, arg):
 
 @callback("snew")
 async def cb_new_ticket_start(x, arg):
-    if await demo.deny(x, "создание обращения"):
-        return
     """Создание обращения из меню сис-админа: сначала раздел, дальше — как у студента."""
     if not is_super(await admin_of(x)):
         return
@@ -466,17 +595,18 @@ async def _feedback_menu(x: str) -> None:
         people = await repo.staff_by_role(code)
         if people:
             rows.append({"code": code, "label": label, "people": [dict(p) for p in people]})
+    # в ряду из двух кнопок помещается 16 символов, поэтому длинные - по одной
+    tail = [[btn("👥 Другой сотрудник", "new:feedback")],
+            [btn("⚠️ Ошибка в боте", "bugreport")],
+            [btn("🏠 Меню", "home")]]
     if not rows:
         await api.send(
             x, "👤 Обратная связь\n\nДолжности ещё не назначены в системе — напишите "
                 "любому сотруднику из общего списка.",
-            [[btn("👥 Выбрать сотрудника", "new:feedback"),
-              btn("⚠️ Ошибка в боте", "bugreport")], [btn("🏠 Меню", "home")]])
+            [[btn("👥 Выбрать сотрудника", "new:feedback")], *tail])
         return
     keyboard = [[btn(item["label"], f"fbrole:{item['code']}")] for item in rows]
-    keyboard += [[btn("👥 Другой сотрудник", "new:feedback"),
-                  btn("⚠️ Ошибка в боте", "bugreport")],
-                 [btn("🏠 Меню", "home")]]
+    keyboard += tail
     lines = "\n".join(f"· {item['label']}: " + ", ".join(
         short(as_str(p.get("full_name")), 30) for p in item["people"]) for item in rows)
     await api.send(x, f"👤 Обратная связь — кому пишете?\n{lines}", keyboard)
@@ -491,8 +621,8 @@ async def cb_feedback_role(x, arg):
     if not people:
         return await api.send(x, f"{title}: сотрудник не назначен — напишите через общий список.",
                               [[btn("👥 Выбрать сотрудника", "new:feedback")], *BACK])
-    keyboard = [[btn(short(as_str(p.get("full_name")), max_api.BUTTON_TEXT),
-                     f"pick:feedback:{as_str(p.get('user_id'))}")] for p in people]
+    keyboard = [[btn(staff_pick_label(p), f"pick:feedback:{as_str(p.get('user_id'))}")]
+                for p in people]
     keyboard += [[btn("👥 Другой сотрудник", "new:feedback")], *BACK]
     who = "\n".join(f"· {short(as_str(p.get('full_name')), 34)}"
                     + (f" — {short(position_of(p), 24)}" if position_of(p) else "")
@@ -636,8 +766,6 @@ async def st_ticket(x, text, p):
 
 
 async def _send_draft(x: str, payload) -> None:
-    if await demo.deny(x, "создание обращения"):
-        return
     """Создаёт обращение из черновика и уведомляет сотрудника."""
     user = await need_author(x)
     if not user:
@@ -664,14 +792,20 @@ async def _send_draft(x: str, payload) -> None:
     lines += ["", short(text, 700)]
     if not delivered:
         lines.append("\n⚠️ Сотрудник пока не запускал бота — уведомление не дошло, но обращение сохранено.")
+    # attach_kb возвращает список рядов: вкладывать его в клавиатуру нельзя,
+    # иначе MAX получает кнопки списком внутри ряда и не рисует их
     await api.send(x, "\n".join(lines),
-                   [attach_kb(tid), [btn("↩️ В меню", "home")]])
+                   [*attach_kb(tid), [btn("↩️ В меню", "home")]])
 
 
 def draft_keyboard(x: str) -> list:
-    """Кнопки черновика: отправить, дочистить, выйти в меню."""
+    """Кнопки черновика: отправить, дочистить, выйти в меню.
+
+    По одной в ряду: в двух кнопках под длинную подпись места нет (16 символов).
+    """
     return [[btn("✉️ Отправить обращение", "ticketsend")],
-            [btn("🗑 Очистить черновик", "draftclr"), btn("↩️ В меню", "home")]]
+            [btn("🗑 Очистить черновик", "draftclr")],
+            [btn("↩️ В меню", "home")]]
 
 
 async def _ask_draft(x: str, payload, text: str) -> None:
@@ -688,8 +822,8 @@ ATTACH_MAX = 3       # больше трёх файлов к одному обр
 
 
 def attach_kb(tid: int) -> list:
-    return [[btn("📎 Прикрепить файл", f"tattach:{tid}"),
-             btn("📂 Открыть обращение", f"t:{tid}")],
+    return [[btn("📎 Прикрепить файл", f"tattach:{tid}")],
+            [btn("📂 Открыть обращение", f"t:{tid}")],
             [btn("↩️ В меню", "home")]]
 
 
@@ -714,8 +848,6 @@ async def st_attach_file(x, text, p):
 
 
 async def on_attachment(x: str, files: list) -> bool:
-    if await demo.deny(x, "отправка файла в обращение"):
-        return True
     """Файл пришёл в личный диалог. True - событие обработано, больше не отвечать."""
     item = (files or [{}])[0]
     st = await db.get_state(x)
@@ -761,8 +893,6 @@ async def attached_names(ticket_id: int) -> list[str]:
 
 @callback("ticketsend")
 async def cb_ticket_send(x, arg):
-    if await demo.deny(x, "отправка обращения"):
-        return
     """Отправка черновика: последний шанс передумать."""
     st = await db.get_state(x)
     if not st or st["state"] != "ticket":
@@ -791,8 +921,16 @@ async def cb_my_tickets(x, arg):
     rows = await repo.recent_student_tickets(x)
     if not rows:
         return await api.send(x, "У вас пока нет обращений.", BACK)
-    await api.send(x, "📋 Мои обращения (последние 15). Нажмите на обращение, чтобы открыть переписку:",
-                   await ticket_rows_kb(rows) + BACK)
+    arch_n = sum(1 for row in rows if is_archived(row))
+    if as_str(arg).strip() == ARCHIVE_VIEW:
+        rows = [row for row in rows if is_archived(row)]
+        title = "🗄 Архив ваших обращений — они закрыты, переписка и история сохранены."
+        switch = btn("📋 Все обращения", "tickets")
+    else:
+        title = ("📋 Мои обращения (последние 15). "
+                 "Нажмите на обращение, чтобы открыть переписку:")
+        switch = btn(f"🗄 Архив: {arch_n}", f"tickets:{ARCHIVE_VIEW}")
+    await api.send(x, title, [*await ticket_rows_kb(rows), [switch], *BACK])
 
 
 @callback("staff")
@@ -805,7 +943,8 @@ async def cb_staff_tickets(x, arg):
 
 @callback("t")
 async def cb_open_ticket(x, arg):
-    t, staff_side = await load_ticket(x, to_int(arg))
+    # архивное обращение тоже должно открываться: из архива приходят по t:<id>
+    t, staff_side = await load_ticket(x, to_int(arg), include_archived=True)
     if not t:
         return await api.send(x, "Обращение не найдено.", BACK)
     await send_ticket(x, t, staff_side)
@@ -948,7 +1087,10 @@ async def cb_templates(x, arg):
             "«⚡ Шаблоны ответов».",
             [[btn("↩️ К обращению", f"t:{t['ticket_id']}")], *BACK],
         )
-    keyboard = [[btn(short(row["title"], 40), f"tplu:{row['id']}:{t['ticket_id']}")] for row in rows[:12]]
+    # название шаблона режем по границе слова и без многоточия: MAX обрезает
+    # кнопку в одну строку, а полное название и так видно в тексте ниже
+    keyboard = [[btn(cut_plain(row["title"], max_api.BUTTON_TEXT),
+                     f"tplu:{row['id']}:{t['ticket_id']}")] for row in rows[:12]]
     await api.send(
         x,
         f"⚡ Шаблоны для раздела {CATS.get(t['category'], t['category'])}\n"
@@ -974,7 +1116,8 @@ async def cb_template_use(x, arg):
         f"⚡ Шаблон «{template['title']}» готов к отправке в обращение №{t['ticket_id']}:\n\n"
         f"{short(template['text'], 1200)}\n\n"
         "Отправить как есть, дописать своё или отменить?",
-        [[btn("📤 Отправить как есть", f"tplsend:{t['ticket_id']}"), btn("✏️ Дописать", f"tplmore:{t['ticket_id']}")],
+        [[btn("📤 Отправить как есть", f"tplsend:{t['ticket_id']}")],
+         [btn("✏️ Дописать", f"tplmore:{t['ticket_id']}")],
          [btn("✖️ Отмена", f"t:{t['ticket_id']}")]],
     )
 
@@ -1064,8 +1207,6 @@ async def _notify_office_required(x: str, t):
 
 @callback("st")
 async def cb_status(x, arg):
-    if await demo.deny(x, "смена статуса обращения"):
-        return
     tid, _, requested_status = arg.partition(":")
     t, staff_side = await load_ticket(x, to_int(tid))
     if not t or not staff_side or requested_status not in STATUS:
