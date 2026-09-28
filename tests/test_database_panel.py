@@ -45,7 +45,9 @@ def test_panel_shows_database_state(panel):
     assert login(panel)
     body = panel.get("/panel/database").text
     assert "Состояние базы" in body
-    assert "Проверка целостности" in body and "✅ цела" in body
+    # состояние базы показывается плашкой, а не галочкой-эмодзи
+    assert "Проверка целостности" in body and "цела" in body
+    assert "✅" not in body, "в панели остался эмодзи-галочка"
     assert "WAL" in body and "Данные по таблицам" in body
     assert "<code>tickets</code>" in body
 

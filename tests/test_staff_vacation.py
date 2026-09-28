@@ -155,4 +155,9 @@ async def test_staff_list_marks_vacation(panel_client):
     assert login_panel(panel_client)
     await add_staff("500", "Петрова Анна")
     await repo.set_vacation("500", "05.10.2026")
-    assert "🏖" in panel_client.get("/panel/staff").text
+    body = panel_client.get("/panel/staff").text
+    # в панели значки - это SVG-иконки, а не эмодзи: главное слово «в отпуске»
+    assert "в отпуске" in body
+    # панель честно говорит, что замещающего назначать некому
+    assert "заместитель не назначен" in body
+    assert "🏖" not in body, "в панели остался эмодзи отпуска"
