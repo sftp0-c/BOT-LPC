@@ -20,6 +20,13 @@ services:
       DATABASE_PATH: /app/data/database.db
       BACKUP_DIR: /app/data/backups
       LOG_FILE: /app/data/bot.log
+      # Время пользователя: без tzdata в образе TZ ничего не меняет (в
+      # python:3.12-slim /usr/share/zoneinfo пуст, datetime.now() остаётся UTC).
+      TZ: ${TZ:-Europe/Yekaterinburg}
+      # Адрес туннеля кладёт контейнер tunnel в общий том bot_data, бот его
+      # только читает (tunnel.py). Сам туннель запускает сервис tunnel.
+      TUNNEL_URL_FILE: /app/data/tunnel_url.txt
+      TUNNEL_ENABLED: ${TUNNEL_ENABLED:-1}
       # Домена нет - работаем через long polling. MAX_WEBHOOK_URL пуст,
       # бот сам стартует опрос событий (см. config.py и bot.py:lifespan).
     ports:
@@ -35,6 +42,114 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── туннель Cloudflare ────────────────────────────────────────────────────
+  # Быстрый туннель (quick tunnel) открывает наружу https://<случайные-слова>
+  # .trycloudflare.com. Адрес случайный и меняется при каждом перезапуске,
+  # а сам cloudflared его в файл не пишет - печатает в свой вывод. Поэтому
+  # ниже обёртка из /bin/sh: держит туннель в фоне, а каждые 30 секунд
+  # вылавливает адрес из лога и кладёт в /data/tunnel_url.txt. Это тот же
+  # файл, что бот читает как /app/data/tunnel_url.txt (общий том bot_data).
+  tunnel:
+    build:
+      context: .
+      # Бинарник берём из официального образа Cloudflare, а не качаем с GitHub:
+      # проверено из контейнера - github.com/.../releases/download отвечает
+      # «connection refused»/таймаут, а Alpine-пакета cloudflared нет. Сам
+      # cloudflare/cloudflared собран без /bin/sh, поэтому перенаправить его
+      # вывод в файл нечем. Складываем: alpine - оболочка, официальный образ -
+      # сам бинарник. Одноразовая сборка, в рантайме сеть не нужна.
+      dockerfile_inline: |
+        FROM cloudflare/cloudflared:latest AS cloudflared
+        FROM alpine:3.20
+        # tzdata ради TZ в .env; обратной ссылки Europe/Yekaterinburg в ней нет,
+        # а без неё `date` в контейнере показывает UTC (как в боевом Dockerfile).
+        RUN apk add --no-cache tzdata \
+            && mkdir -p /usr/share/zoneinfo/Europe \
+            && ln -snf ../Asia/Yekaterinburg /usr/share/zoneinfo/Europe/Yekaterinburg
+        COPY --from=cloudflared /usr/local/bin/cloudflared /usr/local/bin/cloudflared
+        # Проверка на сборке: бинарник должен запускаться, иначе падаем тут,
+        # а не в три часа ночи.
+        RUN chmod +x /usr/local/bin/cloudflared \
+            && /usr/local/bin/cloudflared --version
+    image: bot-lpc-tunnel:latest
+    container_name: bot-lpc-tunnel
+    restart: unless-stopped
+    # Туннелю нужен живой бот: пока бот не отвечает, Cloudflare отдаёт 502.
+    depends_on:
+      bot:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-Europe/Yekaterinburg}
+      # 0 в .env - контейнер поднимется, но туннель запускать не будет.
+      TUNNEL_ENABLED: ${TUNNEL_ENABLED:-1}
+      TUNNEL_TARGET: http://bot:8080
+      # Имя файла в томе bot_data. У бота этот же файл - /app/data/tunnel_url.txt.
+      TUNNEL_URL_FILE: /data/tunnel_url.txt
+    volumes:
+      - bot_data:/data
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -u
+        # $ здесь пишется как $$: compose не должен подставлять переменные
+        # контейнера вместо переменных оболочки. Итог видно в `docker compose config`.
+
+        # ── туннель выключается одной строкой в .env, без правки compose.
+        case "$${TUNNEL_ENABLED:-1}" in
+          0|false|no|off|нет|выкл)
+            echo "туннель выключен в .env (TUNNEL_ENABLED=$${TUNNEL_ENABLED:-1}) - ждём"
+            while true; do sleep 3600; done
+            ;;
+        esac
+
+        # ── бинарник уже лежит в образе. Этот wget - запасной путь на случай,
+        #    если образ собирали из alpine:3.20 без cloudflared.
+        if [ ! -x /usr/local/bin/cloudflared ]; then
+          case "$$(uname -m)" in
+            aarch64|arm64) arch=arm64 ;;
+            *) arch=amd64 ;;
+          esac
+          echo "cloudflared в образе нет, пробуем скачать ($$arch)"
+          wget -q -O /tmp/cloudflared "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$$arch" \
+            && mv /tmp/cloudflared /usr/local/bin/cloudflared \
+            && chmod +x /usr/local/bin/cloudflared
+        fi
+        if [ ! -x /usr/local/bin/cloudflared ]; then
+          echo "НЕ УДАЛОСЬ получить cloudflared: из контейнера нет доступа на github.com."
+          echo "Пересоберите образ: docker compose build tunnel"
+          while true; do sleep 3600; done
+        fi
+
+        # ── супервизор в фоне: cloudflared иногда падает, поднимаем заново.
+        #    Лог обрезаем, а файл адреса удаляем: старый адрес после
+        #    переподключения уже не работает, а том общий с ботом.
+        (
+          while true; do
+            rm -f /data/tunnel_url.txt /data/tunnel.log
+            echo "поднимаем туннель на $${TUNNEL_TARGET:-http://bot:8080}"
+            cloudflared tunnel --no-autoupdate --url "$${TUNNEL_TARGET:-http://bot:8080}" > /data/tunnel.log 2>&1
+            echo "cloudflared завершился с кодом $$?, через 5 секунд попробуем снова"
+            sleep 5
+          done
+        ) &
+
+        # ── писатель: каждые 30 секунд достаём адрес из лога и кладём в файл.
+        #    Файл обновляется и когда адрес не изменился: по времени изменения
+        #    бот (tunnel.py:url_age_seconds) понимает, что писатель жив. Молчат
+        #    дольше получаса - туннель упал, адрес в файле уже не открывается.
+        while true; do
+          url=$$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' /data/tunnel.log 2>/dev/null | head -1)
+          if [ -n "$$url" ]; then
+            echo "$$url" > /data/tunnel_url.txt
+          fi
+          sleep 30
+        done
     logging:
       driver: json-file
       options:

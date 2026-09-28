@@ -143,10 +143,31 @@ try {
         Select-Object -ExpandProperty IPAddress
 } catch { }
 
+# Адрес туннеля Cloudflare пишет контейнер tunnel в общий том bot_data.
+# На хосте такого файла обычно нет (том именованный, а не папка), поэтому
+# сперва спрашиваем том у контейнера, потом - файл рядом с репозиторием.
+$tunnelUrl = ""
+Push-Location $root
+try { $tunnelUrl = ((docker compose exec -T tunnel cat /data/tunnel_url.txt 2>$null) -join "").Trim() } catch { }
+finally { Pop-Location }
+$tunnelFile = Join-Path $root "data\tunnel_url.txt"
+if (-not $tunnelUrl -and (Test-Path $tunnelFile)) {
+    try { $tunnelUrl = (Get-Content $tunnelFile -Raw).Trim() } catch { }
+}
+
 Say "`n== Готово ==" "Green"
 Say "Панель сис-админа (вход: ваш MAX ID + пароль из .env):"
 foreach ($address in $addresses) { Say "    http://${address}:8080/panel" "White" }
 Say "    http://127.0.0.1:8080/panel`n"
+if ($tunnelUrl -match '^https://') {
+    Say "Туннель Cloudflare - тот же бот из интернета:"
+    Say "    $tunnelUrl/panel" "White"
+    Say "    $tunnelUrl" "White"
+    Ok "туннель поднят (адрес меняется при каждом перезапуске контейнера tunnel)"
+} else {
+    Warn "туннель Cloudflare ещё не поднялся - причина в docker compose logs -f tunnel"
+    Warn "выключается он одной строкой в .env: TUNNEL_ENABLED=0"
+}
 Say "Дальше:"
 Say "  1. Откройте бота в MAX и нажмите «Начать»."
 Say "  2. Напишите /id - он должен совпасть с SYSADMIN_IDS в .env."
@@ -155,6 +176,7 @@ Say "     чтобы сверить контакты и залить часты�
 Say ""
 Say "Полезные команды:"
 Say "  docker compose logs -f bot      # журнал"
+Say "  docker compose logs -f tunnel   # туннель Cloudflare и его адрес"
 Say "  docker compose restart bot      # перезапуск без пересборки"
 Say "  .\install.ps1 -Start             # применить новый .env"
 Say "  .\install.ps1 -NoStart           # только проверки, контейнер не трогать"

@@ -23,6 +23,15 @@ RUN set -eux; \
     apt-get purge -y --auto-remove curl; \
     rm -rf /var/lib/apt/lists/*
 
+# Время пользователя: docker-compose.yml задаёт TZ=Europe/Yekaterinburg, а
+# tzdata в образе уже есть (apt-get install tzdata отвечает «already the newest
+# version»). Проблема в другом: в tzdata 2026c нет обратной ссылки
+# Europe/Yekaterinburg - Екатеринбург живёт как Asia/Yekaterinburg, и без этой
+# ссылки время в контейнере тихо остаётся в UTC вместо +05:00. Возвращаем
+# ссылку, которую ждёт compose.
+RUN mkdir -p /usr/share/zoneinfo/Europe \
+    && ln -snf ../Asia/Yekaterinburg /usr/share/zoneinfo/Europe/Yekaterinburg
+
 WORKDIR /app
 
 # Зависимости ставятся до кода: правка бота не заставляет пересобирать pip.
@@ -33,11 +42,11 @@ RUN pip install -r requirements.txt
 # repository, timetable, charts, handlers. Забытый здесь модуль = падение на старте.
 COPY config.py database.py max_api.py repository.py updates.py utils.py college.py \
      timetable.py charts.py schedule_import.py schedule_watch.py attachments.py \
-     bot_commands.py webpanel.py bot.py ./
+     panel_theme.py tunnel.py bot_commands.py webpanel.py bot.py ./
 COPY handlers ./handlers
 # Проверяем импорты на этапе сборки: без неё забытый модуль всплыл бы только
 # при первом запуске контейнера - в 3 часа ночи.
-RUN python -c "import config, database, repository, updates, utils, college, timetable, charts, schedule_import, schedule_watch, attachments, bot_commands, webpanel, bot; print('импорты в порядке')"
+RUN python -c "import config, database, repository, updates, utils, college, timetable, charts, schedule_import, schedule_watch, attachments, panel_theme, tunnel, bot_commands, webpanel, bot; print('импорты в порядке')"
 # .dockerignore уже исключает тесты, но папка с данными может быть смонтирована
 # в образ при локальной сборке - создаём заранее, чтобы права были верными.
 RUN useradd --system --uid 10001 --home-dir /app app \
