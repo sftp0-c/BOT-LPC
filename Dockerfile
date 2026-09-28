@@ -36,6 +36,7 @@ WORKDIR /app
 
 # Зависимости ставятся до кода: правка бота не заставляет пересобирать pip.
 COPY requirements.txt .
+COPY VERSION ./
 RUN pip install -r requirements.txt
 
 # Модули верхнего уровня. Список полный: bot.py импортирует webpanel, а тот -
@@ -52,7 +53,7 @@ COPY store ./store
 COPY web ./web
 # Проверяем импорты на этапе сборки: без неё забытый модуль всплыл бы только
 # при первом запуске контейнера - в 3 часа ночи.
-RUN python -c "import config, database, max_api, repository, updates, utils, college, timetable, charts, schedule_import, schedule_watch, attachments, panel_theme, tunnel, clock, bot_commands, webpanel, bot, handlers, store, web; print('импорты в порядке')"
+RUN python -c "import config, database, max_api, repository, updates, utils, college, timetable, charts, schedule_import, schedule_watch, attachments, panel_theme, tunnel, clock, bot_commands, version, webpanel, bot, handlers, store, web; print('импорты в порядке')"
 # .dockerignore уже исключает тесты, но папка с данными может быть смонтирована
 # в образ при локальной сборке - создаём заранее, чтобы права были верными.
 RUN useradd --system --uid 10001 --home-dir /app app \

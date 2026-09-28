@@ -16,3 +16,20 @@ logs/
 # Python compiled files
 __pycache__/
 *.pyc
+
+# Данные и кэш. Отдельными строками, а не одним data/: DATABASE_PATH можно
+# указать где угодно, и тогда файлы базы, вложений и скачанных PDF оказались бы
+# видны git status - и однажды попали бы в коммит.
+data/
+attachments/
+backups/
+schedules/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Каталоги редакторов и осей
+.idea/
+.vscode/

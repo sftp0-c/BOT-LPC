@@ -1,4 +1,4 @@
-"""Общее для всех разделов панели: доступ, формы, разметка и оболочка страницы.
+﻿"""Общее для всех разделов панели: доступ, формы, разметка и оболочка страницы.
 
 Здесь то, чем пользуется любая страница: проверка входа и CSRF-токен, хелперы
 разметки (esc, pill, code_cell, fio_brief), формы и поля, постраничный переход,
@@ -17,6 +17,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 import config
+import version
 import charts
 import database as db
 import repository as repo
@@ -408,6 +409,7 @@ def page(title: str, body: str, user: str = "", tab: str = "",
   <button class="theme-toggle" type="button" title="Клавиатура: Ctrl+K — разделы, ? — подсказка"></button>
   <div class="who">вошёл как <b>{esc(user) or '—'}</b> · <a href="/panel/logout">выйти</a></div>
 </header>
+<footer class="foot-ver">версия {esc(version.__version__)} · <a href="/panel/api/health">состояние</a></footer>
 <nav aria-label="Разделы панели">{nav}</nav>
 <main>{head}{banner}{body}</main>
 <footer>Данные те же, что в боте: изменения применяются сразу · MAX ID {esc(user)}</footer>

@@ -1,4 +1,4 @@
-"""Оформление панели сис-админа: токены, иконки, общий CSS и переключатель темы.
+﻿"""Оформление панели сис-админа: токены, иконки, общий CSS и переключатель темы.
 
 Зачем модуль: раньше стили лежали константой ``STYLE`` прямо в ``webpanel.py``,
 и в них встречались «магические» цвета - из-за этого тёмная и светлая темы
@@ -1087,6 +1087,14 @@ pre{max-height:560px;margin:0;padding:var(--space-lg);overflow:auto;border:1px s
   .card{break-inside:avoid;box-shadow:none}
   .card:hover{transform:none}
 }
+
+/* подвал с версией: внизу каждой страницы, на печати не печатается */
+.foot-ver{max-width:1400px;margin:18px auto 0;padding:0 18px 26px;
+          color:var(--mut);font-size:12px;display:flex;gap:8px;
+          align-items:center;flex-wrap:wrap}
+.foot-ver a{color:var(--mut)}
+@media print{.foot-ver{display:none}}
+
 """
 
 STYLESHEET: str = "\n".join([

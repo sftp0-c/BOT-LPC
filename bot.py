@@ -1,4 +1,4 @@
-"""Колледжный бот для мессенджера MAX — точка входа.
+﻿"""Колледжный бот для мессенджера MAX — точка входа.
 
 Запуск: uvicorn bot:app --host 0.0.0.0 --port 8080
 Режим определяется настройкой MAX_WEBHOOK_URL: задан — webhook, пусто — long polling.
@@ -25,6 +25,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 import config
+import version
 import database as db
 import repository as repo
 from handlers import admin, broadcast, menus, tickets  # noqa: F401  — регистрация обработчиков при импорте
@@ -385,6 +386,7 @@ async def health():
     missing = await db.missing_objects()
     return {
         "ok": not missing,
+        "version": version.__version__,   # по адресу видно, что именно в контейнере
         "platform": "MAX",
         "mode": "webhook" if config.WEBHOOK_URL else "polling",
         "missing_schema": missing,
