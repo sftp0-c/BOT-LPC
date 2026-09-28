@@ -20,7 +20,7 @@ class FakeRepo:
     def __getattr__(self, name):
         return getattr(repository, name)
 
-    async def get_ticket(self, ticket_id):
+    async def get_ticket(self, ticket_id, include_archived=False):
         row = await db.one("SELECT * FROM tickets WHERE ticket_id=?", (ticket_id,))
         if not row:
             return None
@@ -214,8 +214,11 @@ async def test_staff_picker_shows_role(api, fake_repo):
     await repository.set_admin_profile(STAFF, role="director", office="каб. 204")
     await press(STUDENT, "new:certificates")
     buttons = [b for row in (api.last(STUDENT)[2] or []) for b in row]
-    assert any("Петрова Анна" in b["text"] for b in buttons)
-    assert "Директор" in api.last(STUDENT)[1]      # должность - текстом
+    # в кнопке - фамилия с инициалами (иначе MAX обрежет многоточием)
+    assert any(b["text"].startswith("Петрова") for b in buttons), [b["text"] for b in buttons]
+    # полное ФИО и должность - текстом над списком
+    card = api.last(STUDENT)[1]
+    assert "Петрова Анна" in card and "Директор" in card
 
 
 async def test_ready_quick_choice_sets_status_and_notifies(api, fake_repo):
@@ -311,7 +314,7 @@ async def test_card_works_without_joined_people(api, monkeypatch, fake_repo):
     tid = await make_ticket(api)
     row = await db.one("SELECT * FROM tickets WHERE ticket_id=?", (tid,))
 
-    async def plain(_tid):
+    async def plain(_tid, include_archived=False):
         return {key: row[key] for key in row.keys()}
 
     monkeypatch.setattr(fake_repo, "get_ticket", plain)
