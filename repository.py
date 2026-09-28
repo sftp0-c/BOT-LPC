@@ -1842,17 +1842,23 @@ async def recent_ticket_events(limit: int = 30) -> list:
     странице панели не было вовсе - «кто чем занимался» приходилось искать
     вручную в журнале.
     """
+    # имени автора в таблице нет - оно склеивается из users и admins,
+    # как в ticket_events(), поэтому повторяем ту же склейку
     return await db.many(
-        "SELECT e.ticket_id, e.event, e.detail, e.actor_id, e.actor_name, e.created_at, "
+        "SELECT e.id, e.ticket_id, e.event, e.detail, e.actor_id, e.created_at, "
+        "COALESCE(au.full_name, aa.full_name, '') actor_name, "
+        "COALESCE(aa.position, aa.role, '') actor_position, "
         "t.category, t.topic, t.student_id, "
         "COALESCE(u.full_name, '') student_name, COALESCE(u.group_code, '') student_group "
         "FROM ticket_events e "
         "LEFT JOIN tickets t ON t.ticket_id = e.ticket_id "
         "LEFT JOIN users u ON u.user_id = t.student_id "
+        "LEFT JOIN users au ON au.user_id = e.actor_id "
+        "LEFT JOIN admins aa ON aa.user_id = e.actor_id "
         "ORDER BY e.id DESC LIMIT ?", (int(limit),))
 
 
-async def event_feed_label(row) -> str:
+def event_feed_label(row) -> str:
     """Человеческая строка ленты: кто и что сделал с обращением."""
     who = as_str(_row_value(row, "actor_name")) or as_str(_row_value(row, "actor_id")) or "кто-то"
     event = as_str(_row_value(row, "event"))
@@ -1878,13 +1884,25 @@ async def staff_sees_all_bulk() -> dict[str, bool]:
 
 
 async def vacations_bulk() -> dict[str, dict]:
-    """Отпуска всех сотрудников одним проходом: {user_id: {...}}.
+    """Отпуска, которые ещё не кончились: {user_id: {...}}.
 
-    Заменяет два запроса на каждого сотрудника при открытии списка.
+    Заменяет два запроса на каждого сотрудника при открытии списка. Закончившиеся
+    отпуска отбрасываем: в панели это «кто сейчас в отпуске», а не архив.
     """
+    try:
+        import clock
+
+        today = clock.today()
+    except Exception:                      # часовой пояс ещё не подключён - не мешаем списку
+        today = date.today()
     rows = await db.many("SELECT user_id, full_name, role, position, vacation_until "
                          "FROM admins WHERE COALESCE(vacation_until, '')<>''")
-    return {as_str(row["user_id"]): {key: row[key] for key in row.keys()} for row in rows}
+    current = {}
+    for row in rows:
+        until = _parse_day(row["vacation_until"])
+        if until and today <= until:
+            current[as_str(row["user_id"])] = {key: row[key] for key in row.keys()}
+    return current
 
 
 async def data_gaps() -> list[dict]:
