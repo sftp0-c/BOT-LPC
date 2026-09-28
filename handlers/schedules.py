@@ -1,4 +1,4 @@
-"""Расписание: загрузка PDF, разбор, кэш и выдача в чат.
+﻿"""Расписание: загрузка PDF, разбор, кэш и выдача в чат.
 
 Схема работы. Ссылку на PDF задаёт сис-админ (вкладка «Расписания»). Когда
 студент смотрит расписание, бот лениво скачивает файл, разбирает его в занятия
@@ -21,6 +21,7 @@ import httpx
 import config
 import database as db
 import repository as repo
+from schedule_import import week_is_fresh
 import timetable as tt
 from handlers.common import api
 from handlers.registry import callback, state
@@ -152,6 +153,15 @@ async def parse_group(group: str, force: bool = False) -> ScheduleResult:
         reason = f"в PDF не нашлось занятий группы {code}" + (f" (найдены: {', '.join(found[:8])})" if found else "")
         await _remember_failure(code, reason, digest, found)
         return ScheduleResult(group=code, url=url, error=reason)
+
+    # Тот же фильтр недели, что и при импорте со страницы: файл постарше уже
+    # сохранённого не должен откатывать свежую неделю. Базу не трогаем и
+    # показываем то, что в ней уже лежит, - иначе студент увидит либо пустоту,
+    # либо устаревшие пары.
+    if not await week_is_fresh(code, schedule.week, url):
+        stored = await schedule_from_db(code)
+        if stored.days:
+            return ScheduleResult(group=code, schedule=stored, url=url)
 
     await repo.save_lessons(code, schedule, digest, found)
     await _prune_cache(digest)

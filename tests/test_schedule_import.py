@@ -7,14 +7,21 @@ import timetable as tt
 from conftest import login_panel, post_form, press
 
 PAGE = "https://collegelan.ru/studentam/raspisanie-zanyatiy.php"
+# Страница как у колледжа: расписания групп вперемешку с посторонними файлами.
+# «konsultaciy» и «кураторы» расписаниями групп не являются, и держать их
+# среди результатов нельзя: на настоящей странице они идут ПОСЛЕ текущих
+# файлов и при перезаписи без проверки откатывали бы неделю на годы.
 PAGE_HTML = """
 <html><body>
 <a href="/files/23-29-24-25.pdf">1 курс</a>
 <a href="https://collegelan.ru/files/24-26-25-20.pdf">2 курс</a>
-<a href="/files/raspisanie%20konsultaciy.pdf">Консультации</a>
+<a href="/files/raspisanie%20konsultaciy.pdf">График консультаций преподавателей</a>
+<a href="/files/kuratory%20grupp.pdf">кураторы групп на 2026-2027</a>
 <a href="/files/23-29-24-25.pdf">тот же файл ещё раз</a>
 </body></html>
 """
+# Сколько файлов на этой странице считаются расписаниями групп.
+РАСПИСАНИЙ_НА_СТРАНИЦЕ = 2
 
 
 def make_schedule(group: str, lessons_per_day: int = 2) -> tt.GroupSchedule:
@@ -111,12 +118,16 @@ def college_pdf(monkeypatch):
 
 # ── разбор того, что ввёл человек ─────────────────────────────────────────────
 async def test_page_expands_to_pdf_links(fake_page):
+    """Страница раскрывается в PDF расписаний: посторонние файлы не берутся."""
     fake_page()
-    assert await imp.collect_pdf_urls(PAGE) == [
+    found = await imp.collect_pdf_urls(PAGE)
+    assert found == [
         "https://collegelan.ru/files/23-29-24-25.pdf",
         "https://collegelan.ru/files/24-26-25-20.pdf",
-        "https://collegelan.ru/files/raspisanie%20konsultaciy.pdf",
     ]
+    # ни консультаций, ни кураторов, ни повтора - и это не «молча убрали»:
+    # всего ссылок было больше, чем осталось в ответе
+    assert len(found) == РАСПИСАНИЙ_НА_СТРАНИЦЕ
 
 
 async def test_direct_pdf_is_kept_as_is(fake_page):
@@ -145,7 +156,8 @@ async def test_page_and_direct_pdfs_together(fake_page):
     urls = await imp.collect_pdf_urls(source)
     assert urls[0].endswith("23-29-24-25.pdf")
     assert urls[-1].endswith("26-28-26-31.pdf")
-    assert len(urls) == 4
+    # расписания со страницы плюс прямая ссылка, введённая руками
+    assert len(urls) == РАСПИСАНИЙ_НА_СТРАНИЦЕ + 1
 
 
 async def test_garbage_source_yields_nothing(fake_page):
@@ -243,15 +255,21 @@ async def test_import_reports_failure_to_admin(env, sysadmin, api, monkeypatch):
     assert "Импорт не удался" in "\n".join(body for _, body, _ in api.to("1"))
 
 
-async def test_import_button_actually_imports(env, sysadmin, api, college_pdf):
-    """Полный путь: кнопка -> импорт -> группы в справочнике."""
+async def test_import_button_actually_imports(env, sysadmin, api, college_pdf, fake_page):
+    """Полный путь: кнопка -> импорт -> группы в справочнике.
+
+    Страница подставлена фикстурой: раньше тест ходил на живой сайт колледжа и
+    ждал там «файлов 18» - то есть проверял, что бот импортирует и мусор.
+    Теперь ждём столько файлов, сколько на странице признано расписаниями.
+    """
     import repository as repo
     from handlers import admin
 
+    fake_page()
     await admin._run_import("1")
     assert (await repo.find_group("24-23 (П)"))["code"] == "24-23П"
     report = "\n".join(body for _, body, _ in api.to("1"))
-    assert "Готово: файлов 18" in report
+    assert f"Готово: файлов {РАСПИСАНИЙ_НА_СТРАНИЦЕ}" in report
     assert "24-23П" in report and "24-21-2С" in report
 
 

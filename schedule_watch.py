@@ -158,8 +158,13 @@ async def _import_new_file(url: str, name: str, errors: list[str]) -> list[str]:
         errors.append(f"{name}: {exc}")
         log.warning("импорт нового файла расписания %s не удался: %s", name, exc)
         return []
+    skipped = result.get("skipped") or []      # ключ может не быть: import_pdf подменяют в тестах
     if not result["groups"]:
-        errors.append(f"{name}: группы не найдены")
+        if skipped:
+            errors.append(f"{name}: файл старше сохранённой недели, "
+                          f"пропущено групп: {len(skipped)}")
+        else:
+            errors.append(f"{name}: группы не найдены")
         return []
     log.info("новый файл расписания %s: %s", name, ", ".join(result["groups"]))
     return list(result["groups"])

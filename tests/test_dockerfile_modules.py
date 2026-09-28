@@ -1,17 +1,24 @@
-"""Dockerfile не должен забывать модули проекта.
+﻿"""Dockerfile не должен забывать модули проекта.
 
 Модули в образ попадают списком в строке `COPY`, а не папкой целиком. Список
 разъезжается: модуль добавили, а в `COPY` не вписали - и бот падает на
 импорте. Нашлось так с `clock.py`: сборка падала на проверке импортов, хотя
 на машине всё работало.
 
-Тест сравнивает список в `COPY` с настоящими файлами проекта.
+Тест сравнивает список в `COPY` с настоящими файлами и папками проекта.
+Папки (`store/`, `web/`) копируются отдельными строками «COPY имя ./имя»,
+и раньше сюда не попадали: забытая папка проходила проверку молча.
 """
 import re
 from pathlib import Path
 
 DOCKERFILE = Path("Dockerfile")
 COPY_MARKER = "COPY config.py"
+# Папки копируются отдельной строкой «COPY имя ./имя».
+PACKAGE_MARKER = re.compile(r"^COPY\s+(\w+)\s+\./\1\s*$", re.M)
+# Папки, которые не обязаны попадать в образ: данные, окружение, кэш.
+SKIP_DIRS = {"tests", "data", "backups", "schedules", "attachments",
+            ".venv", ".git", "site-packages", "__pycache__", ".idea"}
 
 # Служебные файлы: не модули, в образ им не место
 SERVICE = {
@@ -40,6 +47,23 @@ def copied_names() -> set:
     return {name for name in re.findall(r"[\w.]+\.py", joined)}
 
 
+def copied_packages() -> set:
+    """Имена папок-пакетов из строк «COPY имя ./имя»."""
+    return set(PACKAGE_MARKER.findall(DOCKERFILE.read_text(encoding="utf-8")))
+
+
+def project_packages() -> set:
+    """Папки проекта с модулями: их тоже надо копировать в образ.
+
+    Признак - наличие .py внутри, а не __init__.py: папка handlers импортируется
+    как пакет, но __init__.py в ней нет, и по первому признаку она выпадала
+    бы из проверки, а строка «COPY handlers ./handlers» считалась бы лишней.
+    """
+    return {path.name for path in Path(".").iterdir()
+            if path.is_dir() and path.name not in SKIP_DIRS
+            and any(path.glob("*.py"))}
+
+
 def project_modules() -> set:
     """Модули верхнего уровня, которые обязаны попасть в образ."""
     names = {path.name for path in Path(".").glob("*.py")}
@@ -64,6 +88,17 @@ def test_copy_has_no_extra_names():
     assert not extra, "в COPY перечислены несуществующие файлы: " + ", ".join(extra)
 
 
+def test_every_package_is_copied_into_image():
+    missing = sorted(project_packages() - copied_packages())
+    assert not missing, (
+        "папки не попадут в образ, сборка упадёт на импорте: " + ", ".join(missing))
+
+
+def test_copied_packages_exist():
+    extra = sorted(copied_packages() - project_packages())
+    assert not extra, "в COPY перечислены несуществующие папки: " + ", ".join(extra)
+
+
 def test_clock_is_in_image():
     """Часовой пояс обязателен: без него даты в боте идут на пять часов мимо."""
     assert "clock.py" in copied_names()
@@ -78,7 +113,8 @@ def test_import_check_covers_every_copied_module():
     listed = check.group(1).split(";", 1)[0]
     checked = {name.strip() for name in listed.split(",")}
     missing = sorted(name[:-3] for name in copied_names() if name[:-3] not in checked)
-    assert not missing, "модули копируются, но не проверяются импортом: " + ", ".join(missing)
+    missing += sorted(name for name in copied_packages() if name not in checked)
+    assert not missing, "копируются, но не проверяются импортом: " + ", ".join(missing)
 
 
 def test_timezone_is_set_in_image_and_compose():

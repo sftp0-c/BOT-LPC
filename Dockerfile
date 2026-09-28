@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+﻿FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -44,9 +44,15 @@ COPY config.py database.py max_api.py repository.py updates.py utils.py college.
      timetable.py charts.py schedule_import.py schedule_watch.py attachments.py \
      panel_theme.py tunnel.py clock.py bot_commands.py webpanel.py bot.py ./
 COPY handlers ./handlers
+# Слои данных и панели разложены по папкам: store/ - SQL, web/ - маршруты.
+# Забытая здесь папка означала бы падение на первом импорте в контейнере,
+# поэтому папки перечислены явно, а tests/test_dockerfile_modules.py
+# требует, чтобы каждая папка проекта с __init__.py тут была.
+COPY store ./store
+COPY web ./web
 # Проверяем импорты на этапе сборки: без неё забытый модуль всплыл бы только
 # при первом запуске контейнера - в 3 часа ночи.
-RUN python -c "import config, database, max_api, repository, updates, utils, college, timetable, charts, schedule_import, schedule_watch, attachments, panel_theme, tunnel, clock, bot_commands, webpanel, bot; print('импорты в порядке')"
+RUN python -c "import config, database, max_api, repository, updates, utils, college, timetable, charts, schedule_import, schedule_watch, attachments, panel_theme, tunnel, clock, bot_commands, webpanel, bot, handlers, store, web; print('импорты в порядке')"
 # .dockerignore уже исключает тесты, но папка с данными может быть смонтирована
 # в образ при локальной сборке - создаём заранее, чтобы права были верными.
 RUN useradd --system --uid 10001 --home-dir /app app \

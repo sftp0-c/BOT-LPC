@@ -14,6 +14,9 @@ MAX: 📅 Понедельник 28.09, «1. Математика», «09:00–0
 
 Время пар берётся из звонков `LESSON_TIMES`: сами PDF времени не содержат.
 Порядок нужен для точечных правок: номер 3 → 10:50.
+
+Номер в PDF — это урок, а не пара: в паре уроков два. Поэтому в тексте между
+парами стоит пустая строка, и день читается парами, а не простынёй.
 """
 from __future__ import annotations
 
@@ -222,6 +225,24 @@ def group_names(header: list) -> dict[int, str]:
     return groups
 
 
+def room_columns(table: list) -> dict[int, int]:
+    """Где в таблице лежит аудитория каждой группы: {колонка группы: колонка ауд.}
+
+    У колледжа колонки идут парами «предмет | ауд.», поэтому аудитория группы
+    стоит сразу справа от её предмета, а не после последней группы в файле.
+    Сопоставляем по порядку: в шапке коды групп идут слева направо, и столько
+    же раз в шапке встречается «Ауд.». Если «Ауд.» меньше, чем групп (старый
+    файл или таблица с одной группой), берём единственную колонку справа.
+    """
+    groups = sorted(group_names(table[0] if table else []))
+    auds = sorted({index for row in table[:2] for index, cell in enumerate(row)
+                   if clean(cell).lower().startswith("ауд")})
+    result: dict[int, int] = {}
+    for position, column in enumerate(groups):
+        result[column] = auds[position] if position < len(auds) else column + 1
+    return result
+
+
 def _is_teacher(value: str) -> bool:
     """Похоже ли значение на строку «Иванова А. А.» или «Ivanova A. A.»."""
     text = clean(value)
@@ -340,10 +361,10 @@ def build_schedule(pages: list[dict], group: str, times: dict | None = None) -> 
         if not columns:
             continue
         column = columns[0]
-        # Аудитория — колонка сразу после последней группы: когда групп несколько,
-        # брать «ячейку справа» от своей группы нельзя — там чужая колонка.
-        group_columns = list(group_names(table[0] if table else []))
-        room_column = (max(group_columns) + 1) if group_columns else column + 1
+        # Аудитория — колонка «Ауд.» именно этой группы: в файле колледжа колонки
+        # идут парами «предмет | ауд.», и аудитория соседней группы — это вовсе
+        # не наша (так в базу попадала чужая аудитория, а своя терялась).
+        room_column = room_columns(table).get(column, column + 1)
         day = DaySchedule(weekday=weekday)
         # первую строку пропускаем (это шапка с кодами групп). Строки, где номер
         # пары не читается, отсеются сами — так переживаются двухуровневые шапки.
@@ -432,8 +453,19 @@ def day_title(weekday: int, day_date: date | None = None) -> str:
 
 
 def format_day(day: DaySchedule, day_date: date | None = None, today: bool = False) -> str:
+    """День расписания текстом.
+
+    Пара — это два урока, поэтому между парами встаёт пустая строка: она ставится
+    перед каждым нечётным уроком после первого (3, 5, 7...). Перед первым уроком
+    и после последнего пустой строки нет, нечётный хвост (урок 5) остаётся один.
+    Сборка дня живёт здесь одной функцией, её зовёт бот (handlers/menus.py —
+    «расписание на сегодня» и «на день», handlers/admin.py — день в карточке).
+    """
     lines = [f"📅 {day_title(day.weekday, day_date)}" + ("  \N{BULLET} сегодня" if today else "")]
-    lines += ["  " + lesson.line() for lesson in day.lessons]
+    for lesson in day.lessons:
+        if lesson.number > 1 and lesson.number % 2:
+            lines.append("")
+        lines.append("  " + lesson.line())
     return "\n".join(lines)
 
 
