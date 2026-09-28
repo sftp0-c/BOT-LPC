@@ -1,4 +1,4 @@
-"""Время на панели должно показываться таким, каким оно лежит в базе.
+﻿"""Время на панели должно показываться таким, каким оно лежит в базе.
 
 Здесь поймана реальная ошибка: `utils.local_time()` считал, что голое время
 из базы записано в UTC, и приводил его к местному. Пока база писалась
@@ -7,7 +7,7 @@
 на панели уезжала вперёд на 5 часов: сохранённое 12:00 показывалось как
 15:00. Теперь разбор времени один - `clock.parse`.
 """
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 
 import clock
 import utils
@@ -60,11 +60,19 @@ def test_no_double_shift_between_stamp_and_display():
 
 
 def test_fmt_when_boundary_follows_given_now():
-    """Граница «сегодня/вчера» считается от переданного now, а не от часов машины."""
-    момент = clock.stamp_at(-60 * 24)
-    позже = clock.parse(момент) + timedelta(hours=2)
-    assert utils.fmt_when(момент, now=позже) == "сегодня " + clock.parse(момент).strftime("%H:%M")
-    assert utils.fmt_when(момент) == "вчера " + clock.parse(момент).strftime("%H:%M")
+    """Граница «сегодня/вчера» считается от переданного now, а не от часов машины.
+
+    Момент берём внутри суток, отсчитанных от начала дня, а не «сутки назад»:
+    при «минус 24 часа» и сравнении «плюс два часа» тест попадал ровно на
+    полночь и краснел после 22:00 - часы машины решали, зелёный тест или нет.
+    """
+    начало = datetime.combine(clock.today(), time(0, 0))
+    вчера = начало - timedelta(days=1) + timedelta(hours=12)
+    # один и тот же момент, разный now: метка считается от now, а не от часов машины
+    assert utils.fmt_when(вчера, now=вчера + timedelta(hours=2)) == "сегодня 12:00"
+    assert utils.fmt_when(вчера, now=начало + timedelta(hours=14)) == "вчера 12:00"
+    # без переданного now «сейчас» - это настоящие сегодняшние сутки
+    assert utils.fmt_when(вчера) == "вчера 12:00"
 
 
 def test_timetable_today_uses_college_zone():

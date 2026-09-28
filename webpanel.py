@@ -46,6 +46,7 @@ from utils import (
     STAFF_CATS,
     STATUS,
     as_str,
+    cut_plain,
     fmt_time,
     fmt_when,
     gen_code,
@@ -54,8 +55,10 @@ from utils import (
     log_level_of,
     norm_code,
     norm_group,
+    person_label,
     profile_url,
     short,
+    short_name,
     tail_file,
     to_int,
     ttl_label,
@@ -244,6 +247,43 @@ def copy_btn(value, note: str = "Скопировано") -> str:
 def code_cell(value, note: str = "") -> str:
     """Значение, рядом с которым стоит кнопка копирования."""
     return f'<span class="code-cell"><code>{esc(value)}</code>{copy_btn(value, note or f"Скопировано: {value}")}</span>'
+
+
+# Ширина кнопки MAX (max_api.BUTTON_TEXT): столько символов уходит на ФИО
+# в боте, поэтому столько же отводим под подпись «Ковалевский К. Ю.».
+FIO_BRIEF = 26
+# Сколько символов влезает в ФИО в панели, прежде чем его придётся резать.
+# Панель - не кнопка MAX: здесь имя переносится по словам, а предел нужен
+# как страховка там, где переноса не будет (выпадающий список).
+FIO_MAX = 60
+
+
+def fio(name, user_id: str = "", limit: int = 0) -> str:
+    """ФИО для панели: целиком, а если ФИО не заполнено - по MAX ID.
+
+    Сокращать ФИО в панели нельзя: сотрудник приёмной комиссии сверяет
+    обращение с человеком по записи, и «Ковалевский Ко…» для этого бесполезно.
+    Имя переносится по словам средствами темы (``.wb-fio``), а ``limit`` -
+    последняя страховка для мест, где переноса не будет (выпадающий список):
+    обрезка идёт по границе слова и без многоточия (``utils.cut_plain``).
+    """
+    label = " ".join(as_str(name).split())
+    if not label:
+        return person_label("", user_id, limit)   # ФИО не заполнено: «ID 300»
+    return cut_plain(label, limit) if limit else label
+
+
+def fio_brief(name) -> str:
+    """«Ковалевский К. Ю.» - подпись, по которой человека узнают с ходу.
+
+    Полное ФИО при этом никуда не девается: оно стоит рядом крупным шрифтом,
+    а инициалы нужны только чтобы сориентироваться среди похожих фамилий.
+    Если сокращение совпадает с полным именем (короткое ФИО), не возвращаем
+    ничего - повторять одно и то же двумя строками незачем.
+    """
+    label = " ".join(as_str(name).split())
+    brief = short_name(label, FIO_BRIEF)
+    return "" if brief == label else brief
 
 
 def open_in_bot(target: str) -> str:
@@ -516,13 +556,24 @@ def input(name: str, value="", kind: str = "text", full: bool = False) -> str:
 
 
 def select(name: str, options: dict, current: str, full: bool = False,
-           label: str = "") -> str:
+           label: str = "", titles: dict | None = None) -> str:
     """Список выбора с подписью: по умолчанию - имя поля, у важных фильтров
-    подпись задаётся явно («Статус», «Раздел», «Тип события»)."""
-    items = "".join(
-        f'<option value="{esc(code)}"{" selected" if code == current else ""}>{esc(label)}</option>'
-        for code, label in options.items()
-    )
+    подпись задаётся явно («Статус», «Раздел», «Тип события»).
+
+    ``titles`` кладёт вторую строку (должность сотрудника) в подсказку пункта.
+    Выпадающий список режет всё, что не помещается, сам и без предупреждения,
+    поэтому важное - ФИО целиком - должно быть в самом пункте, а
+    второстепенное - в ``title``, где оно остаётся читаемым.
+    """
+    hints = titles or {}
+
+    def option(code, text) -> str:
+        hint = as_str(hints.get(code))
+        extra = f' title="{esc(hint)}"' if hint else ""
+        picked = " selected" if code == current else ""
+        return f'<option value="{esc(code)}"{picked}{extra}>{esc(text)}</option>'
+
+    items = "".join(option(code, text) for code, text in options.items())
     extra = ' class="full"' if full else ""
     title = esc(label if label else name)
     return f'<div{extra}><label>{title}</label><select name="{esc(name)}">{items}</select></div>'
@@ -1360,18 +1411,25 @@ def _tickets_actions(status: str, category: str, selected, bot: str) -> str:
             + open_in_bot(bot))
 
 
-async def _staff_choices(keep_current: str = "", current_name: str = "") -> dict:
-    """Сотрудники панели для выбора: текущий исполнитель виден первым."""
+async def _staff_choices(keep_current: str = "", current_name: str = "") -> tuple[dict, dict]:
+    """Сотрудники панели для выбора: текущий исполнитель виден первым.
+
+    Возвращает пары «подписи» и «подсказки». В подписи - ФИО целиком:
+    исполнителя выбирают по имени, и обрезанное «Ковалевский Ко… · Секрет…»
+    для этого не годится, поэтому должность уходит в ``title`` пункта.
+    """
     choices = {"": "— не назначен —"}
+    titles: dict[str, str] = {}
     if keep_current:
-        choices[keep_current] = f"{current_name or keep_current} (сейчас)"
+        choices[keep_current] = f"{fio(current_name, keep_current, FIO_MAX)} (сейчас)"
+        titles[keep_current] = "сейчас ведёт это обращение"
     for row in await repo.list_staff():
         person = dict(row)          # db.many отдаёт sqlite3.Row, а нужны ключи по имени
         uid = as_str(person.get("user_id"))
         if uid and uid != keep_current:
-            choices[uid] = short(f"{person.get('full_name', uid)} · "
-                                 f"{person.get('position') or person.get('role') or '—'}", 40)
-    return choices
+            choices[uid] = fio(person.get("full_name"), uid, FIO_MAX)
+            titles[uid] = as_str(person.get("position") or person.get("role") or "—")
+    return choices, titles
 
 
 def _tickets_queue(request: Request, rows, latest: dict, query: str, selected, archived: bool) -> str:
@@ -1387,8 +1445,12 @@ def _tickets_queue(request: Request, rows, latest: dict, query: str, selected, a
         waiting = latest.get(int(ticket_id)) == "student"
         # db.many отдаёт sqlite3.Row, поэтому по именам колонок идём через dict()
         data = dict(row)
-        who = " ".join(part for part in (as_str(data.get("student_name")),
-                                         as_str(data.get("student_group"))) if part)
+        # ФИО из базы приходит целиком, и резать его нельзя: очередь сверяют
+        # с записью человека. Поэтому ФИО - своей строкой, группа - рядом с
+        # ним отдельным элементом, а текст обращения идёт следующей строкой.
+        who = fio(data.get("student_name"), data.get("student_id"), FIO_MAX)
+        group = " ".join(as_str(data.get("student_group")).split())
+        group_html = f'<span class="wb-group">{esc(group)}</span>' if group else ""
         status = esc(plain(STATUS.get(data["status"], data["status"])))
         if waiting:
             status += f' <span class="wb-wait">{icon("clock", 14)} ждёт ответа</span>'
@@ -1398,8 +1460,9 @@ def _tickets_queue(request: Request, rows, latest: dict, query: str, selected, a
             f'<span class="wb-head"><b>№{esc(ticket_id)}</b>'
             f'<span class="wb-status">{status}</span>'
             f'<span class="wb-date">{esc(fmt_when(data["updated_at"]))}</span></span>'
+            f'<span class="wb-who"><span class="wb-fio">{esc(who)}</span>{group_html}</span>'
             f'<span class="wb-text" title="{esc(data["text_content"])}">'
-            f'{esc(short(who, 40))} · {esc(short(data["text_content"], 90))}</span>'
+            f'{esc(cut_plain(data["text_content"], 90))}</span>'
             f'</a></label>')
     head = f'{icon("archive", 18)} Из архива' if archived else f'{icon("inbox", 18)} Очередь · {len(rows)}'
     more = (f'<p class="small mut">Показано {len(visible)} из {len(rows)} — сузьте фильтр '
@@ -1431,12 +1494,14 @@ async def _ticket_workbench(request: Request, t, bot: str = "") -> str:
     печати их нет, поэтому на бумагу попадает переписка, а не пустые поля.
     """
     ticket_id = int(t["ticket_id"])
-    student_name = as_str(t["student_name"]) or as_str(t["student_id"])
+    # ФИО целиком; без ФИО подписью становится MAX ID (person_label) - так же,
+    # как в очереди, чтобы человека узнавали в обоих списках одинаково.
+    student_name = fio(t["student_name"], t["student_id"])
     student_group = as_str(t["student_group"]) or "—"
     messages = await repo.ticket_thread(ticket_id, 100)
     events = await repo.ticket_events(ticket_id, 50)
-    staff_options = await _staff_choices(as_str(t["target_admin_id"]),
-                                         as_str(t["staff_name"]))
+    staff_options, staff_titles = await _staff_choices(as_str(t["target_admin_id"]),
+                                                       as_str(t["staff_name"]))
     template_options = {"": "— шаблон —"}
     for row in await repo.list_templates():
         template = dict(row)
@@ -1473,7 +1538,7 @@ async def _ticket_workbench(request: Request, t, bot: str = "") -> str:
 <div class="grid">
 <div class="full"><label>Текст обращения</label>
 <textarea name="text_content" rows="2">{esc(t['text_content'])}</textarea></div>
-<div>{select("target_admin_id", staff_options, "")}</div>
+<div>{select("target_admin_id", staff_options, "", titles=staff_titles)}</div>
 <div>{select("category", dict(CATS), as_str(t['category']))}</div>
 <div><label>Тема</label><input name="topic" value="{esc(t['topic'])}"></div>
 <div><label>Кабинет выдачи</label>
@@ -1498,9 +1563,10 @@ async def _ticket_workbench(request: Request, t, bot: str = "") -> str:
     # шапка карточки - то, что должно попасть на бумагу
     head = f"""<div class="card"><h2>Обращение №{ticket_id}
 <span class="pill">{esc(plain(STATUS.get(as_str(t['status']), as_str(t['status']))))}</span></h2>
-<p class="small mut">{icon('students', 16)} {esc(student_name)}
-(ID {code_cell(t['student_id'], "MAX ID студента скопирован")}),
-группа {esc(student_group)} · создано {esc(fmt_when(t['created_at']))}</p>
+<p class="wb-who">{icon('students', 16)}<span class="wb-fio">{esc(student_name)}</span>
+<span class="wb-group">{esc(student_group)}</span>
+<span class="wb-id">ID {code_cell(t['student_id'], "MAX ID студента скопирован")}</span>
+<span class="wb-when">создано {esc(fmt_when(t['created_at']))}</span></p>
 <p class="small mut wb-tools">{open_in_bot(bot)}
 {copy_btn(panel_link(f"/tickets?t={ticket_id}"), "Ссылка на обращение скопирована")}</p>
 {edit}</div>"""
@@ -1553,19 +1619,20 @@ async def _tickets_access(request: Request) -> str:
         person = dict(row)
         uid = as_str(person.get("user_id"))
         sees_all = sees_all_by_id.get(uid, False)
-        position = person.get("position") or person.get("role") or "—"
+        position = as_str(person.get("position") or person.get("role") or "—")
+        # Галочку ставят человеку, а не строке с обрезанным именем, поэтому
+        # ФИО целиком, а должность - отдельной строкой мельче.
+        who = fio(person.get("full_name"), uid, FIO_MAX)
         items.append(
             f"""<form method="post" action="/panel/tickets/see-all" class="wb-access">
 {csrf(request)}<input type="hidden" name="user_id" value="{esc(uid)}">
 <label><input type="checkbox" name="value" value="1" {'checked' if sees_all else ''}
- onchange="this.form.submit()"> {esc(short(f"{person.get('full_name', uid)} · {position}", 40))}</label>
+ onchange="this.form.submit()"><span class="wb-access-name">{esc(who)}
+<span class="wb-access-pos">{esc(position)}</span></span></label>
 </form>""")
     return f"""<div class="card"><h2>Кто видит чужие обращения</h2>
 <p class="small mut">Сотрудник без галочки видит только свои обращения. Системные права
-в список не попадают - они и так видят всё.</p>{''.join(items)}
-<style>.wb-access{{display:inline-block;margin:0 8px 4px 0}}
-.wb-access label{{font-size:13px;display:flex;gap:6px;align-items:center;cursor:pointer}}</style>
-</div>"""
+в список не попадают - они и так видят всё.</p>{''.join(items)}</div>"""
 
 
 @router.get("/attachments/{name}")
@@ -1587,7 +1654,7 @@ async def attachment_download(request: Request, name: str):
 async def ticket_new(request: Request):
     """Создание обращения из панели: для заявок, пришедших не через бота."""
     user = await require_user(request)
-    staff_options = await _staff_choices()
+    staff_options, staff_titles = await _staff_choices()
     body = f"""<div class="card"><h2>Новое обращение</h2>
 <form method="post" action="/panel/tickets/new">{csrf(request)}
 <div class="grid">
@@ -1595,7 +1662,7 @@ async def ticket_new(request: Request):
 <div><label>ФИО (если ещё не регистрировался)</label><input name="full_name"></div>
 <div><label>Группа</label><input name="group_code" placeholder="24-23"></div>
 <div>{select("category", dict(CATS), "feedback")}</div>
-<div>{select("target_admin_id", staff_options, "")}</div>
+<div>{select("target_admin_id", staff_options, "", titles=staff_titles)}</div>
 <div class="full"><label>Текст обращения</label>
 <textarea name="text_content" rows="4" required></textarea></div>
 <div><label>Кабинет выдачи</label>
@@ -2314,17 +2381,26 @@ def profile_cell(username) -> str:
 
 
 def _people_table(rows) -> str:
-    body = "".join(
-        f"<tr data-hk><td><a href='/panel/people/{esc(row['user_id'])}'><b>{esc(row['fio'] or row['staff_name'] or row['display_name'])}</b></a>"
-        f"<div class='small mut'>{esc(repo.KIND_TITLES.get(repo.contact_kind(row), '—'))}</div></td>"
-        f"<td>{esc(row['group_code'] or row['position'] or '—')}</td>"
-        f"<td>{code_cell(row['user_id'], 'MAX ID скопирован')}</td>"
-        f"<td>{profile_cell(row['username'])}</td>"
-        f"<td>{esc(row['tickets'])}</td><td class='small mut'>{esc(fmt_when(row['last_seen']))}</td></tr>"
-        for row in rows
-    ) or "<tr><td class='mut'>Никого не найдено</td></tr>"
+    body = []
+    for row in rows:
+        # Полное ФИО - то, по чему человека ищут в записи, поэтому целиком;
+        # инициалы под ним помогают сориентироваться, но имя не заменяют.
+        name = fio(row["fio"] or row["staff_name"] or row["display_name"], row["user_id"])
+        brief = fio_brief(name)
+        brief_html = f'<div class="small mut wb-brief">{esc(brief)}</div>' if brief else ""
+        body.append(
+            f"<tr data-hk><td><a href='/panel/people/{esc(row['user_id'])}' class='wb-name'>"
+            f"<b>{esc(name)}</b></a>{brief_html}"
+            f"<div class='small mut'>{esc(repo.KIND_TITLES.get(repo.contact_kind(row), '—'))}</div></td>"
+            f"<td>{esc(row['group_code'] or row['position'] or '—')}</td>"
+            f"<td>{code_cell(row['user_id'], 'MAX ID скопирован')}</td>"
+            f"<td>{profile_cell(row['username'])}</td>"
+            f"<td>{esc(row['tickets'])}</td>"
+            f"<td class='small mut'>{esc(fmt_when(row['last_seen']))}</td></tr>")
+    empty = "<tr><td class='mut'>Никого не найдено</td></tr>"
     return ("<table><tr><th>Человек</th><th>Группа / должность</th><th>MAX ID</th>"
-            f"<th>Профиль MAX</th><th>Обращений</th><th>Был</th></tr>{body}</table>")
+            f"<th>Профиль MAX</th><th>Обращений</th><th>Был</th></tr>"
+            f"{''.join(body) or empty}</table>")
 
 
 @router.get("/people")
@@ -2391,7 +2467,7 @@ async def person_card(request: Request, user_id: str):
     card = await repo.user_card(user_id)
     if not card:
         return page("Пользователь", '<div class="card msg-bad">Этот человек ещё не писал боту.</div>', user, "/people")
-    name = card["fio"] or card["staff_name"] or card["display_name"] or f"ID {user_id}"
+    name = fio(card["fio"] or card["staff_name"] or card["display_name"], user_id)
     rows = "".join(
         f"<tr><td><a href='/panel/tickets/{esc(t['ticket_id'])}'>№{esc(t['ticket_id'])}</a></td>"
         f"<td>{esc(STATUS.get(t['status'], t['status']))}</td>"
@@ -2445,13 +2521,18 @@ async def person_card(request: Request, user_id: str):
               f"Удалить {name} вместе с {tickets_count} обращениями и перепиской? Действие необратимо.",
               "btn-bad")}
 </div>"""
+    # ФИО целиком, а инициалы - отдельной строкой под ним: сисадмин узнаёт
+    # человека с ходу, но полное имя при этом не теряется.
+    brief = fio_brief(name)
+    brief_html = f'<p class="small mut wb-brief">{esc(brief)}</p>' if brief else ""
     body = f"""
-<div class="card"><h2>{esc(name)}</h2>
+<div class="card"><h2 class="wb-name">{esc(name)}</h2>{brief_html}
 <table>
 <tr><th>Роль в боте</th><td>{esc(repo.KIND_TITLES.get(card['kind'], card['kind']))}</td></tr>
 <tr><th>MAX ID</th><td>{code_cell(user_id, "MAX ID скопирован")}</td></tr>
 <tr><th>Профиль MAX</th><td>{profile_cell(card['username'])}</td></tr>
-<tr><th>Студент</th><td>{esc(card['fio'] or '—')}, группа {esc(card['group_code'] or '—')}</td></tr>
+<tr><th>Студент</th><td>{esc(card['fio'] or '—')}
+<span class="wb-group">{esc(card['group_code'] or '—')}</span></td></tr>
 <tr><th>Сотрудник</th><td>{esc(card['staff_name'] or '—')}, {esc(card['position'] or 'должность не назначена')}</td></tr>
 <tr><th>Отдел</th><td>{esc(card['department'] or '—')}</td></tr>
 <tr><th>Сообщений боту</th><td>{esc(card['messages'])}</td></tr>

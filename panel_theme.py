@@ -863,6 +863,20 @@ tr.hk-on td:first-child{box-shadow:inset 3px 0 0 var(--acc)}
 .wb-wait{display:inline-flex;align-items:center;gap:4px;color:var(--warn);white-space:nowrap}
 .wb-wait .ico{width:14px;height:14px}
 .wb-date{flex:0 0 auto;margin-left:auto;color:var(--mut);font-size:var(--text-xs)}
+/* ФИО идёт отдельной строкой и переносится по словам: обрезанное многоточием
+   имя в очереди бесполезно - по нему обращение не сверяют с человеком. */
+.wb-who{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 var(--space-sm);
+     margin:0 0 var(--space-xs);color:var(--mut);font-size:var(--text-sm);
+     white-space:normal;overflow-wrap:anywhere;word-break:normal}
+.wb-who>.ico{align-self:center}
+.wb-fio{min-width:0;color:var(--ink);font-size:var(--text-sm);font-weight:var(--weight-semi);
+     white-space:normal;overflow-wrap:anywhere;word-break:normal}
+.wb-brief{color:var(--mut);font-size:var(--text-xs);margin:0 0 var(--space-xs)}
+.wb-name{white-space:normal;overflow-wrap:anywhere;word-break:normal}
+.wb-group{padding:0 6px;border:1px solid var(--line);border-radius:var(--radius-sm);
+     color:var(--mut);font-size:var(--text-xs);white-space:nowrap}
+.wb-id,.wb-when{color:var(--mut);font-size:var(--text-xs)}
+.wb-when{margin-left:var(--space-sm)}
 .wb-text{display:block;margin-top:1px;overflow:hidden;text-overflow:ellipsis;
      white-space:nowrap;color:var(--mut)}
 .wb-bulk{margin-top:10px;padding-top:var(--space-sm);border-top:1px solid var(--line);font-size:var(--text-sm)}
@@ -872,8 +886,12 @@ tr.hk-on td:first-child{box-shadow:inset 3px 0 0 var(--acc)}
 .wb-card table td:nth-child(1){width:130px}
 .wb-card table td:nth-child(2){width:180px}
 .wb-card table td small{color:var(--mut)}
-.wb-access{display:inline-block;margin:0 var(--space-sm) var(--space-xs) 0}
+.wb-access{display:inline-block;margin:0 var(--space-sm) var(--space-xs) 0;
+     vertical-align:top}
 .wb-access label{display:flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:var(--text-sm)}
+.wb-access-name{display:flex;flex-direction:column;min-width:0;white-space:normal;
+     overflow-wrap:anywhere;word-break:normal}
+.wb-access-pos{color:var(--mut);font-size:var(--text-xs)}
 
 /* ── раскрывающиеся детали ───────────────────────────────────────────────── */
 details{margin-bottom:var(--space-md);padding:0 var(--space-lg);overflow:hidden;
@@ -1062,6 +1080,10 @@ pre{max-height:560px;margin:0;padding:var(--space-lg);overflow:auto;border:1px s
   main{margin:0;padding:0;max-width:none}
   .workbench{grid-template-columns:1fr}
   .wb-list{max-height:none;overflow:visible}
+  /* На бумаге многоточие не видно - текст обрезался бы молча. Поэтому у
+     шапки карточки отменяем и ellipsis, и запрет на перенос строк. */
+  .wb-who,.wb-fio,.wb-brief,.wb-name,.wb-group,.wb-id,.wb-when,.wb-access-name{
+    white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
   .card{break-inside:avoid;box-shadow:none}
   .card:hover{transform:none}
 }
