@@ -8,15 +8,16 @@ import httpx
 
 import config
 import database as db
+import max_api
 import repository as repo
 import timetable as tt
 from handlers import schedules
-from handlers import demo
 from handlers.common import BACK, DEFAULT_WELCOME, admin_of, api, is_super, log, need_super, notify, spawn
 from handlers.registry import callback, state
 from max_api import btn
-from utils import (CODE_TTL_CHOICES, POSITION_HINTS, STAFF_CATS, STATUS, as_str, fmt_when, gen_code, group_code,
-                   is_sysadmin_role, norm_group, profile_url, short, tail_file, to_int, ttl_label, valid_group)
+from utils import (CODE_TTL_CHOICES, POSITION_HINTS, STAFF_CATS, STATUS, as_str, cut_plain, fmt_when, gen_code,
+                   group_code, is_sysadmin_role, norm_group, profile_url, short, short_name, tail_file, to_int,
+                   ttl_label, valid_group)
 
 
 # ── общие мелочи для строк из БД ─────────────────────────────────────────────
@@ -163,7 +164,10 @@ def staff_list_kb(rows) -> list:
     keyboard: list = []
     for department in sorted(departments, key=lambda name: (name == "Без отдела", name)):
         members = departments[department]
-        keyboard.append([btn(f"🏛 {short(department, 16)} · {len(members)}", f"sdep:{short(department, 30)}")])
+        # отдел бывает «Учебно-производственный» - в кнопку влезает 12 символов,
+        # поэтому сокращаем, а полное название идёт строкой текстом выше
+        keyboard.append([btn(f"🏛 {cut_plain(department, 10)} {len(members)}",
+                             f"sdep:{short(department, 30)}")])
         for row in members:
             sid = _field(row, "user_id")
             cat = _field(row, "ticket_category", default="all") or "all"
@@ -186,7 +190,7 @@ async def cb_admins(x, arg):
     await api.send(
         x, text,
         [*kb,
-         [btn("➕ Добавить сотрудника", "sfadd"), btn("👤 Кто без прав", "nostaff")],
+         [btn("➕ Добавить", "sfadd"), btn("👤 Без прав", "nostaff")],
          [btn("🔐 Сис-админы", "syslist"), btn("🗝 Коды и заявки", "codes")],
          *BACK],
     )
@@ -234,8 +238,8 @@ async def send_staff_card(x: str, staff_id: str):
             [btn("✏️ Должность", f"sfr:{sid}"), btn("🏛 Отдел", f"sfdep:{sid}")],
             [btn("🏢 Кабинет", f"sfo:{sid}"), btn(ROLE_PRESET, f"sft:{sid}")],
             *cat_rows,
-            [btn("📢 Рассылка: " + ("запретить" if _flag(_field(a, "can_broadcast", default="0")) else "разрешить"), f"sfb:{sid}")],
-            [btn("🔐 Сделать сис-админом", f"sfsa:{sid}"), btn("🗑 Удалить", f"sfdel:{sid}")],
+            [btn("📢 Рассылка: " + ("выкл." if _flag(_field(a, "can_broadcast", default="0")) else "вкл."), f"sfb:{sid}")],
+            [btn("🔐 В сис-админы", f"sfsa:{sid}"), btn("🗑 Удалить", f"sfdel:{sid}")],
             [btn("↩️ К списку", "admins")],
         ],
     )
@@ -629,7 +633,10 @@ async def send_people(x: str, kind: str = "", offset: int = 0):
                for code, label in PEOPLE_KINDS.items()]
     keyboard = [filters[i:i + 2] for i in range(0, len(filters), 2)]
     for row in rows:
-        keyboard.append([btn(short(contact_line(row), 60), f"person:{_field(row, 'user_id')}")])
+        # в кнопке только фамилия с инициалами: полная строка с ником и группой
+        # обрезалась многоточием и всё равно не читалась
+        keyboard.append([btn(short_name(_field(row, "full_name"), max_api.BUTTON_TEXT),
+                             f"person:{_field(row, 'user_id')}")])
     if offset > 0:
         keyboard.append([btn("⬅️ Назад", f"people:{kind}:{max(0, offset - PEOPLE_PAGE)}")])
     if offset + len(rows) < total:
@@ -663,7 +670,7 @@ async def cb_today(x, arg):
     lines.append(f"📦 Обращений за сутки: {summary['tickets_day']}")
     await api.send(
         x, "\n".join(lines),
-        [[btn("📬 Обращения без ответа", "staff"), btn("📥 Заявки", "requests")],
+        [[btn("📬 Без ответа", "staff"), btn("📥 Заявки", "requests")],
          [btn("👤 Кто без прав", "nostaff"), btn("🗝 Коды", "codes")],
          [btn("🧹 Почистить диалоги", "cleandlg")], *BACK],
     )
@@ -723,14 +730,14 @@ async def cb_person(x, arg):
         lines.append(f"Последние обращения: {recent}")
     keyboard = [[btn("↩️ К пользователям", "people")]]
     if card["kind"] == "request" and card["request"] and card["request"]["status"] == "new":
-        keyboard.insert(0, [btn("✅ Одобрить заявку", f"reqok:{card['user_id']}"),
+        keyboard.insert(0, [btn("✅ Одобрить", f"reqok:{card['user_id']}"),
                             btn("❌ Отклонить", f"reqno:{card['user_id']}")])
     elif not card["role_type"]:
-        keyboard.insert(0, [btn("👔 Сделать сотрудником", f"make:{card['user_id']}")])
+        keyboard.insert(0, [btn("👔 В сотрудники", f"make:{card['user_id']}")])
     if not is_sysadmin_role(as_str(card["role_type"])):
         opened = await repo.student_open_tickets_count(card["user_id"])
         if opened:
-            keyboard.append([btn(f"🗑 Удалить всё ({card['tickets']})", f"persondel:{card['user_id']}:1")])
+            keyboard.append([btn("🗑 Удалить и обращения", f"persondel:{card['user_id']}:1")])
         else:
             keyboard.append([btn("🗑 Удалить пользователя", f"persondel:{card['user_id']}")])
     await api.send(x, "\n".join(lines), keyboard)
@@ -793,7 +800,7 @@ async def cb_make_staff(x, arg):
         return await api.send(
             x,
             f"{contact_name(card)} уже {role} — права выдавать не нужно. Открыть карточку?",
-            [[btn("👤 Открыть карточку", f"sf:{card['user_id']}"), btn("↩️ К сотрудникам", "admins")]],
+            [[btn("👤 Открыть", f"sf:{card['user_id']}"), btn("↩️ К сотрудникам", "admins")]],
         )
     if card["kind"] == "request":
         return await api.send(x, "Сначала одобрите заявку.", [[btn("✅ Одобрить заявку", f"reqok:{card['user_id']}")]])
@@ -885,7 +892,8 @@ async def send_nostaff(x: str):
     if not rows:
         return await api.send(x, "✅ Все, кто писал боту, уже сотрудники.",
                               [[btn("👥 Сотрудники", "admins")], *BACK])
-    keyboard = [[btn(short(contact_line(row), 58), f"make:{_field(row, 'user_id')}")]
+    keyboard = [[btn(short_name(_field(row, "full_name"), max_api.BUTTON_TEXT),
+                  f"make:{_field(row, 'user_id')}")]
                 for row in rows]
     await api.send(
         x,
@@ -918,7 +926,7 @@ async def send_codes(x: str):
     if pending:
         lines.append("")
         lines.append(f"📥 Необработанных заявок: {len(pending)}")
-    keyboard = [[btn("🎟 Новый код", "codegen"), btn("✉️ Пригласить по ID", "codeinv")]]
+    keyboard = [[btn("🎟 Новый код", "codegen"), btn("✉️ Пригласить", "codeinv")]]
     if pending:
         keyboard.append([btn(f"📥 Заявки · {len(pending)}", "requests")])
     keyboard.append([btn("↩️ К сотрудникам", "admins")])
@@ -1046,7 +1054,7 @@ async def cb_sysadmin_list(x, arg):
     for row in rows:
         source = "из .env" if row["in_env"] else "выдан в панели"
         lines.append(f"{row['full_name']} · ID {row['user_id']} · {source}")
-        keyboard.append([btn(f"Снять права: {short(row['full_name'], 24)}", f"sysdel:{row['user_id']}")])
+        keyboard.append([btn("Снять права", f"sysdel:{row['user_id']}")])
     revoked = sorted(await repo.revoked_sysadmins())
     if revoked:
         lines.append("")
@@ -1302,7 +1310,7 @@ async def all_groups() -> list[tuple[str, bool]]:
 
 async def send_groups(x: str, note: str = ""):
     rows = await all_groups()
-    kb = [[btn(f"{'🟢' if active else '⚪'} {code}", f"groupedit:{code}"),
+    kb = [[btn(f"{'🟢' if active else '⚪'} {cut_plain(code, 11)}", f"groupedit:{code}"),
            btn("🔄 Скрыть" if active else "👁 Показать", f"grouptoggle:{code}"),
            btn("🗑 Удалить", f"groupdel:{code}")] for code, active in rows]
     text = f"👥 Группы в справочнике: {len(rows)}" if rows else "👥 Справочник групп пуст. Добавьте первую группу."
@@ -1485,8 +1493,8 @@ async def cb_schedules(x, arg):
     if nav:
         kb.append(nav)
     await api.send(x, text, [*kb,
-                            [btn("➕ Добавить / изменить", "scadd"),
-                             btn("⬇️ Импорт с сайта", "scimport")],
+                            [btn("➕ Добавить", "scadd"),
+                             btn("⬇️ Импорт", "scimport")],
                             [btn("📱 Обновить нижнее меню", "scmenu")],
                             *BACK])
 
@@ -1508,7 +1516,7 @@ async def cb_schedule_card(x, group):
         x,
         f"📅 {code}{state_line}\n{_field(row, 'pdf_url')}",
         [[btn("👀 Открыть расписание", f"scview:{code}")],
-         [btn("✏️ Изменить ссылку", f"scedit:{code}"), btn("🗑 Удалить", f"scdel:{code}")],
+         [btn("✏️ Сменить", f"scedit:{code}"), btn("🗑 Удалить", f"scdel:{code}")],
          [btn("↩️ К списку", "schedules")]],
     )
 
@@ -1701,11 +1709,10 @@ async def send_settings(x: str):
     await api.send(
         x,
         f"⚙️ Настройки\n\nПриём обращений: {'включён' if enabled else 'выключен'}\n"
-        f"Демо-стенд: {await demo.demo_status()}\nПриветствие студентов:\n{welcome}",
+        f"Приветствие студентов:\n{welcome}",
         [
-            [btn("Приём обращений: " + ("выключить" if enabled else "включить"), "set:tickets")],
+            [btn("📥 Обращения: " + ("выключить" if enabled else "включить"), "set:tickets")],
             [btn("✏️ Изменить приветствие", "set:welcome")],
-            [btn("🎬 Демо-стенд", "demo")],
             *BACK,
         ],
     )
