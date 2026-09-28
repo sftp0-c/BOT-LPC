@@ -7,6 +7,7 @@
 Вкладки: обзор, обращения, пользователи, сотрудники, коды и заявки, база данных,
 настройки, журнал и тесты. JSON-API для скриптов и проверок — /panel/api/*.
 """
+import clock
 import contextvars
 import csv
 import hmac
@@ -1463,11 +1464,15 @@ async def ticket_new_submit(request: Request):
         return redirect("/panel/tickets/new")
     group_raw = value(data, "group_code").strip()
     if group_raw and not await repo.get_user(student_id):
-        await db.run("INSERT INTO users(user_id, full_name, group_code) VALUES(?,?,?) "
-                     "ON CONFLICT(user_id) DO UPDATE SET full_name=excluded.full_name, "
-                     "group_code=excluded.group_code",
-                     (student_id, value(data, "full_name").strip() or f"Студент {student_id}",
-                      group_code(group_raw)))
+        # created_at пишем явно: DEFAULT (datetime('now')) в схеме - это UTC,
+        # а всё остальное время в проекте локальное
+        await db.run(
+            "INSERT INTO users(user_id, full_name, group_code, created_at) VALUES(?,?,?,?) "
+            "ON CONFLICT(user_id) DO UPDATE SET full_name=excluded.full_name, "
+            "group_code=excluded.group_code",
+            (student_id, value(data, "full_name").strip() or f"Студент {student_id}",
+             group_code(group_raw), clock.stamp()),
+        )
     ticket_id = await repo.create_ticket(student_id, value(data, "target_admin_id"),
                                          value(data, "category"), text, "")
     pickup = value(data, "pickup_place").strip()
