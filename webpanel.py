@@ -447,7 +447,46 @@ async def global_search(request: Request, q: str = ""):
     return page("Поиск", body, user, "/")
 
 
-PICKUP_DEFAULT = "115"        # кабинет выдачи по умолчанию; исключения - в карточке
+# Кабинет 115 зашит ТОЛЬКО под справки - так и было сказано приёмной.
+# Для остального это не константа: сотрудник выбирает кабинет, иначе
+# «готово» не закрывает обращение молча.
+CERT_PICKUP = "115"
+
+# Разделы, где справка забирается в 115. Всё, чего здесь нет, идёт в
+# кабинет ответственного сотрудника.
+CERT_CATEGORIES = ("certificates", "certificate", "spravka", "справка", "docs", "documents")
+CERT_WORDS = ("справк", "справка", "справки")
+
+
+def is_certificate(t) -> bool:
+    """Обращение про справку - и только для них 115 остаётся зашитым."""
+    category = as_str((t or {}).get("category") if isinstance(t, dict) else t["category"]).lower()
+    if category in CERT_CATEGORIES:
+        return True
+    text = as_str((t or {}).get("topic") if isinstance(t, dict) else t["topic"]).lower()
+    text += " " + as_str((t or {}).get("text_content") if isinstance(t, dict) else t["text_content"]).lower()
+    return any(word in text for word in CERT_WORDS)
+
+
+def pickup_hint(t) -> str:
+    """Подсказка под полем кабинета: что подставится, если оставить пустым."""
+    if is_certificate(t):
+        return f"справка - {CERT_PICKUP}"
+    return "кабинет ответственного сотрудника"
+
+
+async def pickup_options() -> str:
+    """Кабинеты для подсказки при вводе: из кабинетов сотрудников плюс 115.
+
+    Спрашивать у человека «какой кабинет» бесполезно - он и не знает, что
+    сотрудник сидит в 204-м. Список собирается из того, что уже есть в базе.
+    """
+    rooms = {CERT_PICKUP}
+    for row in await repo.list_staff():
+        office = as_str(row["office"]).strip() if "office" in row.keys() else ""
+        if office:
+            rooms.add(office)
+    return "".join(f"<option value=\"{esc(room)}\">" for room in sorted(rooms))
 TICKETS_PAGE = 25             # обращений в очереди рабочего места
 
 
@@ -1274,9 +1313,9 @@ def _tickets_queue(request: Request, rows, latest: dict, query: str, selected, a
                         "archive": "В архив"}, "assign")}</div>
 <div><button class="btn-ok">Применить</button></div></div>
 <div><label>Куда</label><input name="value"
-  placeholder="сотрудник, статус или кабинет {PICKUP_DEFAULT}"></div>
+  placeholder="сотрудник, статус или кабинет 115"></div>
 <p class="small mut">Отметьте обращения галочкой слева. Поле «Куда» принимает свой текст:
-например <code>115</code> для кабинета или <code>in_progress</code> для статуса.</p>
+например <code>115</code> для кабинета справок или <code>in_progress</code> для статуса.</p>
 </details>
 <input type="hidden" name="all" value="{esc(ids)}">
 </form>{more}</div>"""
@@ -1325,6 +1364,7 @@ async def _ticket_workbench(request: Request, t, bot: str = "") -> str:
         f"<td class='small'>{esc(EVENT_LABELS.get(e['event'], e['event']))}: {esc(e['detail'] or '—')}</td></tr>"
         for e in reversed(events)
     ) or "<tr><td colspan='3' class='mut'>Событий нет</td></tr>"
+    pickup_options_html = await pickup_options()
     edit = f"""
 <form method="post" action="/panel/tickets/{ticket_id}/edit" class="wb-edit">{csrf(request)}
 <div class="grid">
@@ -1334,7 +1374,9 @@ async def _ticket_workbench(request: Request, t, bot: str = "") -> str:
 <div>{select("category", dict(CATS), as_str(t['category']))}</div>
 <div><label>Тема</label><input name="topic" value="{esc(t['topic'])}"></div>
 <div><label>Кабинет выдачи</label>
-<input name="pickup_place" value="{esc(t['pickup_place'])}" placeholder="{PICKUP_DEFAULT}"></div>
+<input name="pickup_place" value="{esc(t['pickup_place'])}"
+  list="pickup-rooms" placeholder="{esc(pickup_hint(t))}"></div>
+<datalist id="pickup-rooms">{pickup_options_html}</datalist>
 <div><label>Срок готовности</label><input name="ready_until" value="{esc(t['ready_until'])}"
   placeholder="например, 15:00 в пятницу"></div>
 <div>{select("status", dict(STATUS), as_str(t['status']))}</div>
@@ -1342,12 +1384,14 @@ async def _ticket_workbench(request: Request, t, bot: str = "") -> str:
 <div class="grid" style="margin-top:10px">
 <div><button class="btn-ok">Сохранить</button></div>
 <div>{_action_form(request, f'/panel/tickets/{ticket_id}/ready',
-                   f'{icon("check", 16)} Справка готова')}</div>
+                   f'{icon("check", 16)} Готово')}</div>
 <div>{_action_form(request, f'/panel/tickets/{ticket_id}/archive',
                    f'{icon("archive", 16)} В архив', cls="btn-grey")}</div>
 </div>
-<p class="small mut">Пустое поле не затирает старое значение. «Справка готова» пишет
-студенту кабинет {PICKUP_DEFAULT} и закрывает обращение.</p></form>"""
+<p class="small mut">Пустое поле не затирает старое значение. «Готово» пишет
+студенту кабинет и закрывает обращение. Кабинет {CERT_PICKUP} зашит только
+под справки; для остального нужно указать кабинет, иначе панель не закроет
+обращение молча.</p></form>"""
     # шапка карточки - то, что должно попасть на бумагу
     head = f"""<div class="card"><h2>Обращение №{ticket_id}
 <span class="pill">{esc(plain(STATUS.get(as_str(t['status']), as_str(t['status']))))}</span></h2>
@@ -1444,7 +1488,9 @@ async def ticket_new(request: Request):
 <div>{select("target_admin_id", staff_options, "")}</div>
 <div class="full"><label>Текст обращения</label>
 <textarea name="text_content" rows="4" required></textarea></div>
-<div><label>Кабинет выдачи</label><input name="pickup_place" placeholder="{PICKUP_DEFAULT}"></div>
+<div><label>Кабинет выдачи</label>
+<input name="pickup_place" list="pickup-rooms-new" placeholder="для справок - {CERT_PICKUP}"></div>
+<datalist id="pickup-rooms-new">{await pickup_options()}</datalist>
 </div>
 <div class="grid" style="margin-top:10px">
 <div><button class="btn-ok">Создать</button></div>
@@ -1519,13 +1565,23 @@ async def ticket_edit(request: Request, ticket_id: int):
 
 @router.post("/tickets/{ticket_id}/ready")
 async def ticket_ready(request: Request, ticket_id: int):
-    """Кнопка «Справка готова»: сообщение студенту с кабинетом и закрытие."""
+    """Кнопка «Готово»: сообщение студенту с кабинетом и закрытие.
+
+    Кабинет 115 подставляется только под справки. Для остального кабинет
+    должен быть указан - иначе документ готов, а сказать студенту, где его
+    забрать, нечем.
+    """
     actor = await require_form(request)
     t = await repo.get_ticket(ticket_id)
     if not t:
         flash("!Обращение не найдено.")
         return redirect("/panel/tickets")
-    place = as_str(t["pickup_place"]).strip() or PICKUP_DEFAULT
+    place = as_str(t["pickup_place"]).strip()
+    if not place and is_certificate(t):
+        place = CERT_PICKUP
+    if not place:
+        flash("!Укажите кабинет выдачи: 115 зашит только под справки.")
+        return redirect(f"/panel/tickets?t={ticket_id}")
     await repo.update_ticket(ticket_id, actor, status="ready", pickup_place=place)
     await repo.add_ticket_message(ticket_id, actor, "staff",
                                   f"✅ Документ готов. Заберите в кабинете {place}.")
