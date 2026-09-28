@@ -1,4 +1,6 @@
-﻿"""Аналитика: данные для диаграмм и сама страница с графиками."""
+"""Аналитика: данные для диаграмм и сама страница с графиками."""
+import re
+
 import pytest
 
 import charts
@@ -82,7 +84,10 @@ def test_bar_chart_renders_svg_and_tooltip():
 def test_bar_chart_with_second_series():
     html = charts.bar_chart([{"day": "2026-09-24", "count": 4, "done": 2}], "count", "day",
                             "Обращения", second_key="done")
-    assert "#22c55e" in html and "завершено 2" in html
+    # цвет приходит ролью палитры (её значение подставляет CSS панели),
+    # поэтому в разметке класса, а не «голый» hex
+    assert "chart-c-bar_2" in html and "завершено 2" in html
+    assert not re.search(r'#[0-9a-f]{6}', html, re.I), "в графике не должно быть своих цветов"
 
 
 def test_donut_and_legend():
@@ -152,6 +157,5 @@ def test_analytics_shows_charts_with_data(panel_client):
 def webpanel_cookie() -> str:
     import webpanel
     return webpanel.COOKIE
-
 
 
