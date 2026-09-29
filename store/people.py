@@ -223,3 +223,139 @@ async def users_without_consent(limit: int = 100) -> list:
         "SELECT user_id, full_name, group_code, created_at FROM users "
         "WHERE consent_at='' ORDER BY created_at LIMIT ?", (int(limit),))
     return [dict(row) for row in rows]
+
+# ── досье человека: всё о нём на одной странице ─────────────────────────────────
+# Досье собирается здесь, а не в шаблоне страницы: иначе открытие одной карточки
+# стоило бы столько запросов, сколько на ней блоков, и панель подтормаживала бы
+# тем сильнее, чем больше у человека жизни в боте.
+DOSSIER_HISTORY = 40          # сколько действий сис-админа показываем в досье
+DOSSIER_HISTORY_WINDOW = 200  # сколько строк журнала перечитываем в поисках упоминаний
+DOSSIER_TICKETS = 300         # сколько обращений читаем на человека
+
+
+# Человек в боте - это три строки сразу: контакт (писал ли и под каким ником),
+# регистрация студента и карточка сотрудника. Левое соединение от пустого
+# «ключа» читает все три одним запросом и всегда возвращает строку, поэтому
+# «нет такого человека» отличается от «есть, но писал гостем» без второго
+# запроса на проверку.
+_DOSSIER_PERSON_SQL = """
+SELECT (c.user_id IS NOT NULL) has_contact, (u.user_id IS NOT NULL) has_user,
+       (a.user_id IS NOT NULL) has_admin,
+       COALESCE(c.username, '') username, COALESCE(c.display_name, '') display_name,
+       COALESCE(c.messages, 0) messages, COALESCE(c.last_text, '') last_text,
+       COALESCE(c.first_seen, '') first_seen, COALESCE(c.last_seen, '') last_seen,
+       COALESCE(u.full_name, '') fio, COALESCE(u.group_code, '') group_code,
+       COALESCE(u.created_at, '') registered_at,
+       COALESCE(u.consent_at, '') consent_at, COALESCE(u.consent_version, '') consent_version,
+       COALESCE(a.full_name, '') staff_name, COALESCE(a.position, '') position,
+       COALESCE(a.role, '') role, COALESCE(a.department, '') department,
+       COALESCE(a.office, '') office, COALESCE(a.role_type, '') role_type,
+       COALESCE(a.ticket_category, '') ticket_category,
+       COALESCE(a.can_broadcast, 0) can_broadcast,
+       COALESCE(a.see_all_tickets, 0) see_all_tickets,
+       COALESCE(a.vacation_until, '') vacation_until, COALESCE(a.created_at, '') staff_since,
+       (SELECT GROUP_CONCAT(s.group_code, ' · ') FROM schedule_subscriptions s
+         WHERE s.user_id = k.user_id) subscriptions,
+       (SELECT r.status FROM staff_requests r WHERE r.user_id = k.user_id) request_status
+FROM (SELECT ? AS user_id) k
+LEFT JOIN contacts c ON c.user_id = k.user_id
+LEFT JOIN users u ON u.user_id = k.user_id
+LEFT JOIN admins a ON a.user_id = k.user_id
+"""
+
+
+# Все обращения человека разом, с именем ответственного и числом сообщений:
+# очередь в панели фильтруют и считают на месте, и на каждую строку нужен был бы
+# свой запрос - ровно та беда, от которой страницу отучают.
+_DOSSIER_TICKETS_SQL = """
+SELECT t.ticket_id, t.category, t.topic, t.status, t.created_at, t.updated_at, t.deleted_at,
+       t.target_admin_id, COALESCE(a.full_name, '') staff_name,
+       (SELECT COUNT(*) FROM ticket_messages m WHERE m.ticket_id = t.ticket_id) messages
+FROM tickets t LEFT JOIN admins a ON a.user_id = t.target_admin_id
+WHERE t.student_id = ? ORDER BY t.ticket_id DESC LIMIT ?
+"""
+
+
+# Журнал действий сис-админа. Отдельной колонки «над кем» в admin_log нет, поэтому
+# упоминание ищется по тексту подробностей. Спецсимволы LIKE экранируются, а
+# граница цифр проверяется в Python - иначе досье человека №10 показывало бы
+# записи про №100.
+_DOSSIER_HISTORY_SQL = """
+SELECT l.id, l.actor_id, l.action, l.details, l.created_at,
+       COALESCE(a.full_name, '') actor_name
+FROM admin_log l LEFT JOIN admins a ON a.user_id = l.actor_id
+WHERE l.details LIKE ? ESCAPE '\\' ORDER BY l.id DESC LIMIT ?
+"""
+
+
+def _like(text: str) -> str:
+    """Шаблон LIKE, в котором «%» и «_» не значат ничего."""
+    escaped = as_str(text).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def _mentions(details, user_id: str) -> bool:
+    """Упоминается ли в строке именно этот ID, а не его начало или продолжение.
+
+    Ищется вручную, а не регуляркой: слой store держится на стандартной
+    библиотеке из нескольких модулей, и ради одной проверки добавлять туда
+    ``re`` не хочется. В журнале ID всегда стоит между не-цифрами или краями
+    строки, поэтому «№10» и «№100» различаются без всяких lookahead.
+    """
+    text = as_str(details)
+    needle = as_str(user_id)
+    if not needle:
+        return False
+    start = text.find(needle)
+    while start >= 0:
+        tail = start + len(needle)
+        left = text[start - 1] if start else ""
+        right = text[tail] if tail < len(text) else ""
+        if not left.isdigit() and not right.isdigit():
+            return True
+        start = text.find(needle, tail)
+    return False
+
+
+def _days_since(stamp) -> int:
+    """Сколько дней человек в боте: по первому обращению, а не по регистрации."""
+    moment = clock.parse(stamp)
+    return max(0, (clock.today() - moment.date()).days) if moment else 0
+
+
+async def person_dossier(user_id: str) -> dict | None:
+    """Кто человек: личность, согласие, права, подписки, обращения и журнал.
+
+    Один вызов отдаёт всё, что знает о человеке сам раздел «Люди»: больше ни
+    шаблон, ни страница не спрашивают базу по этому поводу. ``None`` означает,
+    что бот человека не знает вовсе - тот ни разу не писал боту и не
+    регистрировался.
+
+    Переписку и нагрузку сотрудника отсюда не отдают намеренно: их считают
+    ``store.tickets`` и ``store.staff``, а оба эти раздела читают
+    ``store.people``, и импорт отсюда собрал бы цикл (test_store_split).
+    Их зовёт страница - теми же функциями, что и карточка сотрудника.
+    """
+    uid = as_str(user_id)
+    person = _row_dict(await db.one(_DOSSIER_PERSON_SQL, (uid,)))
+    if not person or not (person["has_contact"] or person["has_user"] or person["has_admin"]):
+        return None
+    person["kind"] = contact_kind(person)
+    person["kind_title"] = KIND_TITLES.get(person["kind"], person["kind"])
+    person["full_name"] = contact_full_name(person)
+    person["days_in_bot"] = _days_since(person["first_seen"])
+    tickets = [_row_dict(row) for row
+               in await db.many(_DOSSIER_TICKETS_SQL, (uid, DOSSIER_TICKETS))]
+    counts: dict[str, int] = {}
+    for ticket in tickets:
+        code = as_str(ticket["status"])
+        counts[code] = counts.get(code, 0) + 1
+    found = await db.many(_DOSSIER_HISTORY_SQL, (_like(uid), DOSSIER_HISTORY_WINDOW))
+    return {
+        "person": person,
+        "tickets": tickets,
+        "capped": len(tickets) >= DOSSIER_TICKETS,
+        "counts": counts,
+        "history": [_row_dict(row) for row in found
+                    if _mentions(row["details"], uid)][:DOSSIER_HISTORY],
+    }

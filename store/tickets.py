@@ -398,3 +398,65 @@ async def delete_ticket(ticket_id: int) -> tuple[bool, str]:
         return False, f"Обращение №{ticket_id} не найдено"
     await db.run_count("DELETE FROM tickets WHERE ticket_id=?", (int(ticket_id),))
     return True, f"Обращение №{ticket_id} удалено"
+
+
+# ── массовое удаление обращений ───────────────────────────────────────────────
+def _purge_where(include_open: bool) -> str:
+    """Условие области удаления: по умолчанию только архивные обращения.
+
+    Пустая строка означает «все обращения» - это область «включая открытые».
+    Вынесено отдельно, потому что подсчёт и удаление должны смотреть на одну и
+    ту же область: разъехавшиеся числа в предпросмотре страдали бы сильнее
+    всего, ведь по ним человек решает, нажимать ли кнопку.
+    """
+    return "" if include_open else " WHERE deleted_at<>''"
+
+
+async def bulk_delete_count(include_open: bool = False) -> dict:
+    """Сколько обращений, сообщений и событий уйдёт под массовое удаление.
+
+    Ничего не удаляет: это счётчик для предпросмотра на странице. Сообщения и
+    события считаются по тем же обращениям, что и сами обращения, поэтому три
+    числа всегда об одном и том же наборе строк.
+    """
+    where = _purge_where(include_open)
+    picked = f"(SELECT ticket_id FROM tickets{where})"
+    row = await db.one(
+        f"SELECT (SELECT COUNT(*) FROM tickets{where}) n_tickets, "
+        f"(SELECT COUNT(*) FROM ticket_messages WHERE ticket_id IN {picked}) n_messages, "
+        f"(SELECT COUNT(*) FROM ticket_events WHERE ticket_id IN {picked}) n_events"
+    )
+    return {"tickets": int(row["n_tickets"]), "messages": int(row["n_messages"]),
+            "events": int(row["n_events"])}
+
+
+async def bulk_delete_tickets(include_open: bool = False) -> dict:
+    """Массовое удаление обращений: переписка и история, затем сами обращения.
+
+    Возвращает честные числа - сколько строк удалено на самом деле, а не сколько
+    было в предпросмотре: строки могли уйти из базы между показом и нажатием.
+
+    Порядок задан явно, хотя внешние ключи с ON DELETE CASCADE и сделали бы то
+    же самое (связь проверяет database._conn, который на каждом соединении
+    включает PRAGMA foreign_keys). На каскад одного не полагаемся: если бы он
+    не сработал, в базе осталась бы ровно та половина переписки, которую
+    удаляли, и заметить это можно было бы только спустя время. Сначала
+    сообщения, потом события, потом обращения - и всё это одной транзакцией.
+
+    Область по умолчанию - архивные обращения (deleted_at заполнен): живая
+    переписка оттуда не берётся. include_open расширяет область на все.
+
+    Уведомлений студентам здесь нет намеренно: одиночное удаление их шлёт, а на
+    500 обращений прилетело бы 500 писем о том, что студент и не делал.
+    """
+    where = _purge_where(include_open)
+    picked = f"(SELECT ticket_id FROM tickets{where})"
+    async with db._conn() as c:
+        cur = await c.execute(f"DELETE FROM ticket_messages WHERE ticket_id IN {picked}")
+        messages = cur.rowcount
+        cur = await c.execute(f"DELETE FROM ticket_events WHERE ticket_id IN {picked}")
+        events = cur.rowcount
+        cur = await c.execute(f"DELETE FROM tickets{where}")
+        tickets = cur.rowcount
+        await c.commit()
+    return {"tickets": tickets, "messages": messages, "events": events}

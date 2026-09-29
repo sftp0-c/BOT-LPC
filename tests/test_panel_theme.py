@@ -1,4 +1,4 @@
-"""Дизайн-система панели: токены, иконки, темы, анимации.
+﻿"""Дизайн-система панели: токены, иконки, темы, анимации.
 
 Тест живёт рядом с panel_theme.py и проверяет модуль сам по себе: webpanel.py
 здесь не нужен. Логика проверок намеренно строгая - смысл такой, чтобы нельзя
@@ -18,8 +18,8 @@ import panel_theme as theme                        # noqa: E402  (путь за�
 # ── что должно быть в модуле ────────────────────────────────────────────────
 # Иконки всех разделов панели: пока вместо них в меню стояли эмодзи.
 REQUIRED_SECTIONS = ("home", "tickets", "analytics", "people", "user-off", "college",
-                     "students", "staff", "access", "templates", "groups", "schedules",
-                     "broadcasts", "database", "settings", "logs")
+                     "students", "staff", "access", "link", "templates", "groups",
+                     "schedules", "broadcasts", "database", "settings", "logs")
 # Иконки действий, которые бот и панель рисуют рядом с текстом.
 REQUIRED_ACTIONS = ("archive", "reply", "delete", "edit", "search", "chevron-down",
                     "chevron-right", "chevron-left", "close", "plus", "check",

@@ -426,6 +426,7 @@ ICON_NAMES_BY_PATH: dict[str, str] = {
     "/college": "college",
     "/students": "students",
     "/staff": "staff",
+    "/invites": "link",
     "/access": "access",
     "/templates": "templates",
     "/groups": "groups",

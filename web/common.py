@@ -294,6 +294,7 @@ NAV_GROUPS: tuple[tuple[str, tuple[tuple[str, str, str], ...]], ...] = (
     ("Люди", (("/people", "Реестр", "people"),
               ("/students", "Студенты", "students"),
               ("/staff", "Сотрудники", "staff"),
+              ("/invites", "Выпуск по ссылкам", "link"),
               ("/nostaff", "Без прав", "user-off"),
               ("/access", "Коды и заявки", "access"))),
     ("Справочники", (("/college", "Колледж", "college"),

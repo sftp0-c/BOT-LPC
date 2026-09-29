@@ -1,4 +1,4 @@
-"""Люди: реестр, карточка человека, студенты, сотрудники, сис-админы, «без прав»."""
+﻿"""Люди: реестр, карточка человека, студенты, сотрудники, сис-админы, «без прав»."""
 import csv
 import io
 
@@ -104,6 +104,7 @@ async def staff_card(request: Request, user_id: str):
 <div style="margin-top:12px">
 <a class="btn" href="/panel/staff?q={esc(uid)}">{icon("staff", 16)} Все сотрудники</a>
 <a class="btn-grey btn" href="/panel/analytics">К аналитике</a>
+<a class="btn-grey btn" href="/panel/people/{esc(uid)}/dossier">{icon("eye", 16)} Всё о сотруднике</a>
 </div>{vacation_form}</div>
 <div class="card"><h2>Последние обращения</h2>
 <table><tr><th>№</th><th>Статус</th><th>Раздел</th><th>Тема</th><th>Создано</th></tr>{recent_rows}</table></div>
@@ -294,8 +295,53 @@ def _vacation_replacement(staff, all_rows: list[dict], away: dict) -> dict | Non
     return pick("role") or pick("ticket_category")
 
 
+# ── правка прямо в строке ─────────────────────────────────────────────────────
+# Должность, кабинет и раздел обращений меняют чаще всего, и раньше для этого
+# приходилось открывать карточку сотрудника. Теперь три поля стоят в самой
+# строке таблицы. Форма отдельная от полной карточки под строкой: здесь правят
+# по одному полю, не трогая остальные, а пустое поле значит «не трогать» -
+# иначе один очищенный input стирал бы кабинет у того, кого правят на бегу.
+def _row_edit_cell(request: Request, row, cat_ask: str) -> str:
+    """Форма правки в строке сотрудника. Раздел — с подтверждением, см. ниже."""
+    uid = as_str(row["user_id"])
+    form = (f'<form method="post" action="/panel/staff/{esc(uid)}/quick" class="grid">'
+            f'{csrf(request)}'
+            f'<div><label>Должность</label><input name="position" value="{esc(row["position"])}"'
+            f' list="{POSITION_LIST}" placeholder="например, Секретарь"></div>'
+            f'<div><label>Кабинет</label><input name="office" value="{esc(row["office"])}"'
+            f' placeholder="например, 214"></div>'
+            f'{select("ticket_category", dict(STAFF_CATS), as_str(row["ticket_category"]), label="Раздел обращений")}'
+            f'<div><button class="btn-ok">{icon("check", 16)} Сохранить</button></div>'
+            f'</form>')
+    asked_uid, _, wanted = cat_ask.partition(":")
+    if asked_uid != uid or wanted not in STAFF_CATS:
+        return form
+    # Раздел ждёт подтверждения: он решает, какие обращения сотрудник увидит,
+    # и ошибка здесь молча уводит чужие обращения в никуда.
+    question = (f"Раздел обращений изменится: «{plain(STAFF_CATS.get(as_str(row['ticket_category']), '—'))}» "
+                f"→ «{plain(STAFF_CATS.get(wanted, wanted))}». Сотрудник станет видеть только "
+                f"обращения нового раздела. Меняем?")
+    cancel = ('<input type="hidden" name="cancel" value="1">')
+    return (f'<div class="msg msg-bad"><span>{esc(question)}</span></div>'
+            f'<form method="post" action="/panel/staff/{esc(uid)}/quick" class="grid">'
+            f'{csrf(request)}'
+            f'<input type="hidden" name="confirm" value="1">'
+            f'<input type="hidden" name="ticket_category" value="{esc(wanted)}">'
+            f'<div><button class="btn-ok">{icon("check", 16)} Подтвердить смену раздела</button></div>'
+            f'</form>'
+            f'<p class="small mut wb-tools">'
+            f'{_action_form(request, f"/panel/staff/{esc(uid)}/quick", "Отменить", cancel, question, "btn-grey")}'
+            f'</p>')
+
+
 @router.get("/staff")
-async def staff_list(request: Request, q: str = ""):
+async def staff_list(request: Request, q: str = "", cat_ask: str = ""):
+    """Сотрудники: правка должности, кабинета и раздела прямо в строке.
+
+    ``cat_ask`` приходит как «MAX ID:раздел», когда раздел обращений ждёт
+    подтверждения: сис-админ задал его в строке, а вопрос панель рисует рядом
+    с этой же строкой - никуда уходить не надо.
+    """
     user = await require_user(request)
     # строки нужны словарями: заместителя ищем по полям, а не по индексам
     every_staff = [dict(row) for row in await repo.all_admins()]
@@ -330,6 +376,7 @@ async def staff_list(request: Request, q: str = ""):
                              + (f", ведёт {esc(as_str(replacement['full_name']))}" if replacement
                                 else ", заместитель не назначен")
                              + "</span>")
+        quick = "" if super_row else _row_edit_cell(request, row, cat_ask)
         head_row = f"""
 <tr data-hk><td><b>{esc(row['full_name'])}</b>{vacation_mark}{position_pill(row)}<div class="small mut">ID {esc(uid)}</div></td>
 <td>{"сис-админ" if super_row else "сотрудник"}</td>
@@ -338,7 +385,8 @@ async def staff_list(request: Request, q: str = ""):
 <td>{esc(as_str(row['office']) or '—')}</td>
 <td>{esc(plain(STAFF_CATS.get(row['ticket_category'], row['ticket_category'])))}</td>
 <td class="small">{tickets_90} / {load.get('open', 0)}<div class="small mut">{esc(fmt_when(load['last_reply'])) if load.get('last_reply') else 'не отвечал'}</div></td>
-<td>{pill("разрешена", "on") if flag(row["can_broadcast"]) else pill("нет", "off")}</td></tr>"""
+<td>{pill("разрешена", "on") if flag(row["can_broadcast"]) else pill("нет", "off")}</td>
+<td>{quick}</td></tr>"""
         if super_row:
             body += head_row
             continue
@@ -351,19 +399,21 @@ async def staff_list(request: Request, q: str = ""):
             f"{select('ticket_category', cat_options, row['ticket_category'])}"
             f"{select('can_broadcast', {'0': 'нет', '1': 'да'}, '1' if flag(row['can_broadcast']) else '0')}"
         )
-        body += (f"{head_row}<tr><td colspan='8' style='background:var(--surface-sunken);padding:10px'>"
+        body += (f"{head_row}<tr><td colspan='9' style='background:var(--surface-sunken);padding:10px'>"
                  f"{form(request, f'/panel/staff/{esc(uid)}', fields)}"
                  f"{position_pick_form(request, uid, norm_position(row['position']))}"
                  f"<form method='post' action='/panel/staff/promote/{esc(uid)}' class='inline'>{csrf(request)}"
                  f"<button class='btn-grey'>{icon('access', 16)} Сделать сис-админом</button></form> "
                  f"<form method='post' action='/panel/staff/{esc(uid)}/delete' class='inline' "
                  f"onclick=\"return confirm('Удалить сотрудника {esc(row['full_name'])}?')\">"
-                 f"{csrf(request)}<button class='btn-bad'>{icon('delete', 16)} Удалить</button></form></td></tr>")
+                 f"{csrf(request)}<button class='btn-bad'>{icon('delete', 16)} Удалить</button></form>"
+                 f" <a class='btn-grey btn' href='/panel/people/{esc(uid)}/dossier'>"
+                 f"{icon('eye', 16)} Всё о сотруднике</a></td></tr>")
     search = ('<form method="get" action="/panel/staff" class="grid" style="margin-bottom:14px">'
               f'<div><input name="q" value="{esc(q)}" placeholder="Поиск: ФИО, ID, должность, отдел, кабинет"></div>'
               f"<div><button>{icon('search', 16)} Найти</button></div></form>")
     table = f'{search}<table><tr><th>Сотрудник</th><th>Роль в боте</th><th>Должность</th><th>Отдел</th><th>Кабинет</th>' \
-            f"<th>Обращения</th><th>За 90 дней / открытых</th><th>Рассылка</th></tr>{body}</table>"
+            f"<th>Обращения</th><th>За 90 дней / открытых</th><th>Рассылка</th><th>Правка в строке</th></tr>{body}</table>"
     add = form(
         request, "/panel/staff/add",
         ('<div class="full"><label>MAX ID — можно сразу нескольких (через запятую, @ник или ссылку на профиль)</label>'
@@ -425,7 +475,9 @@ async def staff_list(request: Request, q: str = ""):
 {position_datalist()}
 {sysadmins_card}
 <div class="card"><h2>{icon("staff", 20)} Сотрудники</h2>{table}
-<p class="small mut">Подсказки должностей берутся из справочника и кладутся в базу в одном виде.
+<p class="small mut">Колонка «Правка в строке» меняет должность, кабинет и раздел обращений
+не заходя в карточку. Пустое поле означает «не трогать», а не «стереть». Раздел обращений
+спрашивает подтверждение: он решает, какие обращения сотрудник увидит.
 {reference}</p></div>
 <div class="grid" style="align-items:stretch">
   <div class="card" style="flex:2"><h2>Добавить сотрудника</h2>{add}
@@ -434,6 +486,59 @@ async def staff_list(request: Request, q: str = ""):
   Тех, кто писал боту, но прав ещё не имеет, видно на вкладке <a href="/panel/nostaff">Без прав</a>.</p></div>
 </div>"""
     return page("Сотрудники", body_all, user, "/staff")
+
+
+@router.post("/staff/{user_id}/quick")
+async def staff_row_quick(request: Request, user_id: str):
+    """Правка сотрудника прямо в строке: должность, кабинет, раздел обращений.
+
+    Защищено тремя вещами. CSRF-токен формы (require_form) - иначе правку
+    можно было бы отправить чужой страницей. Пустое поле - это «не трогать»:
+    ``set_admin_profile`` пустые значения просто пропускает, поэтому очищенный
+    input не заберёт кабинет у того, кого правят на бегу. Раздел обращений
+    меняется только после подтверждения - он решает, какие обращения человек
+    вообще увидит, и ошибка здесь молча уводит чужие обращения в никуда.
+    """
+    actor = await require_form(request)
+    data = await request.form()
+    if as_str(data.get("cancel", "")).strip() == "1":
+        flash("Смена раздела обращений отменена.")
+        return redirect("/panel/staff")
+    admin = await repo.get_admin(user_id)
+    if not admin:
+        flash("!Сотрудник не найден.")
+        return redirect("/panel/staff")
+    before = {name: as_str(admin[name]) for name in ("position", "office", "ticket_category")}
+    # смена профиля идёт через store.staff.set_admin_profile: он сводит
+    # должность к справочнику и не пишет пустые значения
+    await repo.set_admin_profile(user_id, position=value(data, "position"),
+                                 office=value(data, "office"))
+    after = await repo.get_admin(user_id)
+    changed = [label for name, label in (("position", "должность"), ("office", "кабинет"))
+               if as_str(after[name]) != before[name]]
+    category = as_str(data.get("ticket_category", "")).strip()
+    wants_category = category in STAFF_CATS and category != before["ticket_category"]
+    if wants_category and as_str(data.get("confirm", "")).strip() != "1":
+        if changed:
+            log.info("панель: строка сотрудника %s: %s (сис-админ %s)", user_id, ", ".join(changed), actor)
+            await repo.log_action(actor, "сотрудник изменён в строке",
+                                  f"{user_id}: {', '.join(changed)}")
+            flash(f"Сотрудник {user_id}: {', '.join(changed)} сохранено. "
+                  f"Раздел обращений ждёт подтверждения.")
+        else:
+            flash(f"!Раздел обращений у {user_id} изменится на "
+                  f"«{plain(STAFF_CATS.get(category, category))}» — подтвердите.")
+        return redirect(f"/panel/staff?cat_ask={esc(user_id)}:{esc(category)}")
+    if wants_category:
+        await repo.set_staff_category(user_id, category)
+        changed.append("раздел обращений")
+    if not changed:
+        flash(f"{user_id}: изменений нет. Пустое поле — «не трогать», а не «стереть».")
+        return redirect("/panel/staff")
+    log.info("панель: строка сотрудника %s: %s (сис-админ %s)", user_id, ", ".join(changed), actor)
+    await repo.log_action(actor, "сотрудник изменён в строке", f"{user_id}: {', '.join(changed)}")
+    flash(f"Сотрудник {user_id} сохранён: {', '.join(changed)}.")
+    return redirect("/panel/staff")
 
 
 @router.post("/staff/add")
@@ -809,7 +914,7 @@ async def person_card(request: Request, user_id: str):
 <tr><th>Последний контакт</th><td>{esc(fmt_when(card['last_seen']))}</td></tr>
 <tr><th>Последнее сообщение</th><td>{esc(card['last_text'] or '—')}</td></tr>
 </table>
-<div style="margin-top:12px">{actions}</div></div>
+<div style="margin-top:12px"><a class="btn" href="/panel/people/{esc(user_id)}/dossier">{icon("eye", 16)} Всё о человеке на одной странице</a> {actions}</div></div>
 <div class="card"><h2>Обращения</h2>
 <table><tr><th>№</th><th>Статус</th><th>Создано</th></tr>{rows}</table></div>
 {request_row}

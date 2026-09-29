@@ -1,11 +1,11 @@
-"""Пакет веб-панели: код панели разложен по разделам, наружу его отдаёт webpanel.py.
+﻿"""Пакет веб-панели: код панели разложен по разделам, наружу его отдаёт webpanel.py.
 
 Здесь только сборка: модули разделов подключаются один раз, и каждый из них
 можно импортировать сам по себе - кругов импортов между ними нет. Публичные
 имена панели живут в webpanel.py, этот пакет для внешних потребителей закрыт.
 """
-from . import (access, common, data, database, diagnostics, directory, mailer, overview, people,
-               router, schedules, settings, tickets)
+from . import (access, common, data, database, diagnostics, directory, dossier, mailer, overview, people,
+               router, schedules, settings, staff_bulk, tickets)
 
-__all__ = ["access", "common", "data", "database", "diagnostics", "directory", "mailer",
-           "overview", "people", "router", "schedules", "settings", "tickets"]
+__all__ = ["access", "common", "data", "database", "diagnostics", "directory", "dossier", "mailer",
+           "overview", "people", "router", "schedules", "settings", "staff_bulk", "tickets"]

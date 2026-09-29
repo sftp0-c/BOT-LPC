@@ -1,4 +1,4 @@
-"""Разбиение панели на модули: короткий фасад webpanel.py и пакет web/.
+﻿"""Разбиение панели на модули: короткий фасад webpanel.py и пакет web/.
 
 Проверки здесь поведенческие: не «в файле есть такая строка», а «панель отдаёт
 ровно то же, что и раньше».
@@ -34,7 +34,7 @@ HTTP_METHODS = ("get", "post", "put", "patch", "delete")
 
 # Модули пакета, которые можно импортировать по одному.
 SECTION_MODULES = ("access", "common", "database", "diagnostics", "directory", "mailer",
-                   "overview", "people", "router", "schedules", "settings", "tickets")
+                   "overview", "people", "router", "schedules", "settings", "dossier", "staff_bulk", "tickets")
 
 # '_flash' пишет conftest как обычный атрибут модуля - самого такого имени в
 # панели нет и раньше не было; 'app' - это bot.app, у панели своего нет.

@@ -1,5 +1,5 @@
-"""Сотрудники: карточки, роли, отпуска, заместители и права на чужие
-обращения.
+"""Сотрудники: карточки, роли, отпуска, заместители, права на чужие
+обращения и список занятых ФИО для приглашений по ссылке.
 
 Права сис-админа (выдать, снять, .env) живут в store.sysadmin, а правка
 полей карточки - здесь: это всё ещё про сотрудника, а не про доступ в панель."""
@@ -398,3 +398,15 @@ async def staff_sees_all_bulk() -> dict[str, bool]:
     rows = await db.many("SELECT user_id, see_all_tickets FROM admins "
                          "WHERE role_type NOT IN ('sysadmin','owner','superadmin')")
     return {as_str(row["user_id"]): bool(row["see_all_tickets"]) for row in rows}
+
+
+# ── приглашения по ссылке: чем ФИО уже занят ──────────────────────────────────
+async def staff_names() -> set:
+    """ФИО всех сотрудников одним запросом.
+
+    Предпросмотр пачки спрашивает не по одному человеку, а забирает весь
+    список разом: иначе страница на двадцать строк сделала бы двадцать
+    запросов только чтобы честно сказать «такой уже есть».
+    """
+    rows = await db.many("SELECT full_name FROM admins WHERE full_name<>''")
+    return {as_str(row["full_name"]) for row in rows}

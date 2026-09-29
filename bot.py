@@ -28,12 +28,12 @@ import config
 import version
 import database as db
 import repository as repo
-from handlers import admin, broadcast, menus, tickets  # noqa: F401  — регистрация обработчиков при импорте
+from handlers import admin, broadcast, invites, menus, tickets  # noqa: F401  — регистрация обработчиков при импорте
 from handlers.common import api, log, notify, pending_tasks, spawn
 from handlers.registry import CALLBACKS
 from schedule_watch import start_watcher, stop_watcher  # слежение за PDF с расписанием
 from updates import (callback_id, callback_payload, is_dialog, message_attachments, message_text,
-                    profile_of, sender_id, update_key)
+                    profile_of, sender_id, start_payload, update_key)
 from utils import UserLocks, as_str, short
 from webpanel import open_router as panel_open_router, router as panel_router
 import webpanel
@@ -118,7 +118,8 @@ async def process(u: dict):
         async with _locks.get(x):
             await remember_contact(u, x, kind)
             if kind == "bot_started":
-                await menus.start(x)
+                # переход по диплинку: payload приносит inv_<КОД> приглашения
+                await invites.on_start(x, start_payload(u))
             elif kind == "message_created":
                 if not is_dialog(u):
                     return  # группы и каналы не обслуживаем

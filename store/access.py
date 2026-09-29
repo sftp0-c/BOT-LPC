@@ -1,4 +1,4 @@
-"""Коды сотрудников, заявки на роль и защита от подбора кода.
+"""Коды сотрудников, заявки на роль, приглашения по ссылке и защита от подбора кода.
 
 Счётчик неудачных попыток живёт рядом с кодами, потому что он и защищает их."""
 
@@ -7,7 +7,7 @@ from typing import Optional
 import clock
 import config
 import database as db
-from utils import as_str, norm_code, ttl_label
+from utils import as_str, gen_code, norm_code, profile_url, ttl_label
 
 
 # ── коды и заявки на роль сотрудника ──────────────────────────────────────────
@@ -174,3 +174,135 @@ async def attempts_log(limit: int = 30) -> list:
         "GROUP BY a.user_id ORDER BY tries DESC, last_try DESC LIMIT ?",
         (clock.stamp_at(-24 * 60), limit),
     )
+
+
+# ── приглашения по ссылке (диплинк MAX) ──────────────────────────────────────
+# Ссылка выглядит как https://max.ru/<ник бота>?start=inv_<КОД>: код едет в
+# payload, потому что по переходу MAX присылает событие bot_started с этим полем
+# (см. updates.start_payload). Ник бота бот узнаёт о себе при старте и кладёт в
+# настройку bot_username, поэтому адрес здесь не зашит.
+INVITE_PREFIX = "inv_"
+
+
+def invite_payload(code: str) -> str:
+    """Что кладём в ?start= ссылки: inv_<КОД>. Без кода - и payload пустой."""
+    normalized = norm_code(code)
+    return f"{INVITE_PREFIX}{normalized}" if normalized else ""
+
+
+def invite_code(payload) -> str:
+    """Код приглашения из payload ссылки; '' - если это не наше приглашение."""
+    text = as_str(payload).strip()
+    if not text.startswith(INVITE_PREFIX):
+        return ""
+    return norm_code(text[len(INVITE_PREFIX):])
+
+
+def invite_link(username, code: str) -> str:
+    """Готовая ссылка-приглашение: профиль бота и ?start=inv_<КОД>.
+
+    Адрес берётся из utils.PROFILE_LINK - тем же шаблоном, что и все прочие
+    ссылки на профили MAX. Если ни ника бота, ни кода нет, возвращается '':
+    выдумывать адрес опасно, а пустая ссылка в панели видна сразу.
+    """
+    base = profile_url(username)
+    payload = invite_payload(code)
+    return f"{base}?start={payload}" if base and payload else ""
+
+
+def invite_status(invite) -> str:
+    """Состояние приглашения по строке get_invite: unknown | used | expired | active."""
+    if not invite:
+        return "unknown"
+    if as_str(invite["used_by"]):
+        return "used"
+    return "expired" if invite["expired"] else "active"
+
+
+async def get_invite(code: str):
+    """Приглашение по коду: строка со всеми полями и признаком «срок истёк».
+
+    Один запрос вместо двух: срок и признак его истечения читает сама база,
+    поэтому состояние приглашения не может разойтись с тем, что в ней лежит.
+    """
+    return await db.one(
+        "SELECT *, expires_at<>'' AND expires_at <= ? AS expired FROM staff_invites WHERE code=?",
+        (clock.stamp(), norm_code(code)),
+    )
+
+
+async def claim_invite(code: str, user_id: str) -> tuple[bool, str]:
+    """Забирает приглашение себе: (получилось ли, причина отказа).
+
+    Проверка и погашение - один UPDATE с условием, ровно как в use_invite: по
+    одной ссылке нельзя войти дважды. Кто первый изменил строку, тот и вошёл;
+    второму UPDATE уже ничего не меняет и возвращает ноль строк.
+    """
+    normalized = norm_code(code)
+    row = await get_invite(normalized)
+    if not row:
+        return False, "Приглашение не найдено. Попросите сис-админа выдать новую ссылку."
+    if as_str(row["used_by"]):
+        return False, "Эта ссылка уже сработала. Попросите сис-админа выдать новую."
+    if row["expired"]:
+        return False, "Срок приглашения истёк. Попросите сис-админа выдать новую ссылку."
+    if as_str(row["user_id"]) and as_str(row["user_id"]) != str(user_id):
+        return False, "Это приглашение выдано другому сотруднику."
+    stamp = clock.stamp()
+    changed = await db.run_count(
+        "UPDATE staff_invites SET used_by=?, used_at=? "
+        "WHERE code=? AND used_by='' AND (user_id='' OR user_id=?) "
+        "AND (expires_at='' OR expires_at > ?)",
+        (str(user_id), stamp, normalized, str(user_id), stamp),
+    )
+    return (True, "") if changed else (False, "Эта ссылка уже сработала.")
+
+
+async def active_invite_names() -> set:
+    """ФИО, по которым уже есть живое приглашение.
+
+    Нужен предпросмотру пачки: вторую ссылку на того же человека выпускать
+    незачем, иначе по ссылке войдёт не тот, кого приглашали.
+    """
+    rows = await db.many(
+        "SELECT full_name FROM staff_invites "
+        "WHERE full_name<>'' AND used_by='' AND (expires_at='' OR expires_at > ?)",
+        (clock.stamp(),),
+    )
+    return {as_str(row["full_name"]) for row in rows}
+
+
+async def create_invites_bulk(entries: list, created_by: str = "",
+                              ttl_hours: Optional[int] = None) -> list[dict]:
+    """Выдаёт сразу несколько приглашений по ссылке. Возвращает созданные.
+
+    У каждой строки свой код, а срок берётся из настройки, если не задан явно.
+    Сотрудника здесь не создаётся: он появится, когда человек откроет ссылку
+    и подтвердит вход кнопкой (см. handlers.invites).
+    """
+    hours = config.STAFF_CODE_TTL if ttl_hours is None else int(ttl_hours)
+    stamp = clock.stamp()
+    until = clock.stamp_at(hours * 60) if hours > 0 else ""
+    issued: list[dict] = []
+    for entry in entries or []:
+        name = as_str(entry.get("full_name")).strip()[:100]
+        if not name:
+            continue
+        code = gen_code(8)
+        while await get_invite(code):        # код занят - берём следующий
+            code = gen_code(8)
+        issued.append({
+            "code": code,
+            "full_name": name,
+            "position": as_str(entry.get("position")).strip()[:100],
+            "office": as_str(entry.get("office")).strip()[:100],
+            "category": as_str(entry.get("category")).strip()[:40] or "all",
+            "expires_at": until,
+        })
+        await db.run(
+            "INSERT INTO staff_invites(code, full_name, position, office, category, "
+            "created_by, created_at, expires_at) VALUES(?,?,?,?,?,?,?,?)",
+            (code, name, issued[-1]["position"], issued[-1]["office"], issued[-1]["category"],
+             as_str(created_by).strip(), stamp, until),
+        )
+    return issued

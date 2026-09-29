@@ -125,3 +125,20 @@ def callback_id(u: dict) -> str:
 
 def callback_payload(u: dict) -> str:
     return as_str((u.get("callback") or {}).get("payload"))
+
+
+# Платформа MAX кладёт в ссылку не больше 128 символов payload, а всё, что
+# длиннее, до бота просто не доходит. Рядом кладём и своё ограничение.
+MAX_START_PAYLOAD = 128
+
+
+def start_payload(u: dict) -> str:
+    """Что человек принёс в бота по ссылке: payload события bot_started.
+
+    Диплинк MAX выглядит как https://max.ru/<ник бота>?start=<payload>, и при
+    переходе MAX присылает событие bot_started с этим полем. У обычного /start
+    поля нет - значит payload пустой, и бот просто показывает главное меню.
+    """
+    if u.get("update_type") != "bot_started":
+        return ""
+    return as_str(u.get("payload")).strip()[:MAX_START_PAYLOAD]

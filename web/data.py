@@ -32,6 +32,7 @@ import repository as repo
 from fastapi import HTTPException, Request
 from fastapi.responses import Response
 from panel_theme import icon
+from store.tickets import bulk_delete_count, bulk_delete_tickets
 from utils import as_str, is_sysadmin_role, to_int
 
 from .common import (code_cell, csrf, esc, flash, log, page, pages_of, pager, redirect, require_form,
@@ -357,6 +358,11 @@ async def data_page(request: Request, q: str = ""):
 <li>Сырого удаления человека, сотрудника и обращения: у них есть свои правила
 (открытые обращения, роль, архив), и они вынесены в кнопки, которые зовут
 функции репозитория.</li>
+<li>Массовое удаление обращений
+из <a href="/panel/data/table/tickets">таблицы <code>tickets</code></a> есть, но это
+отдельное действие с защитами: предпросмотр, снимок базы, слово-подтверждение
+(для области «включая открытые» - другое слово) и область по умолчанию только
+архивная. Восстановить после него можно только из резервной копии.</li>
 </ul></div>"""
     return page("Данные", body, user, "/data")
 
@@ -491,6 +497,7 @@ async def data_table(request: Request, name: str, page_no: int = 1, sort: str = 
                   f'<td>{"да" if c["pk"] else "нет"}</td></tr>' for c in columns)
               + f'</table><p class="small mut">CREATE TABLE</p><pre>{esc(info["sql"])}</pre></details>')
     hint = "" if info["rowid"] else " Таблица создана без rowid: построчная правка недоступна."
+    purge_card = _purge_card() if name == "tickets" else ""
     body = f"""
 <div class="card"><h2>{icon("database", 20)} {esc(name)}: {total} строк</h2>
 <p class="small mut">Ключ строки: {esc(", ".join(info["keys"]) or "rowid")}. На странице
@@ -503,7 +510,7 @@ async def data_table(request: Request, name: str, page_no: int = 1, sort: str = 
 <div class="card"><h2>{icon("plus", 20)} Добавить строку</h2>
 <p class="small mut">Заполняются только нужные колонки, остальные получат значения по
 умолчанию из схемы. Перед записью делается снимок базы.</p>
-<a class="btn-ok" href="{base}/row/new">{icon("plus", 16)} Новая строка</a></div>"""
+<a class="btn-ok" href="{base}/row/new">{icon("plus", 16)} Новая строка</a></div>{purge_card}"""
     return page(f"Данные: {name}", body, user, "/data",
                 actions=f'<a class="btn" href="{link("/panel/data/table.csv", name=name, **keep)}">'
                         f'{icon("download", 16)} Выгрузить в CSV</a>'
@@ -956,4 +963,124 @@ async def data_ticket(request: Request, ticket_id: str, action: str):
     log.warning("панель «Данные»: обращение №%s — %s (сис-админ %s)", number, action, actor)
     await repo.log_action(actor, f"обращение {action}", f"№{number}: {message}")
     flash(f"{message}.")
+    return redirect(back)
+
+
+# ── массовое удаление обращений ───────────────────────────────────────────────
+# Слова-подтверждения. Для области «включая открытые» слово отдельное: ввести
+# привычное «удалить» и стереть чью-то живую переписку по невнимательности нельзя,
+# а область по умолчанию архивная - там дел уже нет.
+PURGE_WORD = "удалить"
+PURGE_ALL_WORD = "удалить всё"
+# Области удаления: по умолчанию архивные (deleted_at заполнен), открытые - нет.
+PURGE_SCOPES = (("archived", "только архивные"), ("all", "включая открывые"))
+
+
+def purge_scope(value) -> str:
+    """Область удаления из формы: 'archived' (по умолчанию) или 'all'."""
+    return "all" if as_str(value).strip() == "all" else "archived"
+
+
+def purge_label(scope: str) -> str:
+    return dict(PURGE_SCOPES)[scope]
+
+
+def purge_word(scope: str) -> str:
+    return PURGE_ALL_WORD if scope == "all" else PURGE_WORD
+
+
+def _purge_card() -> str:
+    """Вход в массовое удаление: со страницы таблицы tickets.
+
+    Кнопка ведёт на страницу с предпросмотром, а не удаляет сама: по одному
+    клику из таблицы нельзя стереть переписку.
+    """
+    return (f'<div class="card"><h2>{icon("warning", 20)} Массовое удаление обращений</h2>'
+            '<p class="small mut">Отдельное действие от кнопок архива: стирает обращения '
+            'из базы вместе с перепиской и историей, и вернуть их можно только из '
+            'резервной копии. Область по умолчанию - только архивные обращения, живые '
+            'оттуда не берутся. Сначала показывается, сколько уйдёт, и только потом '
+            'просят подтвердить словом.</p>'
+            '<a class="btn-bad" href="/panel/data/tickets/purge">'
+            f'{icon("delete", 16)} Массовое удаление обращений</a></div>')
+
+
+@router.get("/data/tickets/purge")
+async def data_tickets_purge(request: Request, scope: str = ""):
+    """Предпросмотр: сколько обращений, сообщений и событий уйдёт. Ничего не удаляет."""
+    user = await require_owner(request)
+    chosen = purge_scope(scope)
+    counts = await bulk_delete_count(include_open=chosen == "all")
+    picker = "".join(f'<option value="{esc(code)}"'
+                     f'{" selected" if code == chosen else ""}>{esc(title)}</option>'
+                     for code, title in PURGE_SCOPES)
+    switcher = f"""
+<form method="get" action="/panel/data/tickets/purge" class="grid">
+<div><label>Область удаления</label><select name="scope">{picker}</select></div>
+<div><button>{icon("eye", 16)} Показать, что удалится</button></div></form>"""
+    summary = ('<table class="data-table"><tr><th>Уйдёт из базы</th><th>Строк</th></tr>'
+               f'<tr><td>Обращений</td><td>{counts["tickets"]}</td></tr>'
+               f'<tr><td>Сообщений переписки</td><td>{counts["messages"]}</td></tr>'
+               f'<tr><td>Событий истории</td><td>{counts["events"]}</td></tr></table>')
+    if counts["tickets"]:
+        block = _confirm_form(
+            request, "/panel/data/tickets/purge", purge_word(chosen),
+            f"Удалить обращения — {purge_label(chosen)}: {counts['tickets']}",
+            "Вместе с обращениями уйдут переписка и события по ним. Перед удалением "
+            "делается снимок базы, путь показывается в сообщении. Студентам уведомление "
+            "не придёт - их обращения исчезнут молча.",
+            f'{icon("delete", 16)} Удалить', "btn-bad", "/panel/data/table/tickets",
+            extra=f'<input type="hidden" name="scope" value="{esc(chosen)}">')
+    else:
+        block = (f'<p class="msg msg-ok">{icon("check", 20)} Удалять нечего: в области '
+                 f'«{esc(purge_label(chosen))}» нет ни одного обращения.</p>')
+    body = f"""<div class="card"><h2>{icon("warning", 20)} Массовое удаление обращений</h2>
+<p class="small mut">Область выбирается здесь же, и предпросмотр показывает то, что
+уйдёт именно из неё. Пока кнопка не нажата, в базе ничего не меняется: это чтение.</p>
+{switcher}
+<p><a class="btn-grey" href="/panel/data/table/tickets">К таблице tickets</a></p></div>
+<div class="card"><h2>{icon("eye", 20)} Что удалится: {esc(purge_label(chosen))}</h2>
+{summary}
+{block}</div>"""
+    return page("Данные: массовое удаление обращений", body, user, "/data")
+
+
+@router.post("/data/tickets/purge")
+async def data_tickets_purge_run(request: Request):
+    """Массовое удаление: слово, снимок базы, удаление и запись в журнал.
+
+    Порядок проверок обратный опасности: сначала слово (по области), потом
+    «есть ли что удалять», и только потом снимок и само удаление. Область,
+    показанная в предпросмотре, повторно берётся из формы, поэтому подмена
+    поля scope не удалит ничего: слово для неё всё равно другое.
+    """
+    actor = await require_owner_form(request)
+    data = await request.form()
+    chosen = purge_scope(data.get("scope", ""))
+    back = _safe_back(data, "/panel/data/table/tickets")
+    word = purge_word(chosen)
+    if not _confirmed(data, word):
+        flash(f"!Слово «{word}» не введено — обращения не удалены.")
+        return redirect(back)
+    if not (await bulk_delete_count(include_open=chosen == "all"))["tickets"]:
+        flash("Удалять нечего: в этой области нет ни одного обращения.")
+        return redirect(back)
+    # Снимок здесь обязателен, а не как в других действиях раздела: восстановить
+    # сотни строк переписки из журнала нельзя, только из копии.
+    path = await snapshot(f"массовое удаление обращений ({purge_label(chosen)})")
+    if not path:
+        flash("!Массовое удаление не выполнено: снимок базы не создан, а без него "
+              "удалять нельзя. Сделайте копию на вкладке «База данных» и повторите.")
+        return redirect(back)
+    done = await bulk_delete_tickets(include_open=chosen == "all")
+    log.warning("панель «Данные»: массово удалены обращения сис-админом %s: область %s, "
+                "обращений %s, сообщений %s, событий %s", actor, purge_label(chosen),
+                done["tickets"], done["messages"], done["events"])
+    # В журнал - только кто, сколько и какая область. Ни текстов переписки, ни ФИО
+    # студентов: журнал читают в панели, и содержимое чужих обращений ему не нужно.
+    await repo.log_action(actor, "массовое удаление обращений",
+                          f"область: {purge_label(chosen)}; обращений: {done['tickets']}; "
+                          f"сообщений: {done['messages']}; событий: {done['events']}")
+    flash(f"Удалено обращений: {done['tickets']}, сообщений: {done['messages']}, "
+          f"событий: {done['events']}. {snapshot_text(path)}")
     return redirect(back)

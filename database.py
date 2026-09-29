@@ -1,4 +1,4 @@
-"""SQLite-слой: схема, простые запросы, состояния диалога, настройки."""
+﻿"""SQLite-слой: схема, простые запросы, состояния диалога, настройки."""
 import json
 import logging
 import os
@@ -175,6 +175,9 @@ CREATE TABLE IF NOT EXISTS staff_invites(
     code       TEXT PRIMARY KEY,                         -- код из букв и цифр, регистр не важен
     user_id    TEXT NOT NULL DEFAULT '',                 -- приглашение личному ID; пусто — любой, у кого есть код
     full_name  TEXT NOT NULL DEFAULT '',
+    position   TEXT NOT NULL DEFAULT '',                 -- должность: при входе по приглашению сразу становится сотрудником
+    office     TEXT NOT NULL DEFAULT '',                 -- кабинет
+    category   TEXT NOT NULL DEFAULT '',                 -- раздел обращений: справки / обратная связь / всё
     created_by TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     expires_at TEXT NOT NULL DEFAULT '',
@@ -210,6 +213,14 @@ COLUMN_UPGRADES: dict[str, dict[str, str]] = {
         "department": "TEXT NOT NULL DEFAULT ''",
         "see_all_tickets": "INTEGER NOT NULL DEFAULT 0",
         "vacation_until": "TEXT NOT NULL DEFAULT ''",   # до какой даты сотрудник в отпуске
+    },
+    "reply_templates": {
+        "text": "TEXT NOT NULL DEFAULT ''",   # тело ответа сотрудника
+    },
+    "staff_invites": {
+        "position": "TEXT NOT NULL DEFAULT ''",   # должность: по приглашению человек сразу становится сотрудником
+        "office": "TEXT NOT NULL DEFAULT ''",     # кабинет
+        "category": "TEXT NOT NULL DEFAULT ''",   # раздел обращений
     },
     "users": {
         "consent_at": "TEXT NOT NULL DEFAULT ''",        # когда согласие дано
