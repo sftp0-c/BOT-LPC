@@ -1,4 +1,4 @@
-"""Массовый выпуск сотрудников: список в панели и ссылка-приглашение на каждого.
+﻿"""Массовый выпуск сотрудников: список в панели и ссылка-приглашение на каждого.
 
 Страница устроена в два шага. Сначала «Проверить»: список разбирается,
 должности сводятся к справочнику, и всё, что с каждой строкой не так,
@@ -21,8 +21,8 @@ from panel_theme import icon
 from store.access import active_invite_names, create_invites_bulk, invite_link
 from store.staff import staff_names
 from store.sysadmin import log_action
-from utils import (CODE_TTL_CHOICES, STAFF_CATS, STAFF_CATS_BTN, as_str, norm_position,
-                   position_code, to_int, ttl_label)
+from utils import (CODE_TTL_CHOICES, POSITIONS, STAFF_CATS, STAFF_CATS_BTN, as_str,
+                   norm_position, position_code, to_int, ttl_label)
 
 from .common import (code_cell, csrf, esc, log, page, pill, plain, require_form,
                      require_user, select, value)
@@ -155,6 +155,27 @@ def parse_rows(raw) -> list:
     return [parse_row(number, line) for number, line in enumerate(lines, 1)]
 
 
+FIELD_ROWS_DEFAULT = 6      # строк с полями показываем сразу
+FIELD_ROWS_MAX = 40         # больше не рисуем: это не таблица, а форма
+
+
+def collect_field_rows(data) -> list[str]:
+    """Строки из полей ввода: по одной на заполненную строку.
+
+    Порядок полей в строке тот же, что и при вставке списком, поэтому дальше
+    разбор общий. Полностью пустые строки молча пропускаются: пользователь не
+    обязан заполнять все шесть.
+    """
+    lines = []
+    total = to_int(as_str(data.get("n_rows")), FIELD_ROWS_DEFAULT)
+    for index in range(min(total, FIELD_ROWS_MAX)):
+        parts = [as_str(data.get(f"f{index}_{field}")).strip() for field in FIELDS]
+        if not any(parts):
+            continue
+        lines.append("; ".join(part for part in parts if part))
+    return lines
+
+
 def fio_key(value) -> str:
     """ФИО для сравнения: без регистра, «ё» и лишних пробелов."""
     return " ".join(as_str(value).lower().replace("ё", "е").split())
@@ -187,10 +208,12 @@ def skipped_rows(rows: list) -> list:
 # ── страница ─────────────────────────────────────────────────────────────────
 @router.get("/invites")
 async def invites_page(request: Request):
-    """Пустая форма пачки: сюда же возвращается и результат проверки."""
+    """Пустая форма: сюда же возвращается и результат проверки."""
     user = await require_user(request)
+    more = to_int(request.query_params.get("more", ""), 0)
+    fields = {"n_rows": FIELD_ROWS_DEFAULT + max(0, min(more, 30))}
     return page("Выпуск сотрудников по ссылкам",
-                _body_html(request, "", config.STAFF_CODE_TTL, None, None), user, "/staff")
+                _body_html(request, "", config.STAFF_CODE_TTL, None, None, fields), user, "/staff")
 
 
 @router.post("/invites")
@@ -198,12 +221,19 @@ async def invites_submit(request: Request):
     """«Проверить» не создаёт ничего, «Создать приглашения» - по хорошим строкам."""
     user = await require_form(request)
     data = await request.form()
-    raw = value(data, "rows")
+    # Поля ввода и вставка списком сходятся в один список строк: разбор, проверка
+    # и создание идут по одному пути. Так две формы не разойдутся.
+    lines = collect_field_rows(data)
+    typed = value(data, "rows").strip()
+    raw = "\n".join(lines + ([typed] if typed else []))
     ttl = to_int(value(data, "ttl_hours", default=str(config.STAFF_CODE_TTL)), config.STAFF_CODE_TTL)
+    fields = {key: as_str(item) for key, item in data.items()
+              if key.startswith("f") and "_" in key}
+    fields["n_rows"] = as_str(data.get("n_rows", FIELD_ROWS_DEFAULT))
     rows = await check_rows(raw)
     title = "Выпуск сотрудников по ссылкам"
     if as_str(data.get("action")).strip() != "create":
-        return page(title, _body_html(request, raw, ttl, rows, None), user, "/staff")
+        return page(title, _body_html(request, raw, ttl, rows, None, fields), user, "/staff")
     issued = await create_invites_bulk(ready_rows(rows), created_by=user, ttl_hours=ttl)
     # коды в журнал и в ленту действий не пишем: иначе они уедут в /panel/logs
     log.info("панель: выпущено %d приглашений по ссылкам, срок %s (сис-админ %s)",
@@ -211,8 +241,12 @@ async def invites_submit(request: Request):
     await log_action(user, "приглашения по ссылкам выпущены",
                      f"{len(issued)} шт., срок {ttl_label(ttl)}")
     links = await _links(issued)
+    # Если ничего не вышло - показываем человеку то, что он ввёл, а не пустую
+    # форму. Иначе опечатка в должности стоила бы ему перевводить всё заново.
+    shown = {"n_rows": FIELD_ROWS_DEFAULT} if issued else fields
     return page(title,
-                _body_html(request, raw, ttl, rows, (links, skipped_rows(rows))), user, "/staff")
+                _body_html(request, raw, ttl, rows, (links, skipped_rows(rows)),
+                           shown), user, "/staff")
 
 
 async def _links(issued: list) -> list:
@@ -232,6 +266,70 @@ def _card(title: str, icon_name: str, body: str) -> str:
 def _row_label(row: dict) -> str:
     """ФИО строки, а если его нет - сама строка: чтобы ошибку было видно."""
     return row["full_name"] or row["line"].strip() or "—"
+
+
+def _field_rows_html(request: Request, values: dict, ttl: int) -> str:
+    """Строки с полями: ФИО, должность, кабинет, раздел.
+
+    Должность - поле с подсказками справочника: можно выбрать, можно вписать
+    свою, «ПК» и «приёмная комиссия» сойдутся к одному названию. Раздел -
+    выпадающий список, потому что вариантов пять и ошибиться в них нельзя.
+    """
+    total = max(int(to_int(as_str(values.get("n_rows")), FIELD_ROWS_DEFAULT)),
+                FIELD_ROWS_DEFAULT)
+    total = min(total, FIELD_ROWS_MAX)
+    body = []
+    for index in range(total):
+        cells = []
+        for field, width in (("full_name", "полная ширина"), ("position", ""),
+                             ("office", "узкий"), ("category", "узкий")):
+            if field == "category":
+                cell = select(f"f{index}_category", dict(STAFF_CATS),
+                              as_str(values.get(f"f{index}_category")),
+                              label="раздел" if index == 0 else "")
+            else:
+                label = {"full_name": "ФИО", "position": "Должность",
+                         "office": "Кабинет"}[field]
+                hint = {"full_name": "Иванов Иван Иванович",
+                        "position": "Секретарь", "office": "214"}[field]
+                cell = (f'<input name="f{index}_{field}"'
+                        f' value="{esc(as_str(values.get(f"f{index}_{field}")))}"'
+                        f' placeholder="{esc(hint)}"'
+                        f' list="invite-positions" autocomplete="off">')
+                cell = f'<div><label>{label if index == 0 else ""}</label>{cell}</div>'
+            cells.append(cell)
+        body.append(f"<tr>{''.join(cells)}</tr>")
+    return f"""<table class="data-table"><tr><th>ФИО</th><th>Должность</th>
+<th>Кабинет</th><th>Раздел обращений</th></tr>{''.join(body)}</table>"""
+
+
+def _one_form_html(request: Request, values: dict, ttl: int) -> str:
+    """Основная форма: строки с полями, «создать» - и ссылки для MAX."""
+    total = to_int(as_str(values.get("n_rows")), FIELD_ROWS_DEFAULT)
+    # Подсказки должностей для поля: можно выбрать из справочника, можно вписать
+    # свою. Кавычки собираем через format, а не в f-строку: внутри уже есть
+    # кавычки HTML, и экранирование в f-строке здесь ломает сам питон.
+    names = ('<datalist id="invite-positions">'
+             + "".join('<option value="{}">'.format(esc(title))
+                       for _code, title, _btn in POSITIONS)
+             + "</datalist>")
+    return _card("Кого заводим", "staff", f"""
+{names}
+<form method="post" action="/panel/invites">
+{csrf(request)}
+<input type="hidden" name="n_rows" value="{max(total, FIELD_ROWS_DEFAULT)}">
+<input type="hidden" name="action" value="create">
+{_field_rows_html(request, values, ttl)}
+<div class="grid" style="margin-top:10px">
+<div>{select("ttl_hours", {value: label for value, label in CODE_TTL_CHOICES}, ttl, label="Срок ссылки")}</div>
+<div><button class="btn-ok">{icon("link", 16)} Создать ссылки</button></div>
+<div><a class="btn-grey" href="/panel/invites?more={max(total + FIELD_ROWS_DEFAULT, FIELD_ROWS_DEFAULT)}">{icon("plus", 16)} Ещё строк</a></div>
+</div>
+</form>
+<p class="small mut">Заполните нужные строки и нажмите «Создать ссылки». Появятся
+ссылки для MAX: отправьте сотруднику, он откроет её в мессенджере, увидит свои
+данные и нажмёт кнопку - только тогда он станет сотрудником.
+Пустые строки пропускаются, заполнять все не нужно.</p>""")
 
 
 def _form_html(request: Request, raw: str, ttl: int) -> str:
@@ -321,13 +419,14 @@ def _report_html(count: int, skipped: list, created: bool = False) -> str:
             f"пропущено строк: <b>{len(skipped)}</b>.</span></div>")
 
 
-def _body_html(request: Request, raw: str, ttl: int, rows, result) -> str:
+def _body_html(request: Request, raw: str, ttl: int, rows, result,
+               fields: dict | None = None) -> str:
     """Страница целиком: форма сверху, под ней проверка или выданные ссылки.
 
     После «Создать приглашения» таблица разбора не дублируется: там уже есть
     список ссылок и отдельный список пропущенных строк.
     """
-    parts = [_form_html(request, raw, ttl)]
+    parts = [_one_form_html(request, fields or {}, ttl), _form_html(request, raw, ttl)]
     if result is not None:
         links, skipped = result
         parts += [_report_html(len(links), skipped, created=True),
