@@ -43,7 +43,8 @@ RUN pip install -r requirements.txt
 # repository, timetable, charts, handlers. Забытый здесь модуль = падение на старте.
 COPY config.py database.py max_api.py repository.py updates.py utils.py college.py \
      timetable.py charts.py schedule_import.py schedule_watch.py attachments.py version.py \
-     panel_theme.py tunnel.py clock.py bot_commands.py webpanel.py bot.py ./
+     panel_theme.py tunnel.py clock.py bot_commands.py webpanel.py bot.py \
+     bridge_service.py ./
 COPY handlers ./handlers
 # Слои данных и панели разложены по папкам: store/ - SQL, web/ - маршруты.
 # Забытая здесь папка означала бы падение на первом импорте в контейнере,
@@ -53,7 +54,7 @@ COPY store ./store
 COPY web ./web
 # Проверяем импорты на этапе сборки: без неё забытый модуль всплыл бы только
 # при первом запуске контейнера - в 3 часа ночи.
-RUN python -c "import config, database, max_api, repository, updates, utils, college, timetable, charts, schedule_import, schedule_watch, attachments, panel_theme, tunnel, clock, bot_commands, version, webpanel, bot, handlers, store, web; print('импорты в порядке')"
+RUN python -c "import config, database, max_api, repository, updates, utils, college, timetable, charts, schedule_import, schedule_watch, attachments, panel_theme, tunnel, clock, bot_commands, version, webpanel, bridge_service, bot, handlers, store, web; print('импорты в порядке')"
 # .dockerignore уже исключает тесты, но папка с данными может быть смонтирована
 # в образ при локальной сборке - создаём заранее, чтобы права были верными.
 RUN useradd --system --uid 10001 --home-dir /app app \
@@ -66,4 +67,8 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/health' % os.getenv('PORT', '8080'), timeout=4)" || exit 1
 
-CMD ["sh", "-c", "exec uvicorn bot:app --host ${HOST:-0.0.0.0} --port ${PORT:-8080}"]
+# Две службы в одном контейнере. Мост - на своём порту, который на хосте
+# опубликован только на 127.0.0.1, поэтому из сети и из туннеля эти адреса
+# недоступны вообще. Основной бот остаётся ведущей службой: его порт
+# открыт наружу, и его проверяет healthcheck.
+CMD ["sh", "-c", "uvicorn bridge_service:app --host 0.0.0.0 --port ${BRIDGE_PORT:-8090} & exec uvicorn bot:app --host ${HOST:-0.0.0.0} --port ${PORT:-8080}"]

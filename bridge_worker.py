@@ -86,7 +86,7 @@ def load_settings() -> dict:
             data = {}
     if not isinstance(data, dict):
         data = {}
-    data.setdefault("panel_url", "http://127.0.0.1:8080")
+    data.setdefault("panel_url", "http://127.0.0.1:8090")
     data.setdefault("opencode_server", "http://127.0.0.1:49374")
     data.setdefault("opencode_password", "")
     data.setdefault("session", "")
@@ -97,6 +97,12 @@ def load_settings() -> dict:
 
 
 def save_settings(data: dict) -> Path:
+    """Записывает настройки. Папку состояния создаёт, если её нет.
+
+    Создание папки здесь обязательно: на свежей машине её нет, и первый запуск
+    настройки падал бы с FileNotFoundError. У журнала папка создаётся так же.
+    """
+    SETTINGS.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return SETTINGS
 
@@ -171,21 +177,42 @@ def run_opencode(settings: dict, task: str) -> str:
         raise RuntimeError("opencode не найден в PATH - программа не установлена") from None
 
     answer = _answer_from(finished.stdout)
-    if finished.returncode != 0 and not answer:
-        tail = (finished.stderr or finished.stdout or "").strip()[-400:]
-        raise RuntimeError(f"opencode закончил с кодом {finished.returncode}: {tail}")
     if not answer:
-        raise RuntimeError("opencode отработал, но ответ пустой")
+        tail = (finished.stderr or finished.stdout or "").strip()[-300:]
+        raise RuntimeError(
+            "opencode отработал, но разобрать ответ не вышло. "
+            f"Код возврата: {finished.returncode}. "
+            f"Встреченные события: {seen_event_types()}. "
+            f"Конец вывода: {tail}"
+        )
     return answer
+
+
+_LAST_EVENT_TYPES: set = set()
 
 
 def _answer_from(output: str) -> str:
     """Достаёт мой ответ из вывода opencode.
 
-    Формат json печатает служебные строки и в конце объект с ответом. Берём
-    последний разобранный - он и есть итог, а не промежуточная реплика.
+    `opencode run --format json` печатает поток событий, по одному объекту в
+    строке, а не один объект с ответом:
+        {"type":"step_start", ...}
+        {"type":"text", ..., "part":{..., "text":"Да."}}
+    Поэтому ответ собирается из событий типа text по порядку: при потоковой
+    выдаче их несколько, и это части одного ответа.
+
+    Отдельно поддержан объект с ключом "response" - если формат вернётся или
+    попадётся другой режим, ответ не потеряется.
+
+    Пустой результат означает не «модель промолчала», а «формат вывода не тот»,
+    и поэтому в сообщении об ошибке перечисляются встреченные типы событий:
+    иначе следующая смена формата будет выглядеть как поломка моста, и искать
+    придётся вслепую.
     """
-    answer = ""
+    pieces: list = []
+    plain = ""
+    seen_types: set = set()
+
     for line in (output or "").splitlines():
         line = line.strip()
         if not line.startswith("{"):
@@ -194,9 +221,33 @@ def _answer_from(output: str) -> str:
             data = json.loads(line)
         except ValueError:
             continue
-        if isinstance(data, dict) and str(data.get("response") or "").strip():
-            answer = str(data["response"]).strip()
-    return answer
+        if not isinstance(data, dict):
+            continue
+        if str(data.get("type") or ""):
+            seen_types.add(str(data["type"]))
+        if str(data.get("response") or "").strip():
+            plain = str(data["response"]).strip()
+        if str(data.get("type") or "") == "text":
+            part = data.get("part")
+            if isinstance(part, dict) and str(part.get("text") or ""):
+                pieces.append(str(part["text"]))
+    if pieces:
+        return "".join(pieces).strip()
+    if plain:
+        return plain
+    # global обязателен: без него присваивание сделало бы имя локальным, и
+    # подсказка в сообщении об ошибке всегда была бы «ни одного».
+    # Обновляем ВСЕГДА, в том числе пустым множеством: иначе после разбора без
+    # событий подсказка продолжала бы показывать события прошлого запуска, и
+    # человек решил бы, что формат не изменился.
+    global _LAST_EVENT_TYPES
+    _LAST_EVENT_TYPES = seen_types
+    return ""
+
+
+def seen_event_types() -> str:
+    """Типы событий в последнем разобранном выводе - для диагностики."""
+    return ", ".join(sorted(_LAST_EVENT_TYPES)) or "ни одного"
 
 
 # ── сердцебиение ───────────────────────────────────────────────────────────
@@ -239,7 +290,7 @@ def handle_task(settings: dict, lock, task: dict) -> None:
     except Exception as exc:                              # noqa: BLE001 - сюда приходит всё
         say(f"✗ задание {number} не вышло: {exc}")
         try:
-            call(settings, f"/panel/bridge/{number}/fail", {"error": str(exc)[:400]})
+            call(settings, f"/bridge/{number}/fail", {"error": str(exc)[:400]})
         except Exception as inner:                        # noqa: BLE001
             say(f"  и сообщить об ошибке не вышло: {inner}")
         return
@@ -247,13 +298,13 @@ def handle_task(settings: dict, lock, task: dict) -> None:
         beat.stop()
 
     try:
-        call(settings, f"/panel/bridge/{number}/answer", {"answer": answer})
+        call(settings, f"/bridge/{number}/answer", {"answer": answer})
         say(f"✓ задание {number} выполнено, ответ отправлен ({len(answer)} знаков)")
     except Exception as exc:                              # noqa: BLE001
         # Задание сделано, но сообщить не вышло. Молчать нельзя: владелец ждёт.
         say(f"⚠ задание {number} выполнено, но ответ не доставлен: {exc}")
         try:
-            call(settings, f"/panel/bridge/{number}/fail", {"error": "сделано, но ответ не доставился"})
+            call(settings, f"/bridge/{number}/fail", {"error": "сделано, но ответ не доставился"})
         except Exception:
             pass
 
@@ -263,7 +314,7 @@ def one_round(settings: dict, lock) -> bool:
     if not lock.acquire("ожидание задания"):
         return False
     try:
-        task = call(settings, "/panel/bridge/next")
+        task = call(settings, "/bridge/next")
         if not task or task.get("empty"):
             return False
         if not lock.acquire(str(task.get("text") or "")[:200]):
@@ -281,7 +332,7 @@ def cmd_status(settings: dict) -> int:
     print(f"токен задан: {'да' if (settings.get('token') or read_bot_token()) else 'НЕТ'}")
     print(f"проект держит: {lock.who()}")
     try:
-        print(f"в очереди: {call(settings, '/panel/bridge/status').get('waiting', '?')}")
+        print(f"в очереди: {call(settings, '/bridge/status').get('waiting', '?')}")
     except Exception as exc:                              # noqa: BLE001
         print(f"бот недоступен: {exc}")
     return 0

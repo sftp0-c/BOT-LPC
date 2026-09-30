@@ -62,9 +62,11 @@ SCHEDULE_CACHE_FILES = max(1, to_int(_get("SCHEDULE_CACHE_FILES", "20"), 20))
 BRIDGE_ENABLED = _get("BRIDGE_ENABLED", "0") == "1" and bool(_get("BRIDGE_TOKEN"))
 BRIDGE_PREFIX = _get("BRIDGE_PREFIX", "!")
 BRIDGE_TOKEN = _get("BRIDGE_TOKEN")
-# Адреса моста принимают только с этой машины: порт панели слушает все
-# интерфейсы, и за обратным прокси «локальный» клиент может быть чужим.
-BRIDGE_LOCAL_HOSTS = ("127.0.0.1", "::1", "localhost")
+# BRIDGE_LOCAL_HOSTS больше нет и не нужен. Проверка адреса клиента внутри
+# бота не работала: Docker Desktop публикует порт через виртуальную машину, и
+# бот видит адрес её шлюза даже для запроса с этой же машины. Границу держит
+# порт, слушающий только локально на хосте (см. bridge_service.py и
+# docker-compose.yml), а внутри остаётся токен.
 # Пароль веб-панели сис-админа (http://host:8080/panel). Пусто — панель выключена.
 WEB_PANEL_PASSWORD = _get("WEB_PANEL_PASSWORD")
 WEB_PANEL_HOURS = to_int(_get("WEB_PANEL_HOURS", "12"), 12)  # время жизни сессии панели

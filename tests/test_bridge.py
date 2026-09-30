@@ -20,7 +20,7 @@ import json
 
 import pytest
 
-import bot
+import bridge_service
 import config
 import database as db
 import repository as repo
@@ -57,11 +57,16 @@ def authed(token: str = TOKEN) -> dict:
 
 @pytest.fixture
 def bridge_client(monkeypatch, env):
-    """Служебные адреса моста: запрос с этой машины и верный токен."""
+    """Служебные адреса моста: отдельная служба и верный токен.
+
+    Именно bridge_service, а не основное приложение: мост живёт в отдельной
+    службе на порту, который снаружи не виден, и по общему порту панели его
+    адресов нет вовсе. Проверяем ровно то, чем пользуется программа-мост.
+    """
     from fastapi.testclient import TestClient
     monkeypatch.setattr(config, "WEB_PANEL_PASSWORD", PANEL_PASSWORD)
     webpanel._sessions.clear()
-    return TestClient(bot.app, client=("127.0.0.1", 50000))
+    return TestClient(bridge_service.app)
 
 
 async def take_pending() -> int:
@@ -226,56 +231,66 @@ async def test_done_message_is_not_counted(env):
 async def test_endpoints_are_closed_without_token(bridge_client, env):
     """Знание адреса без токена ничего не даёт."""
     await db.init_db()
-    assert bridge_client.get("/panel/bridge/next").status_code == 403
+    assert bridge_client.get("/bridge/next").status_code == 403
 
 
 async def test_endpoints_are_closed_with_wrong_token(bridge_client, env):
     await db.init_db()
-    assert bridge_client.get("/panel/bridge/next", headers=authed("x" * 32)).status_code == 403
+    assert bridge_client.get("/bridge/next", headers=authed("x" * 32)).status_code == 403
 
 
-async def test_endpoints_are_closed_from_a_foreign_host(monkeypatch, env):
-    """За обратным прокси «локальный» клиент бывает чужим - проверяем и это.
+async def test_client_address_does_not_affect_access(monkeypatch, env):
+    """Адрес клиента НЕ влияет на допуск - и это намеренно.
 
-    Настоящий клиент с чужим адресом, а не подмена функции: иначе проверили бы,
-    что умеем подменять, а не что чужим закрыто.
+    Так было задумано сначала и сломалось на живом боте: Docker Desktop
+    публикует порт через виртуальную машину, бот видит адрес её шлюза даже для
+    запроса с этой же машины, и мост переставал работать вовсе. Ослабить
+    проверку до «шлюза» - значит не проверять ничего: из сети приходит то же.
+
+    Границу держит порт, слушающий только локально на хосте, а не код. Проверка
+    фиксирует это решение, чтобы проверка адреса не вернулась тихо.
+    Бьём по службе моста - единственной, где эти адреса вообще есть: в основном
+    приложении их нет, и это отдельная, соседняя проверка.
     """
     from fastapi.testclient import TestClient
+
     await db.init_db()
     monkeypatch.setattr(config, "WEB_PANEL_PASSWORD", PANEL_PASSWORD)
-    чужой = TestClient(bot.app, client=("10.9.9.9", 50000))
-    assert чужой.get("/panel/bridge/next", headers=authed()).status_code == 403
+    чужой = TestClient(bridge_service.app, client=("10.9.9.9", 50000))
+    assert чужой.get("/bridge/next", headers=authed()).status_code == 200, (
+        "адрес клиента снова влияет на допуск: мост с этой машины работать не будет"
+    )
 
 
 async def test_endpoints_are_closed_when_disabled(bridge_client, monkeypatch, env):
     """Мост выключен - адреса не работают вовсе, даже с верным токеном."""
     await db.init_db()
     monkeypatch.setattr(config, "BRIDGE_ENABLED", False)
-    assert bridge_client.get("/panel/bridge/next", headers=authed()).status_code == 403
+    assert bridge_client.get("/bridge/next", headers=authed()).status_code == 403
 
 
 async def test_endpoints_need_no_panel_login(bridge_client, env):
     """Служебные адреса не про панель: токен важнее входа сис-админа."""
     await db.init_db()
-    assert bridge_client.get("/panel/bridge/next", headers=authed()).status_code == 200
+    assert bridge_client.get("/bridge/next", headers=authed()).status_code == 200
 
 
 async def test_bridge_hands_out_a_task_and_takes_it(bridge_client, env):
     """Рабочий сценарий программы: получили задание, оно помечено взятым."""
     await db.init_db()
     await repo.bridge_store.add_message(OWNER, "почини кнопки")
-    response = bridge_client.get("/panel/bridge/next", headers=authed())
+    response = bridge_client.get("/bridge/next", headers=authed())
     assert response.status_code == 200, response.status_code
     data = response.json()
     assert data["text"] == "почини кнопки"
     assert data["user_id"] == OWNER
-    again = bridge_client.get("/panel/bridge/next", headers=authed()).json()
+    again = bridge_client.get("/bridge/next", headers=authed()).json()
     assert again == {"empty": True}, "задание отдали второй раз"
 
 
 async def test_empty_queue_is_reported_as_empty(bridge_client, env):
     await db.init_db()
-    body = bridge_client.get("/panel/bridge/next", headers=authed()).json()
+    body = bridge_client.get("/bridge/next", headers=authed()).json()
     assert body == {"empty": True}
 
 
@@ -283,9 +298,9 @@ async def test_bridge_answer_reaches_the_owner(bridge_client, api, env):
     """Ответ программы уходит владельцу в MAX."""
     await db.init_db()
     await repo.bridge_store.add_message(OWNER, "сделай отчёт")
-    message_id = int(bridge_client.get("/panel/bridge/next", headers=authed()).json()["id"])
+    message_id = int(bridge_client.get("/bridge/next", headers=authed()).json()["id"])
     api.sent.clear()
-    response = bridge_client.post(f"/panel/bridge/{message_id}/answer", headers=authed(),
+    response = bridge_client.post(f"/bridge/{message_id}/answer", headers=authed(),
                                  content=json.dumps({"answer": "Готово: поправил, коммит 93c1b67"}))
     assert response.status_code == 200, response.status_code
     assert "93c1b67" in api.last(OWNER)[1]
@@ -296,9 +311,9 @@ async def test_bridge_fail_reaches_the_owner(bridge_client, api, env):
     """О неудаче владелец тоже должен знать: иначе он ждёт ответа впустую."""
     await db.init_db()
     await repo.bridge_store.add_message(OWNER, "сделай отчёт")
-    message_id = int(bridge_client.get("/panel/bridge/next", headers=authed()).json()["id"])
+    message_id = int(bridge_client.get("/bridge/next", headers=authed()).json()["id"])
     api.sent.clear()
-    response = bridge_client.post(f"/panel/bridge/{message_id}/fail", headers=authed(),
+    response = bridge_client.post(f"/bridge/{message_id}/fail", headers=authed(),
                                  content=json.dumps({"error": "модель не отвечает"}))
     assert response.status_code == 200
     assert "не отвечает" in api.last(OWNER)[1]
@@ -309,8 +324,8 @@ async def test_bridge_refuses_empty_answer(bridge_client, env):
     """Пустой ответ не должен закрывать задание молча."""
     await db.init_db()
     await repo.bridge_store.add_message(OWNER, "задача")
-    message_id = int(bridge_client.get("/panel/bridge/next", headers=authed()).json()["id"])
-    response = bridge_client.post(f"/panel/bridge/{message_id}/answer", headers=authed(),
+    message_id = int(bridge_client.get("/bridge/next", headers=authed()).json()["id"])
+    response = bridge_client.post(f"/bridge/{message_id}/answer", headers=authed(),
                                  content=json.dumps({"answer": "   "}))
     assert response.status_code == 422
     assert (await repo.bridge_store.get_message(message_id))["status"] == "busy"
@@ -319,14 +334,14 @@ async def test_bridge_refuses_empty_answer(bridge_client, env):
 async def test_bridge_refuses_broken_json(bridge_client, env):
     """Мусор в теле запроса - 422, а не падение бота."""
     await db.init_db()
-    response = bridge_client.post("/panel/bridge/1/answer", headers=authed(),
+    response = bridge_client.post("/bridge/1/answer", headers=authed(),
                                  content="{это не json")
     assert response.status_code == 422
 
 
 async def test_bridge_refuses_unknown_message(bridge_client, env):
     await db.init_db()
-    response = bridge_client.post("/panel/bridge/999/answer", headers=authed(),
+    response = bridge_client.post("/bridge/999/answer", headers=authed(),
                                  content=json.dumps({"answer": "привет"}))
     assert response.status_code == 404
 
@@ -335,7 +350,7 @@ async def test_bridge_status_does_not_leak_content(bridge_client, env):
     """Ответ «статус» не должен выдавать содержимое заданий."""
     await db.init_db()
     await repo.bridge_store.add_message(OWNER, "секретное задание")
-    body = bridge_client.get("/panel/bridge/status", headers=authed()).text
+    body = bridge_client.get("/bridge/status", headers=authed()).text
     assert "секретное задание" not in body, "статус раскрыл содержимое задания"
 
 
@@ -343,7 +358,7 @@ async def test_bridge_status_counts_waiting(bridge_client, env):
     await db.init_db()
     await repo.bridge_store.add_message(OWNER, "одно")
     await repo.bridge_store.add_message(OWNER, "два")
-    data = bridge_client.get("/panel/bridge/status", headers=authed()).json()
+    data = bridge_client.get("/bridge/status", headers=authed()).json()
     assert data["waiting"] == 2
 
 
@@ -401,9 +416,9 @@ async def test_defer_does_not_grab_a_fresh_task(bridge_client, env):
 async def test_defer_over_http_with_a_note(bridge_client, api, env):
     """Владелец узнаёт, почему ждёт, и задание возвращается."""
     await repo.bridge_store.add_message(OWNER, "задача")
-    message_id = int(bridge_client.get("/panel/bridge/next", headers=authed()).json()["id"])
+    message_id = int(bridge_client.get("/bridge/next", headers=authed()).json()["id"])
     api.sent.clear()
-    response = bridge_client.post(f"/panel/bridge/{message_id}/defer", headers=authed(),
+    response = bridge_client.post(f"/bridge/{message_id}/defer", headers=authed(),
                                  content=json.dumps({"text": "Проект держит консоль, жду."}))
     assert response.status_code == 200, response.status_code
     assert "консоль" in api.last(OWNER)[1]
@@ -413,9 +428,9 @@ async def test_defer_over_http_with_a_note(bridge_client, api, env):
 async def test_defer_over_http_without_a_note(bridge_client, api, env):
     """Без пояснения просто возвращаем - лишних сообщений владельцу не шлём."""
     await repo.bridge_store.add_message(OWNER, "задача")
-    message_id = int(bridge_client.get("/panel/bridge/next", headers=authed()).json()["id"])
+    message_id = int(bridge_client.get("/bridge/next", headers=authed()).json()["id"])
     api.sent.clear()
-    response = bridge_client.post(f"/panel/bridge/{message_id}/defer", headers=authed(),
+    response = bridge_client.post(f"/bridge/{message_id}/defer", headers=authed(),
                                  content=json.dumps({}))
     assert response.status_code == 200
     assert api.to(OWNER) == [], "владельцу пришло лишнее сообщение"
@@ -423,21 +438,21 @@ async def test_defer_over_http_without_a_note(bridge_client, api, env):
 
 
 async def test_defer_of_unknown_task(bridge_client, env):
-    assert bridge_client.post("/panel/bridge/999/defer", headers=authed(),
+    assert bridge_client.post("/bridge/999/defer", headers=authed(),
                               content=json.dumps({})).status_code == 404
 
 
 async def test_defer_of_closed_task_over_http(bridge_client, env):
     await repo.bridge_store.add_message(OWNER, "задача")
-    message_id = int(bridge_client.get("/panel/bridge/next", headers=authed()).json()["id"])
-    bridge_client.post(f"/panel/bridge/{message_id}/answer", headers=authed(),
+    message_id = int(bridge_client.get("/bridge/next", headers=authed()).json()["id"])
+    bridge_client.post(f"/bridge/{message_id}/answer", headers=authed(),
                        content=json.dumps({"answer": "готово"}))
-    assert bridge_client.post(f"/panel/bridge/{message_id}/defer", headers=authed(),
+    assert bridge_client.post(f"/bridge/{message_id}/defer", headers=authed(),
                               content=json.dumps({})).status_code == 409
 
 
 async def test_defer_needs_the_token(bridge_client, env):
     await repo.bridge_store.add_message(OWNER, "задача")
-    message_id = int(bridge_client.get("/panel/bridge/next", headers=authed()).json()["id"])
-    assert bridge_client.post(f"/panel/bridge/{message_id}/defer",
+    message_id = int(bridge_client.get("/bridge/next", headers=authed()).json()["id"])
+    assert bridge_client.post(f"/bridge/{message_id}/defer",
                               content=json.dumps({})).status_code == 403

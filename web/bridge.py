@@ -4,14 +4,21 @@
 друг друга они не видят. Общее место одно - база. Поэтому программа ходит в
 бот по HTTP: забирает задание и приносит ответ.
 
-Две защиты, обе обязательные:
-1. Клиент должен быть с этой машины. Порт 8080 слушает все интерфейсы, и за
-   обратным прокси «локальный» клиент может оказаться чужим.
-2. Токен. Случайная строка в 32 знака, живёт только в .env. Подобрать нельзя.
+Защита здесь одна, и она настоящая: токен. Случайная строка в 43 знака,
+живёт только в .env, в репозиторий не попадает, подобрать нельзя.
 
-Одной защиты мало: первая обходится прокси, вторая - подбором. Вместе они
-означают, что ответить по этим адресам может только та программа, которая
-лежит на этом же компьютере и знает токен.
+Проверки «запрос с этой машины» здесь нет, и это решение, а не забывчивость.
+Она работала бы в обычном приложении, но не здесь: порт 8080 опубликован на
+0.0.0.0 ради доступа к панели из локальной сети, и Docker Desktop перебрасывает
+запрос через виртуальную машину, так что бот видит адрес её шлюза, а не
+127.0.0.1. Проверка отказывала бы мосту с этой же машины, а ослабленная до
+«шлюза» не проверяла бы ничего.
+
+Поэтому граница вынесена на хост: эти адреса живут не в общем приложении, а в
+отдельном (bridge_service.py), и его порт публикуется как 127.0.0.1:8090:8090 -
+операционная система просто не берёт на нём соединения из сети. Смысл
+разделения такой: по порту 8080, который открыт в локальную сеть и в туннель,
+эти адреса недоступны вообще.
 
 Чего здесь нет. Ни входа в панель, ни пароля: это не панель, а служебные
 адреса. Они не появляются в меню и не в палитре - иначе про них узнает тот,
@@ -21,13 +28,18 @@ import hmac
 import json
 
 import repository as repo
-from fastapi import HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from handlers.common import api, log
 from utils import as_str
 
 import config
-from .router import router
+# Свой роутер, а не общий роутер панели. Общий несёт 126 адресов всех
+# разделов, и мост на нём оказался бы либо вместе с панелью, либо вовсе не там,
+# где нужен: в основном приложении на порту 8080, открытом в локальную сеть и
+# в туннель. Отдельный роутер позволяет держать мост там, где он и должен быть:
+# в отдельной службе на порту, который снаружи не виден.
+router = APIRouter(prefix="/bridge", tags=["bridge"])
 
 BRIDGE = repo.bridge_store
 
@@ -35,20 +47,21 @@ DENIED = "мост недоступен"
 NOTHING = {"empty": True}
 
 
-def _client_host(request: Request) -> str:
-    """Адрес, с которого пришёл запрос, без доверия заголовкам.
-
-    X-Forwarded-For не смотрим намеренно: за обратным прокси его пишет тот,
-    кто снаружи, и подделать его можно. Смотрим на реальный сокет.
-    """
-    client = request.client
-    return as_str(client.host if client else "")
-
-
 def _authorized(request: Request) -> bool:
+    """Пропускает ли запрос: мост включен и токен верен.
+
+    Адрес клиента здесь НЕ проверяется намеренно. Проверка была, и она не
+    работала: Docker Desktop публикует порт через виртуальную машину, поэтому
+    бот видит адрес её шлюза даже для запроса с этой же машины, и проверка
+    отказывала мосту. Ослабить её до адреса шлюза - значит не проверять ничего:
+    из локальной сети приходит то же самое.
+
+    Настоящая граница - на хосте: порт моста публикуется как
+    127.0.0.1:8090:8090, и система не принимает на нём соединений из сети.
+    Токен остаётся обязательным: любой процесс на этой машине до порта
+    дотянется, а нужен он только мосту.
+    """
     if not config.BRIDGE_ENABLED:
-        return False
-    if _client_host(request) not in config.BRIDGE_LOCAL_HOSTS:
         return False
     given = request.headers.get("x-bridge-token", "")
     return hmac.compare_digest(as_str(given), as_str(config.BRIDGE_TOKEN))
@@ -59,7 +72,7 @@ async def _guard(request: Request) -> None:
         raise HTTPException(status_code=403, detail=DENIED)
 
 
-@router.get("/bridge/next")
+@router.get("/next")
 async def bridge_next(request: Request):
     """Отдаёт следующее задание и сразу помечает его взятым.
 
@@ -76,7 +89,7 @@ async def bridge_next(request: Request):
     return NOTHING
 
 
-@router.post("/bridge/{message_id}/answer")
+@router.post("/{message_id}/answer")
 async def bridge_answer(request: Request, message_id: int):
     """Принимает мой ответ и отправляет его владельцу в MAX."""
     await _guard(request)
@@ -94,7 +107,7 @@ async def bridge_answer(request: Request, message_id: int):
     return {"ok": True}
 
 
-@router.post("/bridge/{message_id}/fail")
+@router.post("/{message_id}/fail")
 async def bridge_fail(request: Request, message_id: int):
     """Сообщение о неудаче: владельцу тоже нужно знать, что задание не сделано."""
     await _guard(request)
@@ -110,7 +123,7 @@ async def bridge_fail(request: Request, message_id: int):
     return {"ok": True}
 
 
-@router.post("/bridge/{message_id}/defer")
+@router.post("/{message_id}/defer")
 async def bridge_defer(request: Request, message_id: int):
     """Возвращает задание в очередь и, если есть, объясняет владельцу почему.
 
@@ -133,7 +146,7 @@ async def bridge_defer(request: Request, message_id: int):
     return {"ok": True}
 
 
-@router.get("/bridge/status")
+@router.get("/status")
 async def bridge_status(request: Request):
     """Сколько ждёт и что последнее делалось. Программа пишет это в журнал."""
     await _guard(request)
