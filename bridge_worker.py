@@ -34,6 +34,7 @@
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -147,6 +148,20 @@ def call(settings: dict, path: str, payload: dict | None = None, timeout: int = 
         raise RuntimeError(f"бот ответил не json: {raw[:200]}") from exc
 
 
+# Постоянных инструкций в задании нет намеренно. Они лежат в AGENTS.md в корне
+# проекта, и opencode читает его сам - проверено на живом запуске.
+#
+# Почему не вставлять в текст задания: инструкции и письмо владельца оказываются
+# одним сообщением, и модель отвечает на то, что видит последним. На практике это
+# выглядело так: на вопрос «что сделал» приходило «твоё сообщение обрывается на
+# слове “пишет”» (это было из инструкций), а после добавления тегов - «я готов
+# принимать инструкции». Менялись формулировки, суть не менялась: письмо должно
+# оставаться письмом, а инструкциям - лежать в файле.
+#
+# Проверка, что этого не сломают снова: tests/test_bridge_prompt.py требует, чтобы
+# задание уходило как есть, без обёрток.
+
+
 # ── работа через opencode ──────────────────────────────────────────────────
 def run_opencode(settings: dict, task: str) -> str:
     """Передаёт задание opencode и возвращает мой ответ.
@@ -159,7 +174,7 @@ def run_opencode(settings: dict, task: str) -> str:
                "--format", "json"]
     if settings.get("session"):
         command += ["--session", settings["session"]]
-    command += [task]
+
 
     environment = dict(os.environ)
     if settings.get("opencode_password"):
@@ -168,7 +183,8 @@ def run_opencode(settings: dict, task: str) -> str:
     say(f"запускаю работу: {task[:120]}")
     try:
         finished = subprocess.run(
-            command, cwd=settings["working_dir"], env=environment,
+            command + [task],
+            cwd=settings["working_dir"], env=environment,
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=int(settings["timeout_seconds"]))
     except subprocess.TimeoutExpired:
@@ -176,6 +192,7 @@ def run_opencode(settings: dict, task: str) -> str:
     except FileNotFoundError:
         raise RuntimeError("opencode не найден в PATH - программа не установлена") from None
 
+    remember_session(settings, finished.stdout)
     answer = _answer_from(finished.stdout)
     if not answer:
         tail = (finished.stderr or finished.stdout or "").strip()[-300:]
@@ -209,7 +226,13 @@ def _answer_from(output: str) -> str:
     иначе следующая смена формата будет выглядеть как поломка моста, и искать
     придётся вслепую.
     """
-    pieces: list = []
+    # Части группируются по messageID: куски одной реплики имеют общий
+    # messageID, разные реплики - разные. Без группировки ответ удваивался:
+    # модель писала сначала «давай осмотрюсь», потом сам ответ, а склейка
+    # выдавала оба подряд. Берём последнюю группу - это и есть ответ.
+    группы: dict = {}
+    порядок: list = []
+    без_идентификатора: list = []
     plain = ""
     seen_types: set = set()
 
@@ -230,9 +253,21 @@ def _answer_from(output: str) -> str:
         if str(data.get("type") or "") == "text":
             part = data.get("part")
             if isinstance(part, dict) and str(part.get("text") or ""):
-                pieces.append(str(part["text"]))
-    if pieces:
-        return "".join(pieces).strip()
+                кусок = str(part["text"])
+                идентификатор = str(part.get("messageID") or part.get("message_id") or "")
+                if not идентификатор:
+                    без_идентификатора.append(кусок)
+                    continue
+                if идентификатор not in группы:
+                    группы[идентификатор] = []
+                    порядок.append(идентификатор)
+                группы[идентификатор].append(кусок)
+    if порядок:
+        # последняя реплика целиком: это ответ, а не черновик перед ним
+        return "".join(группы[порядок[-1]]).strip()
+    if без_идентификатора:
+        # messageID не пришёл - ведём себя как раньше, склеиваем всё
+        return "".join(без_идентификатора).strip()
     if plain:
         return plain
     # global обязателен: без него присваивание сделало бы имя локальным, и
@@ -248,6 +283,42 @@ def _answer_from(output: str) -> str:
 def seen_event_types() -> str:
     """Типы событий в последнем разобранном выводе - для диагностики."""
     return ", ".join(sorted(_LAST_EVENT_TYPES)) or "ни одного"
+
+
+def session_of(output: str) -> str:
+    """Номер сессии из ответа opencode.
+
+    opencode печатает sessionID в каждом событии. Он нужен, чтобы следующий заход
+    продолжил тот же разговор: без этого модель каждый раз начинает с нуля и
+    отвечает «это первое сообщение, я ничего не делал».
+
+    Выдумывать номер нельзя: opencode принимает только идентификатор, который
+    реально существует, и на выдуманный отвечает ошибкой. Поэтому берём
+    настоящий, а если событий не оказалось - возвращаем пусто, и тогда просто
+    не подставляем номер, а не выдумываем его.
+    """
+    номера = re.findall(r'"sessionID"\s*:\s*"([^"]+)"', output or "")
+    for номер in номера:
+        if str(номер).startswith("ses"):
+            return str(номер)
+    return ""
+
+
+def remember_session(settings: dict, output: str) -> None:
+    """Запоминает номер сессии, чтобы следующий заход её продолжил.
+
+    Записываем только если он изменился: настройки пишутся в файл, а лишние
+    записи на каждом задании только создают шум.
+    """
+    номер = session_of(output)
+    if номер and номер != str(settings.get("session") or ""):
+        settings["session"] = номер
+        try:
+            save_settings(settings)
+            log_line = f"мост: запомнена сессия {номер}"
+            print(log_line, flush=True)
+        except OSError as exc:
+            print(f"мост: номер сессии запомнить не вышло: {exc}", flush=True)
 
 
 # ── сердцебиение ───────────────────────────────────────────────────────────
