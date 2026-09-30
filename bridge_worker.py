@@ -309,6 +309,61 @@ def handle_task(settings: dict, lock, task: dict) -> None:
             pass
 
 
+class SingleInstance:
+    """Метка «программа уже работает» - отдельная от замка.
+
+    Замок занят работой, а не присутствием: между кругами он свободен, и второй
+    экземпляр на нём не поймать. Поэтому метка своя и живёт всё время работы
+    программы.
+
+    Проверяется так же, как и в замке: записан номер процесса, и он должен быть
+    живым. Иначе после аварийного завершения программа не запустилась бы никогда.
+    """
+
+    def __init__(self, path=None):
+        self.path = Path(path or (STATE_DIR / "bridge_worker.pid"))
+
+    def holder(self) -> str:
+        """Номер процесса, который уже работает. Пусто - если никто не работает."""
+        try:
+            pid = int(self.path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return ""
+        if pid <= 0 or pid == os.getpid():
+            return ""
+        return str(pid) if bridge_lock.pid_alive(pid) else ""
+
+    def take(self) -> bool:
+        """Занять метку. False - уже работает живой экземпляр."""
+        if self.holder():
+            return False
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(str(os.getpid()), encoding="utf-8")
+        return True
+
+    def release(self) -> None:
+        """Отпустить метку. Только свою.
+
+        Файл читаем напрямую, а не через holder(): holder() по замыслу не
+        считает занятым случай, когда в файле наш собственный номер (иначе
+        программа, взявшая метку, считала бы себя вторым экземпляром). Значит
+        через него условие «моя ли метка» никогда не выполнялось бы, и запись
+        оставалась бы после выхода.
+
+        Вопросы разные: holder() - «работает ли ДРУГОЙ экземпляр»,
+        release() - «моя ли это метка». Одно правило на оба вопроса не годится.
+        """
+        try:
+            записан = int(self.path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return
+        if записан == os.getpid():
+            try:
+                self.path.unlink()
+            except OSError:
+                pass
+
+
 def one_round(settings: dict, lock) -> bool:
     """Один круг. True - было задание, False - нечего было делать."""
     if not lock.acquire("ожидание задания"):
@@ -353,22 +408,48 @@ def cmd_install() -> int:
     print(f"opencode: {data['opencode_server']} (пароль: "
           f"{'задан' if data['opencode_password'] else 'НЕ ЗАДАН'})")
 
+    # Сначала планировщик: он переживает закрытые сессии и даёт журнал.
+    # На некоторых машинах запись в него закрыта (ошибка 0x80070005), и тогда
+    # задача не создаётся вовсе - повышать права ради этого нельзя.
     task = "BOTLPC-мост"
-    command = f'cmd /c ""{sys.executable}" "{Path(__file__).resolve()}""'
+    script = Path(__file__).resolve()
+    # pythonw, а не python: без окна консоли. Журнал всё равно пишется в файл.
+    quiet = Path(sys.executable).with_name("pythonw.exe")
+    if not quiet.exists():
+        quiet = Path(sys.executable)
+    command = f'cmd /c ""{quiet}" "{script}""'
+
     try:
         finished = subprocess.run(["schtasks", "/Create", "/F", "/SC", "ONLOGON", "/RL", "LIMITED",
                                    "/TN", task, "/TR", command],
                                   capture_output=True, text=True, encoding="utf-8",
                                   errors="replace")
+        if finished.returncode == 0:
+            print(f"автозапуск: задача в планировщике {task} (при входе в Windows)")
+            return 0
+        reason = (finished.stderr or finished.stdout or "").strip()
+        print("планировщик не даёт создать задачу:", reason[:200] if reason else "без причины")
     except FileNotFoundError:
-        print("schtasks не найден. Запускай вручную: python bridge_worker.py")
-        return 0
-    if finished.returncode == 0:
-        print(f"задача в планировщике создана: {task} (при входе в Windows)")
-    else:
-        print("задачу в планировщике создать не вышло:")
-        print(" ", (finished.stderr or finished.stdout or "").strip()[:300])
+        print("schtasks не найден")
+
+    # Запасная дверь: ярлык в папке автозагрузки. Папка пользовательская,
+    # права администратора не нужны. Срабатывает при входе в Windows - так же,
+    # как задача по событию входа, только без переживания закрытых сессий.
+    startup = Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / \
+        "Programs" / "Startup"
+    if not startup.exists():
+        print("не нашёл папку автозагрузки:", startup)
         print("запускай вручную: python bridge_worker.py")
+        return 1
+    launcher = startup / "Мост - ответы в MAX.cmd"
+    launcher.write_text(
+        "@echo off\r\n"
+        "rem Мост: ждёт задания от владельца и отвечает ему в MAX.\r\n"
+        "rem Создано программой bridge_worker.py. Удалить: этот файл.\r\n"
+        f'start "" /min "{quiet}" "{script}"\r\n',
+        encoding="cp866", errors="replace")
+    print("автозапуск: файл в папке автозагрузки ->", launcher)
+    print("  (вход в Windows запустит мост; пока не войдёшь - запусти вручную)")
     return 0
 
 
@@ -390,19 +471,34 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     lock = bridge_lock.Lock(holder="bridge")
+    instance = SingleInstance()
+    сосед = instance.holder()
+    if сосед:
+        say(f"✗ программа уже работает (процесс {сосед}). Второй экземпляр не нужен: "
+            f"очередь разберут два, а в журнале будет путаница.")
+        return 1
+    if not instance.take():
+        say("✗ не удалось занять метку работы - запускаться не буду")
+        return 1
     say("мост запущен")
     if args.once:
-        did = one_round(settings, lock)
-        say("круг окончен, задание было" if did else "заданий нет")
+        try:
+            did = one_round(settings, lock)
+            say("круг окончен, задание было" if did else "заданий нет")
+        finally:
+            instance.release()
         return 0
 
     poll = max(5, int(settings["poll_seconds"]))
-    while True:
-        try:
-            one_round(settings, lock)
-        except Exception as exc:                          # noqa: BLE001 - цикл не должен умирать
-            say(f"⚠ круг не получился: {exc}")
-        time.sleep(poll)
+    try:
+        while True:
+            try:
+                one_round(settings, lock)
+            except Exception as exc:                      # noqa: BLE001 - цикл не должен умирать
+                say(f"⚠ круг не получился: {exc}")
+            time.sleep(poll)
+    finally:
+        instance.release()
 
 
 if __name__ == "__main__":
