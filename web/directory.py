@@ -1,4 +1,4 @@
-"""Справочники: контакты колледжа с частыми вопросами и группы студентов."""
+﻿"""Справочники: контакты колледжа с частыми вопросами и группы студентов."""
 import college
 import database as db
 import repository as repo
@@ -72,19 +72,27 @@ async def college_page(request: Request):
     rows_html = "".join(rows)
 
     enabled = await faq.ask_enabled()
-    items = await faq.active_items()
+    # Все вопросы, а не только включённые: выключенный вопрос должен оставаться
+    # в панели, иначе вернуть его можно только правкой базы через «Данные».
+    # Порядок как в боте: сначала те, что работают, потом выключенные.
+    items = sorted(await faq.all_items(), key=lambda row: (not to_int(row["active"]), to_int(row["id"])))
     faq_total, faq_on = await _faq_counts()
+    faq_off = faq_total - faq_on
     faq_rows = []
     for row in items:
+        is_on = bool(to_int(row["active"]))
         toggle = _action_form(request, "/panel/faq/" + str(to_int(row["id"])) + "/toggle",
-                              f'{icon("refresh", 16)} Вкл/выкл',
-                              cls="btn-grey " + ACT_COL,
-                              confirm_text="Включить или выключить этот вопрос?")
-        mark = state_pill("on", "включён") if row["active"] else state_pill("off", "выключен")
+                              f'{icon("refresh", 16)} {"Выключить" if is_on else "Включить"}',
+                              cls=("btn-grey " if is_on else "btn-ok ") + ACT_COL,
+                              confirm_text=("Выключить этот вопрос? Студенты перестанут его видеть."
+                                            if is_on else
+                                            "Включить этот вопрос? Студенты снова будут его видеть."))
+        mark = state_pill("on", "включён") if is_on else state_pill("off", "выключен")
+        dim = "" if is_on else " class='mut'"
         faq_rows.append(
-            f"<tr><td><b>{esc(row['question'])}</b>"
+            f"<tr><td{dim}><b>{esc(row['question'])}</b>"
             f"<div class='small mut'>{esc(row['keywords'])}</div></td>"
-            f"<td>{esc(row['answer'])}</td><td>{mark}</td>"
+            f"<td{dim}>{esc(row['answer'])}</td><td>{mark}</td>"
             f"<td class='{ACT_COL}'>{toggle}</td></tr>")
     faq_html = "".join(faq_rows)
 
@@ -129,9 +137,12 @@ async def college_page(request: Request):
 {contacts_block}</div>
 <div class="card"><h2>{icon("info", 20)} Частые вопросы
 <span class="pill">вопросов: {faq_total}</span>
+<span class="pill pill-on">включено: {faq_on}</span>
+<span class="pill {'pill-off' if faq_off else 'pill-on'}">выключено: {faq_off}</span>
 <span class="pill {'pill-on' if enabled else 'pill-off'}">ответы: {ask_word}</span></h2>
 <p class="small mut">Бот ищет ответ по ключевым словам. Если не нашёл — не выдумывает,
-а предлагает написать сотруднику. В таблице {len(items)} включённых вопросов.</p>
+а предлагает написать сотруднику. В таблице все {len(items)}, из них включено
+{faq_on} — выключенные помечены и стоят в конце, их можно включить отсюда.</p>
 <div class="grid" style="margin:12px 0">{ask_form}{seed_form}
 <span class="full small mut">Сейчас ответы на частые вопросы {ask_word}.</span></div>
 {faq_block}

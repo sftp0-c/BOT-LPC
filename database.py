@@ -269,10 +269,23 @@ GROUP_BACKFILL_MARKER = "groups_backfill_v1"
 SYSADMINS_REVOKED_KEY = "sysadmins_revoked"
 
 
+def _py_lower(value) -> str:
+    """lower() поверх Python: штатный в SQLite понимает только ASCII.
+
+    Кириллицу он не трогает, а фамилии у нас кириллические: поиск «иванов» по
+    «Иванов» не нашёл бы ничего. Имя функции специально то же - иначе пришлось
+    бы переписывать все запросы с lower().
+    """
+    return str(value or "").lower()
+
+
 @asynccontextmanager
 async def _conn():
     conn = await aiosqlite.connect(config.DATABASE_PATH, timeout=15)
     conn.row_factory = aiosqlite.Row
+    # deterministic=True обязателен: без него SQLite считает вызов
+    # непредсказуемым и не может использовать индекс.
+    await conn.create_function("lower", 1, _py_lower, deterministic=True)
     try:
         await conn.execute("PRAGMA foreign_keys=ON")
         yield conn

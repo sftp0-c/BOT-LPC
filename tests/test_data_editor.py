@@ -1,4 +1,4 @@
-"""Раздел панели «Данные»: доступ, просмотр, правка и защита правил проекта.
+﻿"""Раздел панели «Данные»: доступ, просмотр, правка и защита правил проекта.
 
 Проверки поведенческие: раздел открыт владельцу бота и закрыт обычному
 сис-админу, страница показывает настоящие данные базы (пагинация, сортировка и
@@ -131,10 +131,10 @@ def test_menu_has_the_section_next_to_the_database_tab():
     """Пункт «Данные» лежит в группе «Система» рядом с «База данных»."""
     system = [items for name, items in webpanel.NAV_GROUPS if name == "Система"]
     assert len(system) == 1
-    paths = [path for path, _title, _icon in system[0]]
+    paths = [path for path, _title, _icon, _sub in system[0]]
     assert "/data" in paths
     assert paths.index("/data") == paths.index("/database") + 1
-    title = next(title for path, title, _icon in system[0] if path == "/data")
+    title = next(title for path, title, _icon, _sub in system[0] if path == "/data")
     assert title == "Данные"
 
 

@@ -1,4 +1,4 @@
-"""Люди: регистрация, реестр контактов, карточка человека и его удаление.
+﻿"""Люди: регистрация, реестр контактов, карточка человека и его удаление.
 
 Здесь же согласие на обработку данных. Всё, что отвечает на вопрос «кто
 этот человек и что о нём известно», собрано в одном месте, чтобы остальные
@@ -292,6 +292,26 @@ def _like(text: str) -> str:
     """Шаблон LIKE, в котором «%» и «_» не значат ничего."""
     escaped = as_str(text).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
+
+
+async def student_ids_by_name(needle: str, limit: int = 200) -> set:
+    """MAX ID студентов, у которых фамилия или имя содержит needle.
+
+    Для поиска обращений по фамилии. Нужен отдельный запрос, а не перебор
+    всех студентов в Python: под обработчиком списка их бывают тысячи.
+
+    Регистр обязателен: LIKE в SQLite нечувствителен к нему только для ASCII,
+    а фамилии у нас кириллические. Сравниваем lower() с обеих сторон.
+    """
+    clean = as_str(needle).strip()
+    if not clean:
+        return set()
+    rows = await db.many(
+        "SELECT user_id FROM users WHERE lower(full_name) LIKE lower(?) ESCAPE '\\' "
+        "ORDER BY full_name LIMIT ?",
+        (_like(clean), max(1, int(limit))),
+    )
+    return {as_str(row["user_id"]) for row in rows}
 
 
 def _mentions(details, user_id: str) -> bool:

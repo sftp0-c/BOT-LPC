@@ -2,6 +2,7 @@
 import csv
 import io
 import os
+from datetime import timedelta
 
 import clock
 import database as db
@@ -248,14 +249,17 @@ async def templates_edit_submit(request: Request, template_id: int):
 
 
 @router.get("/tickets.csv")
-async def tickets_csv(request: Request, status: str = "", category: str = ""):
-    """Выгрузка обращений в CSV: для отчётов и разборов вне панели."""
+async def tickets_csv(request: Request, status: str = "", category: str = "",
+                      q: str = "", scope: str = "", view: str = ""):
+    """Выгрузка обращений в CSV: для отчётов и разборов вне панели.
+
+    Фильтры те же, что на странице, и правила те же - берём общую функцию.
+    Раньше выгрузка знала только статус и раздел, поэтому из архива отдавала
+    пустоту, а из списка с поиском - не то, что человек видит на экране.
+    """
     await require_user(request)  # CSRF-токен не нужен: это скачивание
-    rows = await repo.admin_tickets(None, 1000)
-    if status:
-        rows = [r for r in rows if as_str(r["status"]) == status]
-    if category:
-        rows = [r for r in rows if as_str(r["category"]) == category]
+    rows, _latest, _waiting, _overdue = await filter_tickets(status, category, q, scope,
+                                                             view, limit=2000)
     # имена подставляем словарём: в строках обращений их нет, а десятки
     # отдельных запросов на каждую строку были бы лишней нагрузкой
     students = {as_str(u["user_id"]): as_str(u["full_name"]) for u in await repo.list_users(2000)}
@@ -291,6 +295,65 @@ EVENT_LABELS = {"created": "обращение создано", "status": "ст�
                 "message_student": "сообщение студента", "message_staff": "ответ сотрудника"}
 
 
+OVERDUE_HOURS = 24
+"""Сутки. Письмо, которое ждёт дольше суток, к этому времени уже забыто:
+именно на такие и нужен счётчик, а не на все ожидающие."""
+
+
+def is_overdue(row, latest: dict) -> bool:
+    """Ждёт ли обращение дольше суток.
+
+    Ждёт - значит последнее сообщение в нём оставил студент (тот же признак,
+    что у фильтра «только ждут ответа»). Давно - это когда обращение давно не
+    трогали: на updated_at пишется любое сообщение, поэтому время последнего
+    касания доступно без лишних запросов к базе.
+    """
+    ticket_id = to_int(row["ticket_id"])
+    if latest.get(ticket_id) != "student":
+        return False
+    touched = clock.parse(row["updated_at"])
+    if touched is None:
+        return False
+    return (clock.now() - touched) >= timedelta(hours=OVERDUE_HOURS)
+
+
+async def filter_tickets(status: str = "", category: str = "", q: str = "",
+                        scope: str = "", view: str = "", limit: int = 500) -> tuple:
+    """Отбор обращений под фильтры панели. Возвращает (строки, ждут ответа).
+
+    Один источник правил для страницы и для выгрузки в CSV. Пока условия были
+    написаны дважды, они разошлись: выгрузка знала про статус и раздел, но не
+    про поиск, «только ждут ответа» и архив, - и молча отдавала не то, что
+    человек видит на экране.
+    """
+    archived = view == "archive"
+    rows = await repo.admin_tickets(None, limit, archived=archived)
+    if status == "open":
+        rows = [r for r in rows if as_str(r["status"]) in OPEN_STATUSES]
+    elif status:
+        rows = [r for r in rows if as_str(r["status"]) == status]
+    if category:
+        rows = [r for r in rows if as_str(r["category"]) == category]
+    if q:
+        needle = q.lower()
+        # подходящие по фамилии: один запрос к базе, а не перебор всех
+        # студентов. ФИО не пишут в тексте обращения, а MAX ID сотрудник не
+        # знает - искать было нечем.
+        by_name = await repo.student_ids_by_name(q)
+        rows = [r for r in rows
+                if needle in as_str(r["text_content"]).lower()
+                or needle in as_str(r["student_id"])
+                or as_str(r["student_id"]) in by_name]
+    latest = await repo.latest_message_roles([row["ticket_id"] for row in rows])
+    if scope == "waiting":
+        rows = [row for row in rows if latest.get(int(row["ticket_id"])) == "student"]
+    waiting = sum(1 for row in rows if latest.get(int(row["ticket_id"])) == "student")
+    if scope == "overdue":
+        rows = [row for row in rows if is_overdue(row, latest)]
+    overdue = sum(1 for row in rows if is_overdue(row, latest))
+    return rows, latest, waiting, overdue
+
+
 @router.get("/tickets")
 async def tickets_list(request: Request, status: str = "", q: str = "", category: str = "",
                        scope: str = "", t: int = 0, view: str = ""):
@@ -301,21 +364,7 @@ async def tickets_list(request: Request, status: str = "", q: str = "", category
     """
     user = await require_user(request)
     archived = view == "archive"
-    rows = await repo.admin_tickets(None, 500, archived=archived)
-    if status == "open":
-        rows = [r for r in rows if as_str(r["status"]) in OPEN_STATUSES]
-    elif status:
-        rows = [r for r in rows if as_str(r["status"]) == status]
-    if category:
-        rows = [r for r in rows if as_str(r["category"]) == category]
-    if q:
-        needle = q.lower()
-        rows = [r for r in rows
-                if needle in as_str(r["text_content"]).lower() or needle in as_str(r["student_id"])]
-    latest = await repo.latest_message_roles([row["ticket_id"] for row in rows])
-    if scope == "waiting":
-        rows = [row for row in rows if latest.get(int(row["ticket_id"])) == "student"]
-    waiting = sum(1 for row in rows if latest.get(int(row["ticket_id"])) == "student")
+    rows, latest, waiting, overdue = await filter_tickets(status, category, q, scope, view)
     selected = next((row for row in rows if int(row["ticket_id"]) == int(t or 0)), None)
     counts = await repo.status_counts()
     archived_n = await repo.archive_count()
@@ -333,10 +382,11 @@ async def tickets_list(request: Request, status: str = "", q: str = "", category
 <div>{select("status", options, status, label="Статус")}</div>
 <div>{select("category", cat_options, category, label="Раздел")}</div>
 <div><label>Поиск: текст обращения или MAX ID</label>
-<input name="q" value="{esc(q)}" placeholder="например: справка"></div>
+<input name="q" value="{esc(q)}" placeholder="фамилия, текст обращения или MAX ID"></div>
 <div><button>Найти</button></div></form>
 <p class="small mut wb-tools">
 <a class="btn{' btn-grey' if scope else ''}" href="/panel/tickets?{live_query}">{icon("clock", 16)} Только ждут ответа: {waiting}</a>
+<a class="btn{' btn-bad' if overdue else ' btn-grey'}" href="/panel/tickets?{query}&amp;scope=overdue">{icon("alert", 16)} Дольше суток: {overdue}</a>
 <a class="btn{' btn-grey' if not archived else ''}" href="/panel/tickets?{query}">{icon("inbox", 16)} В работе</a>
 <a class="btn{' btn-grey' if not archived else ' btn-ok'}" href="/panel/tickets?{query}&view=archive">{icon("archive", 16)} Архив: {archived_n}</a>
 <a class="btn" href="/panel/tickets/new">{icon("plus", 16)} Создать обращение</a>
@@ -353,7 +403,7 @@ async def tickets_list(request: Request, status: str = "", q: str = "", category
 <div class="workbench"><div class="wb-queue">{queue}</div><div class="wb-card">{card}{access}</div></div>"""
     title = "Архив обращений" if archived else "Обращения"
     return page(title, body, user, "/tickets",
-                actions=_tickets_actions(status, category, selected, bot))
+                actions=_tickets_actions(live_query, selected, bot))
 
 
 def print_btn(label: str = "Печать") -> str:
@@ -362,11 +412,16 @@ def print_btn(label: str = "Печать") -> str:
             f'{icon("print", 16)} {esc(label)}</button>')
 
 
-def _tickets_actions(status: str, category: str, selected, bot: str) -> str:
-    """Шапка рабочего места: выгрузка, печать карточки и ссылка на бота."""
-    return (f'<a class="btn" href="/panel/tickets.csv?status={esc(status)}&category={esc(category)}">'
+def _tickets_actions(live_query: str, selected, bot: str) -> str:
+    """Шапка рабочего места: выгрузка, печать карточки и ссылка на бота.
+
+    ``live_query`` - готовая строка фильтров со всеми условиями, какие сейчас
+    стоят на странице, включая архив и поиск. Раньше сюда передавались только
+    статус и раздел, и выгрузка молча отдавала не то, что человек видит.
+    """
+    return (f'<a class="btn" href="/panel/tickets.csv?{esc(live_query)}">'
             f'{icon("download", 16)} Выгрузить в CSV</a>'
-            f'<span class="small mut">все обращения со статусами, до 1000 строк</span>'
+            f'<span class="small mut">те же фильтры, что на экране, до 2000 строк</span>'
             + (print_btn("Печать карточки") if selected else "")
             + open_in_bot(bot))
 

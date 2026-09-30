@@ -116,7 +116,7 @@ def test_menu_has_five_groups():
 
 
 def test_every_old_section_belongs_to_a_group():
-    inside = {path for _group, items in webpanel.NAV_GROUPS for path, _name, _icon in items}
+    inside = {path for _group, items in webpanel.NAV_GROUPS for path, _name, _icon, _sub in items}
     missing = [path for path in OLD_PATHS if path not in inside]
     assert not missing, f"разделы выпали из меню: {missing}"
     # намеренно скрытые действительно вне меню - иначе список врёт
@@ -143,8 +143,8 @@ def test_hidden_section_still_works_and_is_reachable():
 def test_activity_is_in_the_control_group():
     group, items = webpanel.NAV_GROUPS[0]
     assert group == "Пульт"
-    assert "/activity" in [path for path, _name, _icon in items]
-    assert "/" in [path for path, _name, _icon in items]
+    assert "/activity" in [path for path, _name, _icon, _sub in items]
+    assert "/" in [path for path, _name, _icon, _sub in items]
 
 
 def test_menu_renders_groups_with_badges(panel_client):
@@ -473,5 +473,5 @@ def test_exports_live_in_the_page_header(panel_client):
     for body in (tickets, people):
         assert 'class="dochead"' in body and 'class="page-actions"' in body
         assert "/panel/tickets.csv" in tickets and "/panel/people.csv" in people
-    assert "Выгрузить в CSV" in tickets and "до 1000 строк" in tickets
+    assert "Выгрузить в CSV" in tickets and "до 2000 строк" in tickets
     assert "Выгрузить в CSV" in people and "до 5000 строк" in people

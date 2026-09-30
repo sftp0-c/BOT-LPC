@@ -263,10 +263,10 @@ def test_menu_has_the_section_in_the_system_group():
     """Пункт «Тест» лежит в группе «Система» рядом с разделом «Данные»."""
     system = [items for name, items in webpanel.NAV_GROUPS if name == "Система"]
     assert len(system) == 1
-    paths = [path for path, _title, _icon in system[0]]
+    paths = [path for path, _title, _icon, _sub in system[0]]
     assert "/test" in paths
     assert paths.index("/test") == paths.index("/data") + 1
-    title = next(title for path, title, _icon in system[0] if path == "/test")
+    title = next(title for path, title, _icon, _sub in system[0] if path == "/test")
     assert title == "Тест"
 
 

@@ -1,4 +1,4 @@
-"""Репозиторий: SQL-запросы к схемам из database.py.
+﻿"""Репозиторий: SQL-запросы к схемам из database.py.
 
 bot.py не пишет SQL сам — все обращения к базе идут через функции этого модуля,
 чтобы тексты запросов не дублировались и их было легко менять/тестировать точечно.
@@ -37,7 +37,7 @@ from store import (  # noqa: F401 - фасад переэкспортирует 
     # store.people
     CONTACT_KINDS, CONTACT_KIND_LABELS, KIND_TITLES, consent_of, contact_full_name,
     contact_kind, delete_user, get_user, give_consent, is_registered, people, people_count,
-    people_overview, set_user_group, set_user_name, student_open_tickets_count, touch_contact,
+    people_overview, set_user_group, set_user_name, student_ids_by_name, student_open_tickets_count, touch_contact,
     upsert_user, user_card, users_without_consent,
     # store.schedules
     all_parsed_groups, delete_schedule, delete_schedule_subscription, get_schedule,

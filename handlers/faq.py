@@ -1,4 +1,4 @@
-"""FAQ-бот: бот сам отвечает на частые вопросы.
+﻿"""FAQ-бот: бот сам отвечает на частые вопросы.
 
 Схема работы. Вопросы и ответы лежат в таблице faq (см. database.SCHEMA), их
 заводит и правит сис-админ в панели; черновик наполнения - college.DEFAULT_FAQ.
@@ -330,6 +330,19 @@ async def active_items() -> list:
     """Активные вопросы в порядке показа: сначала без ключевых слов (общие), потом с ними."""
     await ensure_category_column()
     rows = await db.many("SELECT * FROM faq WHERE active=1 ORDER BY id")
+    return sorted(rows, key=lambda row: bool(keywords_of(row["keywords"])))
+
+
+async def all_items() -> list:
+    """ВСЕ вопросы, включая выключенные. Нужны панели, не боту.
+
+    Бот студентам показывает только активные - ради этого active_items(). Но
+    панели нужен полный список: выключенный вопрос должен оставаться на виду,
+    иначе вернуть его можно только правкой базы через раздел «Данные», и
+    человек оказывается в тупике из-за одной кнопки.
+    """
+    await ensure_category_column()
+    rows = await db.many("SELECT * FROM faq ORDER BY id")
     return sorted(rows, key=lambda row: bool(keywords_of(row["keywords"])))
 
 

@@ -285,47 +285,49 @@ def flag(value) -> bool:
 # пользуются раз в неделю. Теперь их пять групп, а внутри группы - то же самое
 # количество разделов: пути не менялись, старые /panel/<раздел> работают как
 # раньше. Группа: название + пункты (путь, название, иконка).
-NAV_GROUPS: tuple[tuple[str, tuple[tuple[str, str, str], ...]], ...] = (
-    ("Пульт", (("/", "Обзор", "home"),
-               ("/activity", "Лента событий", "activity"))),
-    ("Обращения", (("/tickets", "Рабочее место", "tickets"),
-                   ("/templates", "Шаблоны", "templates"),
-                   # «Аналитика» убрана из меню по просьбе: пока не нужна.
-                   # Сам раздел живёт - /panel/analytics открывается, его
-                   # графики на месте. Вернуть: дописать пункт обратно
-                   # в этот список, остальное уже готово.
-                   )),
-    ("Люди", (("/people", "Реестр", "people"),
-              ("/students", "Студенты", "students"),
-              ("/staff", "Сотрудники", "staff"),
-              ("/invites", "Выпуск по ссылкам", "link"),
-              ("/nostaff", "Без прав", "user-off"),
-              ("/access", "Коды и заявки", "access"))),
-    ("Справочники", (("/college", "Колледж", "college"),
-                     ("/groups", "Группы", "groups"),
-                     ("/schedules", "Расписания", "schedules"),
-                     ("/broadcasts", "Рассылки", "broadcasts"))),
-    # «Данные» — раздел только для владельца бота (config.ROOT_IDS): ссылка
-    # в меню общая, а открыть его может лишь владелец, остальным приходит 404.
-    ("Система", (("/settings", "Настройки", "settings"),
-                  ("/database", "База данных", "database"),
-                  ("/data", "Данные", "archive"),
-                  ("/test", "Тест", "check"),
-                  ("/logs", "Журнал", "logs"))),
+NAV_GROUPS: tuple[tuple[str, tuple[tuple[str, str, str, str], ...]], ...] = (
+    ("Пульт", (("/", "Обзор", "home", ""),
+               ("/activity", "Лента событий", "activity", ""))),
+    # Рабочее место - про обращения, Шаблоны - про ответы на них. Второй уровень
+    # тут не нужен: пунктов мало, и они разные.
+    ("Обращения", (("/tickets", "Рабочее место", "tickets", ""),
+                   ("/templates", "Шаблоны", "templates", ""))),
+    # В «Людях» было шесть пунктов подряд, и три из них - про выдачу доступа в
+    # бота, а не про сотрудников. Отделили подзаголовком: список стал понятнее,
+    # а разделы остались на своих местах.
+    ("Люди", (("/people", "Реестр", "people", ""),
+              ("/students", "Студенты", "students", ""),
+              ("/staff", "Сотрудники", "staff", ""),
+              ("/invites", "Выпуск по ссылкам", "link", "Доступ в бот"),
+              ("/access", "Коды и заявки", "access", "Доступ в бот"),
+              ("/nostaff", "Без прав", "user-off", "Доступ в бот"))),
+    ("Справочники", (("/college", "Колледж", "college", ""),
+                     ("/groups", "Группы", "groups", ""),
+                     ("/schedules", "Расписания", "schedules", ""),
+                     ("/broadcasts", "Рассылки", "broadcasts", ""))),
+    # Данные и Тест - инструменты владельца, а не настройки. Без подзаголовка
+    # «Настройки» читались бы как их родитель, а это не так.
+    ("Система", (("/settings", "Настройки", "settings", ""),
+                 ("/database", "База данных", "database", ""),
+                 ("/data", "Данные", "archive", "Владельцу"),
+                 ("/test", "Тест", "check", "Владельцу"),
+                 ("/logs", "Журнал", "logs", ""))),
 )
 
 
 # Все разделы плоским списком - этим пользуются поиск по разделам и тесты.
-TABS = tuple((path, name) for _group, items in NAV_GROUPS for path, name, _ico in items)
+TABS = tuple((path, name) for _group, items in NAV_GROUPS for path, name, _ico, _sub in items)
 
 
 NAV_ICONS = ICON_NAMES_BY_PATH   # имена иконок вместо эмодзи
 
 
 # Разделы для палитры Ctrl+K: путь с префиксом /panel и готовая иконка.
+# Подкатегории в палитру не попадают: у них нет своего адреса, они только
+# разделитель в меню.
 NAV_SECTIONS = tuple(
     (group, tuple((name, f"/panel{item_path}", icon(item_icon, 16))
-                  for item_path, name, item_icon in items))
+                  for item_path, name, item_icon, _sub in items))
     for group, items in NAV_GROUPS
 )
 
@@ -386,14 +388,22 @@ def nav_html(tab: str, badges: dict | None = None) -> str:
     for group, items in NAV_GROUPS:
         number = to_int(badges.get(group, 0))
         badge = f'<b class="nav-badge{" hot" if number else ""}">{number}</b>' if number else ""
-        links = "".join(
-            f'<a href="/panel{item_path}"{" class=\"on\"" if item_path == tab else ""}>'
-            f'<span class="nav-ico" aria-hidden="true">{icon(item_icon, 18)}</span>'
-            f'<span class="nav-txt">{esc(name)}</span></a>'
-            for item_path, name, item_icon in items
-        )
+        # Подкатегория - не ссылка, а разделитель: своих адресов у неё нет.
+        # Пункты с одинаковой подкатегорией идут под одним мелким заголовком.
+        chunks, current = [], None
+        for item_path, name, item_icon, sub in items:
+            if sub != current:
+                current = sub
+                if sub:
+                    chunks.append(f'<span class="nav-sub-label">{esc(sub)}</span>')
+            chosen = ' class="on"' if item_path == tab else ""
+            chunks.append(
+                f'<a href="/panel{item_path}"{chosen}>'
+                f'<span class="nav-ico" aria-hidden="true">{icon(item_icon, 18)}</span>'
+                f'<span class="nav-txt">{esc(name)}</span></a>')
+        links = "".join(chunks)
         blocks.append(
-            f'<div class="nav-group{" on" if any(p == tab for p, _n, _i in items) else ""}">'
+            f'<div class="nav-group{" on" if any(p == tab for p, _n, _i, _s in items) else ""}">'
             f'<span class="nav-group-label"><span class="nav-group-name">{esc(group)}</span>'
             f'{badge}</span><div class="nav-group-items">{links}</div></div>'
         )

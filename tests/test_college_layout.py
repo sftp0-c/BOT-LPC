@@ -36,7 +36,7 @@ from utils import to_int
 
 COLLEGE = "/panel/college"
 GROUPS = "/panel/groups"
-LABEL = "Вкл/выкл"          # подпись кнопки, которая рассыпалась по буквам
+ON_LABEL, OFF_LABEL = "Выключить", "Включить"          # подпись кнопки, которая рассыпалась по буквам
 
 
 # ── разметка страницы ────────────────────────────────────────────────────────
@@ -61,14 +61,16 @@ def button_label(html: str) -> str:
 
 
 def toggle_buttons(body: str) -> list[str]:
-    """Классы кнопок «Вкл/выкл»: подпись должна помещаться в одну строку.
+    """Классы кнопок «Выключить»/«Включить»: подпись должна быть в одну строку.
 
     Кнопки разбираем по одной: общая регулярка по документу перешагивала из
     кнопки в кнопку и находила «Вкл/выкл» даже там, где её нет.
     """
+    # Подписей две - по состоянию вопроса, поэтому берём обе.
     return [re.search(r'class="([^"]*)"', attrs).group(1)
             for attrs, inner in BUTTON.findall(body)
-            if re.sub(r"<svg\b.*?</svg>", " ", inner, flags=re.S).strip() == LABEL]
+            if re.sub(r"<svg\b.*?</svg>", " ", inner, flags=re.S).strip()
+            in (ON_LABEL, OFF_LABEL)]
 
 
 def ask_label(body: str) -> str:
@@ -161,7 +163,9 @@ async def test_toggle_button_sits_in_a_cell_that_is_not_squeezed(seeded):
     cells = action_cells(seeded.get(COLLEGE).text)
     assert len(cells) == len(items), "не у каждого вопроса есть ячейка действий"
     for cell in cells:
-        assert "/toggle" in cell and LABEL in cell, cell[:120]
+        # подпись говорит, что произойдёт: «Выключить» у включённого
+        assert "/toggle" in cell, cell[:120]
+        assert ON_LABEL in cell or OFF_LABEL in cell, cell[:120]
 
 
 async def test_state_of_the_question_is_shown(seeded):
@@ -178,11 +182,30 @@ async def test_state_of_the_question_is_shown(seeded):
 
 
 async def test_toggle_label_is_never_split_into_letters(seeded):
-    """Подпись лежит в кнопке целиком, и сама кнопка тоже не переносится."""
-    classes = toggle_buttons(seeded.get(COLLEGE).text)
-    assert classes, f"на странице нет кнопки «{LABEL}»"
-    for found in classes:
-        assert directory.ACT_COL in found.split(), f"у кнопки нет класса: {found}"
+    """У каждой кнопки подпись целая, и она одна из двух понятных.
+
+    Жалоба была: «кнопка вкл выкл идёт по буквам вниз». Причина: у ячейки не
+    было минимальной ширины, а тема задаёт overflow-wrap:anywhere, при котором
+    минимальная ширина текста равна одному символу.
+
+    Обеих подписа�� на странице быть не может: у включённого вопроса кнопка
+    «Выключить», у выключенного - «Включить». Поэтому проверяем каждую
+    кнопку: подпись должна заканчиваться прямо на закрывающем теге (пробел
+    перед словом допустим - идёт после иконки, разрыв внутри - нет) и должна
+    быть одной из двух.
+    """
+    body = seeded.get(COLLEGE).text
+    # отбираем по классу: адрес /toggle стоит на форме, а не на кнопке,
+    # а класс col-act мы завели именно для кнопок этого столбца
+    labels = [re.sub(r"<svg\b.*?</svg>", " ", inner, flags=re.S).strip()
+              for attrs, inner in BUTTON.findall(body)
+              if "col-act" in (re.search(r'class="([^"]*)"', attrs) or type("", (), {"group": lambda *a: ""})()).group(1)]
+    assert labels, "на странице нет ни одной кнопки переключения вопроса"
+    for label in labels:
+        assert label in (ON_LABEL, OFF_LABEL), f"непонятная подпись кнопки: {label!r}"
+        assert f"{label}</button>" in body, f"подпись {label} разорвана в разметке"
+
+
 
 
 async def test_group_buttons_are_wrapped_too(panel_client):
@@ -271,10 +294,13 @@ async def test_counter_follows_the_questions(panel_client):
     assert numbers["вопросов в базе"] == "2"
     assert numbers["включено"] == "1"
     assert numbers["выключено"] == "1"
-    # в таблице только включённый: выключенный боту не нужен
+    # в таблице ВСЕ вопросы, включая выключенный: иначе его не вернуть из панели
     assert "Где столовая?" in body
-    assert "Есть ли общежитие?" not in body
-    assert len(action_cells(body)) == 1
+    assert "Есть ли общежитие?" in body
+    assert len(action_cells(body)) == 2
+    # выключенный помечен и стоит после включённых
+    assert body.index("Есть ли общежитие?") > body.index("Где столовая?")
+    assert "выключен" in body
 
 
 async def test_edited_contacts_are_counted(seeded):
@@ -329,18 +355,40 @@ async def test_empty_field_returns_to_site_data(seeded):
 
 
 async def test_single_question_is_toggled(seeded):
-    """Кнопка «Вкл/выкл» выключает вопрос, и он уходит из таблицы."""
+    """Кнопка гасит вопрос, но вопрос остаётся в панели - иначе его не вернуть.
+
+    Раньше выключенный вопрос исчезал из таблицы, и включить его обратно можно
+    было только правкой базы через раздел «Данные». Теперь он виден, помечен
+    и включается той же кнопкой.
+    """
     first = (await faq.active_items())[0]
     assert post_form(seeded, f"/panel/faq/{first['id']}/toggle").status_code == 303
     left = [row["question"] for row in await faq.active_items()]
-    assert first["question"] not in left
+    assert first["question"] not in left, "вопрос должен перестать работать в боте"
     body = seeded.get(COLLEGE).text
-    assert first["question"] not in body
+    # но в панели он остаётся - иначе это тупик
+    assert first["question"] in body, "выключенный вопрос исчез из панели"
+    assert "выключен" in body
+    assert OFF_LABEL in body, "у выключенного вопроса должна быть кнопка «Включить»"
     # вопрос в базе остался, но выключен - считается отдельно
     assert pill_number(body, "вопросов") == len(left) + 1
     assert kpi_numbers(body)["выключено"] == "1"
-    # и вернуть его можно только через раздел «Данные»: список — это active_items()
-    assert len(action_cells(body)) == len(left)
+    # и кнопка включения на месте: клик по ней возвращает вопрос в работу
+    assert len(action_cells(body)) == len(left) + 1
+    assert post_form(seeded, f"/panel/faq/{first['id']}/toggle").status_code == 303
+    assert first["question"] in [row["question"] for row in await faq.active_items()]
+
+
+async def test_bot_still_sees_only_active_questions(seeded):
+    """Бот показывает студентам только работающие вопросы.
+
+    Панель видит все, чтобы можно было вернуть выключенный, но бот по-прежнему
+    не должен отдавать студенту выключенный вопрос.
+    """
+    first = (await faq.active_items())[0]
+    assert post_form(seeded, f"/panel/faq/{first['id']}/toggle").status_code == 303
+    assert first["question"] in seeded.get(COLLEGE).text, "в панели вопрос должен остаться"
+    assert first["question"] not in [row["question"] for row in await faq.active_items()]
 
 
 async def test_unknown_question_is_answered_honestly(seeded):
