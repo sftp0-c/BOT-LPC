@@ -186,9 +186,11 @@ async def test_init_db_adds_only_missing_objects(legacy):
 
     after = schema_snapshot(legacy)
     after_cols = {name: columns(legacy, name) for kind, name in after if kind == "table"}
+    # Список новых таблиц: сюда обязана попасть и мост. Таблица не появится
+    # «сама» - init_db создаёт недостающее, и тест это фиксирует.
     new_tables = {("table", name) for name in ("groups", "contacts", "ticket_events", "staff_invites",
                                               "staff_requests", "login_attempts", "lessons", "admin_log", "group_aliases",
-                                              "reply_templates", "faq")}
+                                              "reply_templates", "faq", "bridge_messages")}
     new_indexes = {("index", name) for name in ("idx_contacts_last_seen", "idx_ticket_events",
                                                "idx_login_attempts", "idx_lessons_group", "idx_admin_log",
                                                "idx_group_aliases_group", "idx_faq_active")}

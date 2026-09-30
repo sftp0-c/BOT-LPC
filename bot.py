@@ -28,7 +28,10 @@ import config
 import version
 import database as db
 import repository as repo
-from handlers import admin, broadcast, invites, menus, tickets  # noqa: F401  — регистрация обработчиков при импорте
+from handlers import (  # noqa: F401  — регистрация обработчиков при импорте
+    admin, broadcast, invites, menus, tickets,
+)
+from handlers import bridge as bridge_gate
 from handlers.common import api, log, notify, pending_tasks, spawn
 from handlers.registry import CALLBACKS
 from schedule_watch import start_watcher, stop_watcher  # слежение за PDF с расписанием
@@ -131,6 +134,12 @@ async def process(u: dict):
                         return
                 if not text:
                     return await api.send(x, "Пока я понимаю только текстовые сообщения.")
+                # Мост владельца: личная связь с программой на его компьютере.
+                # Проверка ДО menus.on_message и всего остального: сообщение
+                # владельца с командным словом не должно ещё и попасть в диалог
+                # студента. Взято - возвращаемся.
+                if await bridge_gate.on_owner_message(x, text):
+                    return
                 await menus.on_message(x, text)
             elif kind == "message_callback":
                 cid = callback_id(u)

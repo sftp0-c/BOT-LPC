@@ -10,7 +10,8 @@ import clock
 import config
 import database as db
 import webpanel
-from handlers import admin, broadcast, common, faq, menus, schedules, tickets
+from web import bridge as web_bridge
+from handlers import admin, bridge, broadcast, common, faq, invites, menus, schedules, tickets
 
 BOT_ID = 999
 PANEL_PASSWORD = "test-panel-pass"
@@ -48,6 +49,19 @@ class FakeAPI:
         kb = self.last(uid)[2] or []
         return [b["payload"] for row in kb for b in row if b["type"] == "callback"]
 
+
+
+# Модули, которые держат свою ссылку на api. Список нужен для удобства чтения
+# (видно, кто пользуется), но полноту подмены он уже не обеспечивает: подмена
+# идёт по методам самого объекта в common, а ссылка на объект у всех одна.
+API_MODULES = (admin, broadcast, common, faq, invites, menus, schedules, tickets)
+
+# Способы MaxAPI, которыми можно сходить в сеть. Подменяются все - и send, и
+# updates с подписками, и служебные. Список взят из самого класса MaxAPI, а
+# не придуман: если там появится новый способ уйти в сеть, проверка
+# test_no_api_method_escapes_the_fake его найдёт и потребует сюда.
+API_NETWORK_METHODS = ("answer", "close", "me", "send", "set_commands",
+                       "subscribe", "subscriptions", "unsubscribe", "updates")
 
 
 # Момент, на котором замирают часы в frozen_college_clock. Середина недели,
@@ -152,6 +166,31 @@ def click(user, payload):
     }
 
 
+def _seal_real_api(monkeypatch, fake) -> None:
+    """Закрывает все сетевые способы настоящего MaxAPI заглушками.
+
+    Метод, которого нет в MaxAPI, пропускаем: список методов класса и список
+    сетевых - две разные вещи, и молча требовать несуществующего нельзя.
+    """
+    for name in API_NETWORK_METHODS:
+        method = getattr(common.api, name, None)
+        if method is None:
+            continue
+        monkeypatch.setattr(common.api, name, _stub_for(name, fake), raising=False)
+
+
+def _stub_for(name: str, fake):
+    """Заглушка сетевого метода. Всё, что не send, тихо возвращает пустое."""
+    async def stub(*args, **kwargs):
+        if name == "send":
+            return await fake.send(*args, **kwargs)
+        if name == "answer":
+            return await fake.answer(*args, **kwargs)
+        return []
+    stub.__name__ = f"fake_{name}"
+    return stub
+
+
 @pytest.fixture(autouse=True)
 async def env(tmp_path, monkeypatch):
     # Время в проекте одно — локальное время колледжа (см. clock). Фиксируем
@@ -171,8 +210,16 @@ async def env(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "BACKUP_DIR", str(tmp_path / "backups"))
     _retarget_log_file()
     fake = FakeAPI()
-    for module in (bot, common, admin, broadcast, menus, tickets, schedules, faq):
-        monkeypatch.setattr(module, "api", fake)
+    # Главная подмена: меняем МЕТОДЫ настоящего объекта MaxAPI, а не имена в
+    # модулях. Ссылка на объект у всех одна (импорт из handlers.common), так
+    # что этого достаточно для любого модуля - и для нового тоже, поэтому
+    # перечень пополнять не придётся. Имена и псевдонимы значения не имеют.
+    _seal_real_api(monkeypatch, fake)
+    # Дополнительно подменяем имя в тех модулях, где код берёт не сам объект,
+    # а, например, сравнивает с ним. Это удобство чтения, а не защита.
+    for module in (*API_MODULES, bot, bridge, web_bridge):
+        if hasattr(module, "api"):
+            monkeypatch.setattr(module, "api", fake)
     bot._locks.clear()
     _clear_flashes()
     await db.init_db()

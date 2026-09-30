@@ -29,6 +29,19 @@ SERVICE = {
     "conftest_local",
 }
 
+# Модули, которые работают только на этой машине, и в образе им не место.
+# Причины у каждого свои:
+#   bridge_lock.py         - замок между консолью и мостом; оба живут на хосте,
+#                            бот в контейнере и файлов хоста не видит
+#   bridge_worker.py       - программа моста, запускается владельцем на хосте
+#   backup_before_push.py  - зовёт git-хук pre-push, контейнеру не нужен
+#
+# Исключение опасно тем, что им можно спрятать настоящую зависимость: дописать
+# сюда модуль, который боту необходим. Поэтому ниже есть проверка host_only -
+# она требует, чтобы бот ни одного из этих файлов не импортировал. Красный
+# цвет означает: исключение перестало быть исключением.
+HOST_ONLY = {"bridge_lock.py", "bridge_worker.py", "backup_before_push.py"}
+
 
 def copied_names() -> set:
     """Имена файлов из строк COPY, продолжающихся обратной косой чертой."""
@@ -70,7 +83,14 @@ def project_modules() -> set:
     names -= SERVICE
     # файлы, которые живут только для разработки
     names -= {name for name in names if name.startswith("test_")}
+    # инструменты этой машины: в контейнере им делать нечего
+    names -= HOST_ONLY
     return names
+
+
+def host_only_modules() -> set:
+    """Инструменты этой машины, которые действительно лежат в проекте."""
+    return {path.name for path in Path(".").glob("*.py")} & HOST_ONLY
 
 
 def test_copy_block_found():
@@ -115,6 +135,48 @@ def test_import_check_covers_every_copied_module():
     missing = sorted(name[:-3] for name in copied_names() if name[:-3] not in checked)
     missing += sorted(name for name in copied_packages() if name not in checked)
     assert not missing, "копируются, но не проверяются импортом: " + ", ".join(missing)
+
+
+def test_host_only_list_is_real():
+    """Исключение не должно быть пустым: иначе оно ни о чём не говорит.
+
+    Список «просто на всякий случай» - это не исключение, а способ отключить
+    проверку, не заметив этого.
+    """
+    missing = sorted(HOST_ONLY - host_only_modules())
+    assert not missing, (
+        "в HOST_ONLY перечислены файлы, которых в проекте нет: "
+        f"{missing}. Либо файл удалён, либо список протух."
+    )
+
+
+def test_bot_does_not_import_host_only_modules():
+    """Бот не должен зависеть от инструментов этой машины.
+
+    Если такая зависимость появится - сборка упадёт на импорте в контейнере,
+    где этих файлов нет. Проверка ловит это здесь, с внятным текстом.
+    """
+    sources = ["bot.py", "webpanel.py", "repository.py", "database.py", "config.py",
+               "clock.py", "utils.py", "max_api.py"]
+    sources += [str(path) for path in Path("handlers").glob("*.py")]
+    sources += [str(path) for path in Path("store").glob("*.py")]
+    sources += [str(path) for path in Path("web").glob("*.py")]
+
+    offenders = []
+    for source in sources:
+        try:
+            text = Path(source).read_text(encoding="utf-8-sig")
+        except OSError:
+            continue
+        for name in sorted(HOST_ONLY):
+            stem = name[:-3]
+            for form in (f"import {stem}", f"from {stem} import", f"import {name}"):
+                if form in text:
+                    offenders.append(f"{source} -> {form}")
+    assert not offenders, (
+        "бот начал зависеть от инструментов этой машины, которых нет в образе: "
+        + "; ".join(offenders)
+    )
 
 
 def test_timezone_is_set_in_image_and_compose():

@@ -33,8 +33,7 @@ PREFIXES = {"router": "/panel", "open_router": ""}
 HTTP_METHODS = ("get", "post", "put", "patch", "delete")
 
 # Модули пакета, которые можно импортировать по одному.
-SECTION_MODULES = ("access", "common", "database", "diagnostics", "directory", "mailer",
-                   "overview", "people", "router", "schedules", "settings", "dossier", "staff_bulk", "test_lab", "tickets")
+SECTION_MODULES = ("access", "bridge")
 
 # '_flash' пишет conftest как обычный атрибут модуля - самого такого имени в
 # панели нет и раньше не было; 'app' - это bot.app, у панели своего нет.

@@ -1,4 +1,4 @@
-# Environment
+﻿# Environment
 .env
 .env.local
 
@@ -33,3 +33,10 @@ schedules/
 # Каталоги редакторов и осей
 .idea/
 .vscode/
+
+# Мост: настройки и журнал программы. Обычно лежат в папке состояния,
+# но если окажутся рядом - в репозиторий им нельзя: там токен и пароль.
+bridge_worker.json
+bridge_worker.log
+bridge_worker.log.old.log
+bridge.lock
