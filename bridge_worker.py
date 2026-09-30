@@ -163,6 +163,50 @@ def call(settings: dict, path: str, payload: dict | None = None, timeout: int = 
 
 
 # ── работа через opencode ──────────────────────────────────────────────────
+class Interrupted(RuntimeError):
+    """opencode прервали извне посреди работы.
+
+    Отдельный тип, а не просто RuntimeError, потому что из него следует другое
+    действие: задание надо повторить, а не сообщать владельцу, что не получилось.
+    Работа к этому моменту могла быть почти сделана.
+    """
+
+
+# Код, которым Windows сообщает «процесс прерван отменой»: 3221225786, то есть
+# 0xC000013A (STATUS_CONTROL_C_EXIT). В выводе при этом видно «^C».
+INTERRUPTED_EXIT_CODES = (0xC000013A, 3221225786)
+
+
+def _own_process_group() -> int:
+    """Отдельная группа процессов для opencode на Windows.
+
+    Зачем. Мост работает без окна (pythonw), и cmd, которого он запускает,
+    получает новую консоль - но группу процессов наследует. Отмена, посланная
+    всей группе, попадает и в opencode, даже если послал её не мост. Обрыв
+    выглядел так: задание три с половиной минуты отрабатывало и падало с
+    0xC000013A и «^C».
+
+    На других системах флаг не нужен и не переносится, поэтому там ноль.
+    """
+    if os.name != "nt":
+        return 0
+    return getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+
+
+def was_interrupted(finished) -> bool:
+    """Похоже ли, что opencode прервали извне, а не что он не справился.
+
+    Различаю два случая, потому что требуются разные действия: при обрыве
+    задание надо повторить, при отказе модели - сообщить и не повторять.
+    """
+    код = getattr(finished, "returncode", None)
+    if код in INTERRUPTED_EXIT_CODES:
+        return True
+    # Признак по выводу: след отмены есть, а разобрать нечего
+    вывод = getattr(finished, "stdout", "") or ""
+    return "^C" in вывод and not _answer_from(вывод)
+
+
 def run_opencode(settings: dict, task: str) -> str:
     """Передаёт задание opencode и возвращает мой ответ.
 
@@ -186,7 +230,8 @@ def run_opencode(settings: dict, task: str) -> str:
             command + [task],
             cwd=settings["working_dir"], env=environment,
             capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=int(settings["timeout_seconds"]))
+            timeout=int(settings["timeout_seconds"]),
+            creationflags=_own_process_group())
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"работа не уложилась в {settings['timeout_seconds']} секунд") from None
     except FileNotFoundError:
@@ -196,7 +241,7 @@ def run_opencode(settings: dict, task: str) -> str:
     answer = _answer_from(finished.stdout)
     if not answer:
         tail = (finished.stderr or finished.stdout or "").strip()[-300:]
-        raise RuntimeError(
+        raise (Interrupted if was_interrupted(finished) else RuntimeError)(
             "opencode отработал, но разобрать ответ не вышло. "
             f"Код возврата: {finished.returncode}. "
             f"Встреченные события: {seen_event_types()}. "
@@ -357,7 +402,16 @@ def handle_task(settings: dict, lock, task: dict) -> None:
     beat = Heartbeat(lock, seconds=max(30, bridge_lock.TTL_MINUTES * 60 // 3))
     beat.start()
     try:
-        answer = run_opencode(settings, text)
+        try:
+            answer = run_opencode(settings, text)
+        except Interrupted as exc:
+            # Процесс прервали извне посреди работы. Это не «модель не
+            # справилась», и задание не должно пропадать: повторяем один раз с
+            # чистой сессией, потому что прерванный заход мог оставить её в
+            # неопределённом состоянии.
+            say(f"⚠ задание {number} прервано на полпути ({exc}), повторяю с чистой сессией")
+            settings["session"] = ""
+            answer = run_opencode(settings, text)
     except Exception as exc:                              # noqa: BLE001 - сюда приходит всё
         say(f"✗ задание {number} не вышло: {exc}")
         try:
