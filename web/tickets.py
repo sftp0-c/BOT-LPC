@@ -1,4 +1,4 @@
-"""Обращения: рабочее место, карточка, массовые действия, архив и шаблоны ответов."""
+﻿"""Обращения: рабочее место, карточка, массовые действия, архив и шаблоны ответов."""
 import csv
 import io
 import os
@@ -8,14 +8,15 @@ import database as db
 import repository as repo
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, Response
-from handlers.common import notify
+from handlers.common import admin_of, is_personal_template, notify
+from handlers.tickets import TPL_FIELDS, render_template, unknown_placeholders
 from panel_theme import icon
 from utils import (CATS, OPEN_STATUSES, STAFF_CATS, STATUS, as_str, cut_plain, fmt_when,
                     group_code, to_int)
 
 from .common import (FIO_MAX, _action_form, bot_open_link, code_cell, copy_btn, csrf, esc, fio, flash, form, log, open_in_bot,
-                     page, page_window, pager, pages_of, panel_link, plain, redirect, require_form,
-                     require_user, select, value, window_tail)
+                     page, page_window, pager, pages_of, panel_link, pill, plain, redirect, require_form,
+                     require_user, safe_return, select, value, window_tail)
 from .router import router
 
 
@@ -70,6 +71,37 @@ TICKETS_PAGE = 25             # обращений в очереди рабоч�
 TEMPLATES_PAGE = 50     # шаблонов на страницу
 
 
+def _template_fields(title: str = "", text: str = "", category: str = "all") -> str:
+    """Поля шаблона ответа: название, раздел и текст.
+
+    Одни и те же поля в форме добавления и в форме правки - разница только в
+    подставленных значениях. Всё, что пришло из базы, экранируется (esc): текст
+    шаблона пишут руками, а в разметку он попасть не должен.
+    """
+    return (
+        '<div class="full"><label>Название - как это выглядит в кнопке</label>'
+        f'<input name="title" value="{esc(title)}" placeholder="Справка готова"></div>'
+        + select("category", dict(STAFF_CATS), category or "all", label="Раздел")
+        + '<div class="full"><label>Текст ответа</label>'
+        '<textarea name="text" rows="4" placeholder="Здравствуйте! Справка готова, '
+        'заберите её в кабинете 214.">'
+        f"{esc(text)}</textarea></div>"
+    )
+
+
+def _tpl_hint(unknown: list) -> str:
+    """Подсказка под формой ответа: какие подстановки понятны и что осталось лишнего.
+
+    Список имён берём у бота (handlers.tickets.TPL_FIELDS), чтобы панель и бот
+    понимали ровно один и тот же набор, иначе сотрудник напишет в панели {ФИО},
+    а в боте она останется неподставленной. Эмодзи из подсказки бота сюда не
+    тащим: в панели их место занимают иконки темы.
+    """
+    names = ", ".join("{%s}" % name for name in TPL_FIELDS)
+    tail = f" Непонятно: {', '.join('{%s}' % name for name in unknown)}." if unknown else ""
+    return f"Подстановки: {names}.{tail}"
+
+
 @router.get("/templates")
 async def templates_page(request: Request, page_no: int = 1):
     """Шаблоны ответов: что сотрудники отвечают чаще всего и почему.
@@ -89,29 +121,25 @@ async def templates_page(request: Request, page_no: int = 1):
     for row in rows:
         title = as_str(row["title"])
         confirm = f"Удалить шаблон «{title}»?"
+        edit_link = (f'<a class="btn btn-grey" href="/panel/templates/{esc(row["id"])}/edit">'
+                     f'{icon("edit", 16)} Правка</a>')
         body_rows += (
             f"<tr data-hk><td><b>{esc(title)}</b><div class='small mut'>ID {esc(row['id'])}</div></td>"
             f"<td class='small'>{esc((as_str(row['text']) or '')[:220])}</td>"
             f"<td>{esc(plain(STAFF_CATS.get(row['category'], row['category'])))}</td>"
             f"<td>{esc(row['used_count'])}</td>"
             f"<td class='small mut'>{esc(fmt_when(row['created_at']))}</td>"
-            f"<td>{_action_form(request, f'/panel/templates/{esc(row['id'])}/delete', f'{icon("delete", 16)} Удалить', confirm_text=confirm, cls='btn-bad')}"
+            f'<td class="col-act">{edit_link}'
+            f"{_action_form(request, f'/panel/templates/{esc(row['id'])}/delete', f'{icon("delete", 16)} Удалить', confirm_text=confirm, cls='btn-bad')}"
             f"</td></tr>"
         )
     body_rows = body_rows or "<tr><td class='mut'>Шаблонов пока нет</td></tr>"
     table = ("<table><tr><th>Название</th><th>Текст</th><th>Раздел</th><th>Применён</th>"
-             f"<th>Добавлен</th><th></th></tr>{body_rows}</table>")
+             f'<th>Добавлен</th><th class="col-act">Действие</th></tr>{body_rows}</table>')
     pages_bar = pager("/panel/templates", [], page_no, pages, f"шаблонов: {total}")
     tail = window_tail(len(found), window, "Ненужные шаблоны лучше удалить - их ищут по названию.")
-    add = form(
-        request, "/panel/templates/add",
-        ('<div class="full"><label>Название - как это выглядит в кнопке</label>'
-         '<input name="title" placeholder="Справка готова"></div>')
-        + ('<div class="full"><label>Текст ответа</label>'
-           '<textarea name="text" placeholder="Здравствуйте! Справка готова, заберите её в кабинете 214."></textarea></div>')
-        + select("category", dict(STAFF_CATS), "all"),
-        "Добавить шаблон", "btn-ok",
-    )
+    add = form(request, "/panel/templates/add", _template_fields(),
+               "Добавить шаблон", "btn-ok")
     body_all = f"""
 <div class="card"><h2>{icon("templates", 20)} Шаблоны ответов: {total}</h2>
 <p class="small mut">Сотрудник в карточке обращения открывает «Шаблоны» - выбирает подходящий
@@ -149,6 +177,73 @@ async def templates_delete(request: Request, template_id: int):
     log.info("панель: удалён шаблон %s (сис-админ %s)", template_id, user)
     await repo.log_action(user, "шаблон ответа удалён", f"{template['title']} (ID {template_id})")
     flash(f"Шаблон «{template['title']}» удалён.")
+    return redirect("/panel/templates")
+
+
+@router.get("/templates/{template_id}/edit")
+async def templates_edit(request: Request, template_id: int):
+    """Правка шаблона ответа: испорченный текст выправляется на месте.
+
+    Отдельная страница, а не поле в таблице: в тексте шаблона живут
+    подстановки и переносы строк, в ячейке их не разобрать, а чинить обычно
+    нужно именно текст.
+    """
+    user = await require_user(request)
+    template = await repo.get_template(template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Шаблон не найден")
+    title = as_str(template["title"])
+    text = as_str(template["text"])
+    unknown = unknown_placeholders(text)
+    # пометка «личный» живёт в настройках, а не в строке шаблона
+    # (см. handlers.common), поэтому её достаточно показать: правка её не трогает
+    mine = await is_personal_template(user, template_id)
+    mark = f" {pill('мои', 'on')}" if mine else ""
+    about = ("" if not mine else
+             " Шаблон личный у вас: в боте он остаётся первым в вашем списке "
+             "ответов, и правка этого не меняет.")
+    warning = (f'<p class="msg msg-bad">В тексте есть неизвестные подстановки: '
+               f'{esc(", ".join("{%s}" % name for name in unknown))}. Студенту они '
+               f'уйдут как есть - перепишите их обычным текстом или уберите.</p>') \
+        if unknown else ""
+    edit = form(request, f"/panel/templates/{template_id}/edit",
+                _template_fields(title, text, as_str(template["category"])),
+                "Сохранить", "btn-ok")
+    body = f"""
+<div class="card"><h2>{icon("edit", 20)} Правка шаблона «{esc(title)}»{mark}</h2>
+<p class="small mut">ID {esc(template_id)} · добавлен {esc(fmt_when(template['created_at']))} ·
+применений: {esc(template['used_count'])}. Сотрудник видит шаблон в карточке обращения
+своего раздела, а «Всё» - в любом.{about}</p>
+{warning}
+{edit}
+<p><a class="btn btn-grey" href="/panel/templates">{icon("chevron-left", 16)} К шаблонам</a></p>
+</div>"""
+    return page(f"Шаблон: {title}", body, user, "/templates")
+
+
+@router.post("/templates/{template_id}/edit")
+async def templates_edit_submit(request: Request, template_id: int):
+    """Сохранение правки: название, раздел и текст ответа.
+
+    В журнал идут только название и id: текст шаблона уходит студентам, а
+    переписка сотрудников - тем более. Счётчик применений и дата добавления не
+    трогаются: правка не «применение».
+    """
+    user = await require_form(request)
+    data = await request.form()
+    if not await repo.get_template(template_id):
+        raise HTTPException(status_code=404, detail="Шаблон не найден")
+    title = value(data, "title")
+    text = value(data, "text")
+    if not title or not text:
+        flash("!Нужны и название, и текст ответа: шаблон без текста бесполезен.")
+        return redirect(f"/panel/templates/{template_id}/edit")
+    category = value(data, "category") or "all"      # раздел - как при добавлении
+    await db.run("UPDATE reply_templates SET title=?, text=?, category=? WHERE id=?",
+                 (title[:80], text[:2000], category, template_id))
+    log.info("панель: изменён шаблон %s (сис-админ %s)", template_id, user)
+    await repo.log_action(user, "шаблон ответа изменён", f"{title} (ID {template_id})")
+    flash(f"Шаблон «{title}» сохранён.")
     return redirect("/panel/templates")
 
 
@@ -249,8 +344,8 @@ async def tickets_list(request: Request, status: str = "", q: str = "", category
     summary = " · ".join(f"{plain(STATUS.get(c, c))}: {counts.get(c, 0)}" for c in STATUS)
     bot = await bot_open_link()
     access = await _tickets_access(request)
-    queue = _tickets_queue(request, rows, latest, query, selected, archived)
-    card = await _ticket_workbench(request, selected, bot) if selected else (
+    queue = _tickets_queue(request, rows, latest, live_query, selected, archived)
+    card = await _ticket_workbench(request, selected, bot, view) if selected else (
         '<div class="card mut">Выберите обращение в очереди слева — здесь появятся переписка, '
         'правки и быстрые ответы. Клавиши: j и k — по очереди, Enter — открыть, '
         'a — в архив, ? — все клавиши.</div>')
@@ -427,11 +522,11 @@ async def tickets_bulk(request: Request):
     action = value(data, "action")
     if not chosen:
         flash("!Отметьте обращения галочкой слева.")
-        return redirect(value(data, "return") or "/panel/tickets")
+        return redirect(safe_return(data))
     done, message = await repo.bulk_update(chosen, action, value(data, "value"), actor)
     await repo.log_action(actor, f"массово: {action}", f"{done} обращений")
     flash(message)
-    return redirect(value(data, "return") or "/panel/tickets")
+    return redirect(safe_return(data))
 
 
 @router.post("/tickets/{ticket_id}/edit")
@@ -532,27 +627,142 @@ async def ticket_delete(request: Request, ticket_id: int):
     return redirect("/panel/tickets")
 
 
+async def _answerer_choices(keep_current: str = "", current_name: str = "") -> tuple[dict, dict]:
+    """Сотрудники для выбора «Отвечает как»: те, кто ведёт обращение, первыми.
+
+    Отдельный помощник, а не переиспользование выбора исполнителя: там список
+    нужен, чтобы НАЗНАЧИТЬ, здесь - чтобы ОТВЕТИТЬ от имени. И подпись важна
+    другая: человеку надо знать, как его увидит студент.
+    """
+    choices: dict[str, str] = {}
+    titles: dict[str, str] = {}
+    if keep_current:
+        choices[keep_current] = f"{fio(current_name, keep_current, FIO_MAX)} (ведёт это обращение)"
+        titles[keep_current] = "ответ уйдёт от этого имени"
+    for row in await repo.list_staff():
+        person = dict(row)
+        uid = as_str(person.get("user_id"))
+        if not uid or uid in choices:
+            continue
+        choices[uid] = fio(person.get("full_name"), uid, FIO_MAX)
+        titles[uid] = as_str(person.get("position") or person.get("role") or "—")
+    return choices, titles
+
+
+def _row_get(person, key: str) -> str:
+    """Значение поля строки сотрудника: строки sqlite не поддерживают .get()."""
+    if person is None:
+        return ""
+    try:
+        return as_str(person[key])
+    except (IndexError, KeyError):
+        return ""
+
+
+ANSWERER_UNKNOWN = "сотрудник колледжа"
+# Подпись, когда сотрудника найти не удалось: слово, а не его MAX ID.
+# Письмо вида «Отвечает: test-1» - техническая заглушка вместо человека.
+
+
+def _answerer_label(person, fallback_id: str) -> str:
+    # Как сотрудник выглядит у студента: должность и имя.
+    if person is None:
+        return ANSWERER_UNKNOWN
+    name = _row_get(person, "full_name") or as_str(fallback_id)
+    position = _row_get(person, "position") or _row_get(person, "role")
+    return f"{position}, {name}" if position else name
+
+
+def _ticket_subject(t) -> str:
+    """О чём обращение - одной строкой для уведомления.
+
+    Раньше студент получал «Ответ на обращение №9» и по этому не мог понять ни
+    что за обращение, ни от кого ответ. Тема обращения - то, что человек сам и
+    писал, поэтому узнаётся сразу.
+    """
+    topic = as_str(t["topic"]).strip()
+    if topic:
+        return topic
+    return plain(CATS.get(as_str(t["category"]), "обращение"))
+
+
 @router.post("/tickets/{ticket_id}/reply")
 async def ticket_reply(request: Request, ticket_id: int):
+    """Ответ студенту: свой текст или шаблон ответа из списка под формой.
+
+    Раньше поле «шаблон» в форме было только для вида: обработчик его не читал,
+    поэтому выбор ничего не делал, а подстановки {ФИО} и остальные в панели не
+    подставлялись вовсе (в боте это делает handlers.tickets). Правила здесь те же,
+    что в боте:
+
+    * выбран шаблон, а поле ответа пустое - уходит текст шаблона;
+    * сотрудник написал своё - его текст главнее, шаблон не навязывается;
+    * подстановки делаются и в тексте шаблона, и в собственном тексте;
+    * шаблон, удалённый пока сотрудник писал ответ, - понятное сообщение, а не
+      пустой ответ студенту;
+    * счётчик применений растёт только когда ответ действительно ушёл шаблоном.
+    """
     user = await require_form(request)
     data = await request.form()
-    text = as_str(data.get("text", "")).strip()
+    own = as_str(data.get("text", "")).strip()
     t = await repo.get_ticket(ticket_id)
     if not t:
         raise HTTPException(status_code=404, detail="Обращение не найдено")
-    if not text:
-        flash("!Пустой ответ не отправлен.")
-        return redirect(f"/panel/tickets/{ticket_id}")
-    await repo.add_ticket_message(ticket_id, user, "staff", text)
+    template_id = to_int(value(data, "template"), 0)
+    template = await repo.get_template(template_id) if template_id else None
+    if template_id and not template:
+        flash("!Шаблон удалён, пока вы писали ответ. Выберите другой или отправьте "
+              "свой текст.")
+        return redirect(f"/panel/tickets?t={ticket_id}")
+    # текст сотрудника главнее: подсказка из браузера могла подставить шаблон,
+    # который он переписал, - такой ответ применением шаблона не считается
+    by_template = bool(template) and not own
+    raw = as_str(template["text"]) if by_template else own
+    if not raw.strip():
+        flash("!Пустой ответ не отправлен: напишите текст или выберите шаблон.")
+        return redirect(f"/panel/tickets?t={ticket_id}")
+    # Автор ответа - выбранный сотрудник. Вошедший в панель может отвечать за
+    # кого угодно, в том числе за тестового, и студент должен видеть, ОТ КОГО
+    # пришёл ответ, а не кто нажал кнопку в панели.
+    answerer_id = as_str(value(data, "as_staff")).strip() or user
+    answerer = await repo.get_admin(answerer_id)
+    if answerer is None:
+        # выбранного нет (удалили) - отвечаем от того, кто ведёт обращение
+        answerer_id, answerer = as_str(t["target_admin_id"]), None
+    if answerer is None:
+        answerer = await admin_of(user)
+    text = await render_template(raw, t, answerer)
+    unknown = unknown_placeholders(raw)
+    await repo.add_ticket_message(ticket_id, answerer_id, "staff", text)
+    if by_template:
+        await repo.count_template_use(template_id)
     if as_str(t["status"]) in ("new", "in_progress"):
-        await repo.transition_ticket_status(ticket_id, t["status"], "accepted", actor_id=user)
+        await repo.transition_ticket_status(ticket_id, t["status"], "accepted",
+                                            actor_id=answerer_id)
     await notify(
-        t["student_id"], f"💬 Ответ на обращение №{ticket_id}:\n\n{text}",
+        t["student_id"],
+        "💬 Ответ по обращению №{tid} — {subject}\nОтвечает: {who}\n\n{text}".format(
+            tid=ticket_id, subject=_ticket_subject(t), who=_answerer_label(answerer, answerer_id),
+            text=text),
         [[{"type": "callback", "text": "📂 Открыть", "payload": f"t:{ticket_id}"}]],
     )
-    log.info("панель: ответ на обращение %s от %s", ticket_id, user)
-    flash(f"Ответ на обращение №{ticket_id} отправлен.")
-    return redirect(f"/panel/tickets/{ticket_id}")
+    log.info("панель: ответ на обращение %s: вошёл %s, ответил за %s (шаблон %s)",
+             ticket_id, user, answerer_id, template_id if by_template else "—")
+    # в журнал - кто нажал и за кого ответил; текст ответа туда не пишем
+    if answerer_id != user:
+        await repo.log_action(user, "ответ за сотрудника",
+                              f"№{ticket_id} от имени {answerer_id}")
+    note = (f"Ответ на обращение №{ticket_id} отправлен от имени "
+            f"{_answerer_label(answerer, answerer_id)}.")
+    if by_template:
+        note += f" Шаблон «{as_str(template['title'])}» отправлен как есть."
+    if unknown:
+        # молчать нельзя: в письме студенту осталось «{причина}» как есть
+        note += (" Не подставилось: "
+                 + ", ".join("{%s}" % name for name in unknown)
+                 + " - эти слова ушли студенту как есть.")
+    flash(f"!{note}" if unknown else note)
+    return redirect(f"/panel/tickets?t={ticket_id}")
 
 
 @router.post("/tickets/{ticket_id}/status")
@@ -572,8 +782,15 @@ async def ticket_status(request: Request, ticket_id: int):
     return redirect(f"/panel/tickets/{ticket_id}")
 
 
-def _tickets_queue(request: Request, rows, latest: dict, query: str, selected, archived: bool) -> str:
-    """Левая колонка: отметки для массовых действий и переход в карточку."""
+def _tickets_queue(request: Request, rows, latest: dict, live_query: str, selected,
+                    archived: bool) -> str:
+    """Левая колонка: отметки для массовых действий и переход в карточку.
+
+    Ссылки на обращение строятся по ``live_query`` - с фильтрами и, когда мы в
+    архиве, с ``view=archive``. По ``query`` (без вида) клик в архиве вёл в
+    рабочее место, где архивного обращения нет: карточка справа оставалась
+    заглушкой «Выберите обращение», и с архивом нельзя было не сделать ничего.
+    """
     if not rows:
         return '<div class="card mut">Обращений нет.</div>'
     visible = rows[:TICKETS_PAGE]
@@ -596,7 +813,7 @@ def _tickets_queue(request: Request, rows, latest: dict, query: str, selected, a
             status += f' <span class="wb-wait">{icon("clock", 14)} ждёт ответа</span>'
         items.append(
             f'<label class="wb-item {mark}" data-hk><input type="checkbox" name="tids" value="{esc(ticket_id)}">'
-            f'<a href="/panel/tickets?{query}&t={esc(ticket_id)}">'
+            f'<a href="/panel/tickets?{live_query}&t={esc(ticket_id)}">'
             f'<span class="wb-head"><b>№{esc(ticket_id)}</b>'
             f'<span class="wb-status">{status}</span>'
             f'<span class="wb-date">{esc(fmt_when(data["updated_at"]))}</span></span>'
@@ -609,7 +826,7 @@ def _tickets_queue(request: Request, rows, latest: dict, query: str, selected, a
             f'по статусу, чтобы увидеть нужное.</p>' if len(rows) > len(visible) else "")
     return f"""<div class="card"><h2>{head}</h2>
 <form method="post" action="/panel/tickets/bulk">{csrf(request)}
-<input type="hidden" name="return" value="{esc(query)}">
+<input type="hidden" name="return" value="/panel/tickets?{esc(live_query)}">
 <div class="wb-list">{''.join(items)}</div>
 <details class="wb-bulk"><summary>Групповые действия для отмеченных</summary>
 <div class="grid" style="margin-top:8px">
@@ -627,7 +844,7 @@ def _tickets_queue(request: Request, rows, latest: dict, query: str, selected, a
 </form>{more}</div>"""
 
 
-async def _ticket_workbench(request: Request, t, bot: str = "") -> str:
+async def _ticket_workbench(request: Request, t, bot: str = "", view: str = "") -> str:
     """Правая колонка: карточка со всеми правками и быстрыми ответами.
 
     Формы правки и ответа помечены классами ``wb-edit`` и ``wb-reply`` - на
@@ -642,12 +859,28 @@ async def _ticket_workbench(request: Request, t, bot: str = "") -> str:
     events = await repo.ticket_events(ticket_id, 50)
     staff_options, staff_titles = await _staff_choices(as_str(t["target_admin_id"]),
                                                        as_str(t["staff_name"]))
+    # «Отвечает как»: ответ уходит от имени сотрудника, а не от того, кто сидит
+    # в панели. По умолчанию - тот, кто ведёт это обращение.
+    # исполнителя обращения ставим по умолчанию. Если он не назначен, ничего не
+    # выбрано: обработчик ответа подставит того, кто вошёл в панели.
+    answerer_options, answerer_titles = await _answerer_choices(
+        as_str(t["target_admin_id"]), as_str(t["staff_name"]))
+    answerer_default = as_str(t["target_admin_id"])
     template_options = {"": "— шаблон —"}
+    template_texts: dict[str, dict] = {}
+    unknown_names: list = []
     for row in await repo.list_templates():
         template = dict(row)
         key = as_str(template.get("template_id") or template.get("id"))
-        if key:
-            template_options[key] = as_str(template.get("title"))
+        if not key:
+            continue
+        draft = as_str(template.get("text"))
+        template_options[key] = as_str(template.get("title"))
+        # значение пункта - id шаблона, поэтому текст кладём в data-text: без
+        # него форме нечего подставить в поле ответа
+        template_texts[key] = {"data-text": draft}
+        unknown_names += [name for name in unknown_placeholders(draft)
+                          if name not in unknown_names]
     def _cell(m) -> str:
         body = esc(m["text"])
         if as_str(m["text"]).startswith(ATTACH_PREFIX):
@@ -700,6 +933,9 @@ async def _ticket_workbench(request: Request, t, bot: str = "") -> str:
 студенту кабинет и закрывает обращение. Кабинет {CERT_PICKUP} зашит только
 под справки; для остального нужно указать кабинет, иначе панель не закроет
 обращение молча.</p></form>"""
+    # в архиве ссылка на обращение тоже должна вести в архив: получатель открыл
+    # бы рабочее место, где этого обращения уже нет
+    card_link = f"/tickets?t={ticket_id}" + ("&view=archive" if view == "archive" else "")
     # шапка карточки - то, что должно попасть на бумагу
     head = f"""<div class="card"><h2>Обращение №{ticket_id}
 <span class="pill">{esc(plain(STATUS.get(as_str(t['status']), as_str(t['status']))))}</span></h2>
@@ -708,17 +944,23 @@ async def _ticket_workbench(request: Request, t, bot: str = "") -> str:
 <span class="wb-id">ID {code_cell(t['student_id'], "MAX ID студента скопирован")}</span>
 <span class="wb-when">создано {esc(fmt_when(t['created_at']))}</span></p>
 <p class="small mut wb-tools">{open_in_bot(bot)}
-{copy_btn(panel_link(f"/tickets?t={ticket_id}"), "Ссылка на обращение скопирована")}</p>
+{copy_btn(panel_link(card_link), "Ссылка на обращение скопирована")}</p>
 {edit}</div>"""
     return f"""{head}
 <div class="card"><h2>Быстрый ответ</h2>
 <form method="post" action="/panel/tickets/{ticket_id}/reply" class="wb-reply">{csrf(request)}
-<textarea name="text" rows="3" required placeholder="Ответ студенту — уйдёт в MAX"></textarea>
+<textarea name="text" rows="3" placeholder="Ответ студенту — уйдёт в MAX"></textarea>
 <div class="grid" style="margin-top:10px">
 <div><button class="btn-ok">Отправить</button></div>
-<div>{select("template", template_options, "")}</div>
+<div>{select("template", template_options, "", datas=template_texts)}</div>
+<div>{select("as_staff", answerer_options, answerer_default, titles=answerer_titles,
+         label="Отвечает как")}</div>
 </div></form>
-<p class="small mut">Ответ уходит студенту и остаётся в переписке бота.</p></div>
+<p class="small mut">Ответ уходит студенту ОТ ИМЕНИ выбранного сотрудника - можно
+ответить за тестового, не заходя в MAX. Сам сотрудник при этом ничего не
+получает: у тестовых нет настоящего MAX ID. Шаблон можно
+выбрать и не править: подстановки подставятся сами, по данным обращения. Свой текст
+важнее шаблона - если написать его, шаблон не навязывается. {esc(_tpl_hint(unknown_names))}</p></div>
 <div class="card"><h2>Переписка</h2>
 <table><tr><th>Когда</th><th>Кто</th><th>Текст</th></tr>{thread}</table></div>
 <div class="card"><h2>История изменений</h2>

@@ -12,9 +12,9 @@ from utils import (POSITION_CODES, POSITION_TITLES, POSITIONS_BTN, STAFF_CATS, S
                    is_sysadmin_role, norm_group, norm_position, profile_url, row_value, to_int)
 
 from .access import request_status_cell
-from .common import (_action_form, code_cell, csrf, esc, fio_brief, flag, flash, form, input, log,
+from .common import (_action_form, code_cell, csrf, esc, fio, fio_brief, flag, flash, form, log,
                      minutes_text, page, page_window, pager, pages_of, pill, plain, redirect,
-                     require_form, require_user, select, value, window_tail, fio)
+                     require_form, require_user, select, value, window_tail)
 from .router import router
 
 
@@ -178,10 +178,52 @@ async def students(request: Request, group: str = "", consent: str = "", page_no
 # «ПК», «Приёмная комиссия» и «приёмная комиссия» тремя разными строками.
 POSITION_LIST = "position-hints"
 
+# Минимальная ширина поля должности. Подсказка «например, Преподаватель
+# информатики» в шрифте панели - 282px, а в колонке по 200px от неё остаётся
+# «например, Преподават», и человек не понимает, что за поле. Ниже - ширина
+# подсказку целиком (282px текста плюс отступы поля), а на узком экране
+# колонка уходит в перенос, а не обрезает текст.
+POSITION_MIN_WIDTH = "min-width:310px"
+
+# Правка в строке стоит в последней колонке таблицы, и без минимума таблица
+# отдаёт ей 190px: четыре поля в столбик, подписи в обрез. С минимумом форма
+# занимает то, что нужно, и не сжимает соседние колонки.
+QUICK_MIN_WIDTH = "min-width:250px"
+
+# Русские подписи полей сотрудника. input() из web.common подписывает поле
+# именем колонки, и в форме это выглядит как «department» или «can_broadcast» -
+# человек не понимает, что заполняет. Здесь подпись задаёт label_input, а
+# выпадающий список - label= у select(). Поля в словаре нет - остаётся имя
+# колонки, и это не тихо: проверка страницы такой случай ловит.
+FIELD_LABELS: dict[str, str] = {
+    "user_id": "MAX ID",
+    "full_name": "ФИО",
+    "position": "Должность",
+    "department": "Отдел",
+    "role": "Тип должности",
+    "office": "Кабинет",
+    "ticket_category": "Раздел обращений",
+    "can_broadcast": "Рассылка",
+    "see_all_tickets": "Видит чужие обращения",
+}
+
+
+def label_input(name: str, current="", kind: str = "text", full: bool = False) -> str:
+    """Поле ввода с русской подписью вместо имени колонки.
+
+    Разметка та же, что у input() из web.common, но подпись берётся из
+    FIELD_LABELS. Поля там нет - подписывается имя колонки, чтобы это было
+    видно и на странице, и в проверке.
+    """
+    extra = ' class="full"' if full else ""
+    return (f'<div{extra}><label>{esc(FIELD_LABELS.get(name, name))}</label>'
+            f'<input name="{esc(name)}" type="{kind}" value="{esc(current)}"></div>')
+
 
 def position_input(current) -> str:
     """Поле должности с подсказками браузера: можно и выбрать, и вписать своё."""
-    return (f'<div><label>Должность</label><input name="position" list="{POSITION_LIST}" '
+    return (f'<div style="{POSITION_MIN_WIDTH}"><label>Должность</label>'
+            f'<input name="position" list="{POSITION_LIST}" '
             f'value="{esc(current)}" placeholder="например, Преподаватель информатики"></div>')
 
 
@@ -202,12 +244,17 @@ def position_pick_form(request: Request, user_id: str, current: str) -> str:
 
     Отдельная форма с одним полем: нажатие подсказки не должно затирать отдел,
     кабинет и раздел обращений, которые человек правит в форме рядом.
+
+    Ряд подсказок - отдельный блок с зазором и без прокрутки. Раньше он был в
+    боксе высотой 86px с ``overflow:auto``: из семнадцати кнопок справочника
+    в него влезали десять, а кнопки действий вставали ровно на место невидимых
+    строк - выбрать сотруднику должность было невозможно. Класс ``wb-tools``
+    даёт перенос и зазор сам, отдельное правило темы для этого не нужно.
     """
     return (f'<form method="post" action="/panel/staff/{esc(user_id)}/position">{csrf(request)}'
             f'<div class="small mut" style="margin:8px 0 4px">Подсказки из справочника: '
             f'нажмите, чтобы поставить должность одним нажатием.</div>'
-            f'<div class="grid" style="max-height:86px;overflow:auto;align-content:start">'
-            f'{position_pick_buttons(current)}</div></form>')
+            f'<div class="wb-tools staff-hints">{position_pick_buttons(current)}</div></form>')
 
 
 def position_datalist() -> str:
@@ -304,7 +351,8 @@ def _vacation_replacement(staff, all_rows: list[dict], away: dict) -> dict | Non
 def _row_edit_cell(request: Request, row, cat_ask: str) -> str:
     """Форма правки в строке сотрудника. Раздел — с подтверждением, см. ниже."""
     uid = as_str(row["user_id"])
-    form = (f'<form method="post" action="/panel/staff/{esc(uid)}/quick" class="grid">'
+    form = (f'<form method="post" action="/panel/staff/{esc(uid)}/quick" class="grid"'
+            f' style="{QUICK_MIN_WIDTH}">'
             f'{csrf(request)}'
             f'<div><label>Должность</label><input name="position" value="{esc(row["position"])}"'
             f' list="{POSITION_LIST}" placeholder="например, Секретарь"></div>'
@@ -323,7 +371,8 @@ def _row_edit_cell(request: Request, row, cat_ask: str) -> str:
                 f"обращения нового раздела. Меняем?")
     cancel = ('<input type="hidden" name="cancel" value="1">')
     return (f'<div class="msg msg-bad"><span>{esc(question)}</span></div>'
-            f'<form method="post" action="/panel/staff/{esc(uid)}/quick" class="grid">'
+            f'<form method="post" action="/panel/staff/{esc(uid)}/quick" class="grid"'
+            f' style="{QUICK_MIN_WIDTH}">'
             f'{csrf(request)}'
             f'<input type="hidden" name="confirm" value="1">'
             f'<input type="hidden" name="ticket_category" value="{esc(wanted)}">'
@@ -393,35 +442,45 @@ async def staff_list(request: Request, q: str = "", cat_ask: str = ""):
         fields = (
             f'<div class="full"><label>ФИО</label><input name="full_name" value="{esc(row["full_name"])}"></div>'
             f"{position_input(row['position'])}"
-            f"{input('department', row['department'])}"
-            f"{select('role', role_options, row['role'])}"
-            f"{input('office', row['office'])}"
-            f"{select('ticket_category', cat_options, row['ticket_category'])}"
-            f"{select('can_broadcast', {'0': 'нет', '1': 'да'}, '1' if flag(row['can_broadcast']) else '0')}"
+            f"{label_input('department', row['department'])}"
+            f"{select('role', role_options, row['role'], label=FIELD_LABELS['role'])}"
+            f"{label_input('office', row['office'])}"
+            f"{select('ticket_category', cat_options, row['ticket_category'], label=FIELD_LABELS['ticket_category'])}"
+            f"{select('can_broadcast', {'0': 'нет', '1': 'да'}, '1' if flag(row['can_broadcast']) else '0', label=FIELD_LABELS['can_broadcast'])}"
         )
+        # Действия - свой ряд, с зазором и переносом. Раньше они стояли следом
+        # за боксом подсказок строками ниже и наезжали на кнопки должностей,
+        # которые этот бокс обрезал: часть подсказок нельзя было нажать.
+        actions = (f'<div class="small mut" style="margin:8px 0 4px">Действия с сотрудником: '
+                   f'права сис-админа, досье и удаление из списка.</div>'
+                   f'<div class="wb-tools staff-actions">'
+                   f"<form method='post' action='/panel/staff/promote/{esc(uid)}' class='inline'>{csrf(request)}"
+                   f"<button class='btn-grey'>{icon('access', 16)} Сделать сис-админом</button></form>"
+                   f"<form method='post' action='/panel/staff/{esc(uid)}/delete' class='inline' "
+                   f"onclick=\"return confirm('Удалить сотрудника {esc(row['full_name'])}?')\">"
+                   f"{csrf(request)}<button class='btn-bad'>{icon('delete', 16)} Удалить</button></form>"
+                   f"<a class='btn-grey btn' href='/panel/people/{esc(uid)}/dossier'>"
+                   f"{icon('eye', 16)} Всё о сотруднике</a></div>")
         body += (f"{head_row}<tr><td colspan='9' style='background:var(--surface-sunken);padding:10px'>"
                  f"{form(request, f'/panel/staff/{esc(uid)}', fields)}"
                  f"{position_pick_form(request, uid, norm_position(row['position']))}"
-                 f"<form method='post' action='/panel/staff/promote/{esc(uid)}' class='inline'>{csrf(request)}"
-                 f"<button class='btn-grey'>{icon('access', 16)} Сделать сис-админом</button></form> "
-                 f"<form method='post' action='/panel/staff/{esc(uid)}/delete' class='inline' "
-                 f"onclick=\"return confirm('Удалить сотрудника {esc(row['full_name'])}?')\">"
-                 f"{csrf(request)}<button class='btn-bad'>{icon('delete', 16)} Удалить</button></form>"
-                 f" <a class='btn-grey btn' href='/panel/people/{esc(uid)}/dossier'>"
-                 f"{icon('eye', 16)} Всё о сотруднике</a></td></tr>")
+                 f"{actions}</td></tr>")
     search = ('<form method="get" action="/panel/staff" class="grid" style="margin-bottom:14px">'
               f'<div><input name="q" value="{esc(q)}" placeholder="Поиск: ФИО, ID, должность, отдел, кабинет"></div>'
               f"<div><button>{icon('search', 16)} Найти</button></div></form>")
-    table = f'{search}<table><tr><th>Сотрудник</th><th>Роль в боте</th><th>Должность</th><th>Отдел</th><th>Кабинет</th>' \
+    # staff-table - крючок для темы: колонке «Правка в строке» нужен минимум
+    # ширины, иначе таблица отдаёт ей 190px и форма выглядит сжатой.
+    table = f'{search}<table class="staff-table"><tr><th>Сотрудник</th><th>Роль в боте</th>' \
+            f"<th>Должность</th><th>Отдел</th><th>Кабинет</th>" \
             f"<th>Обращения</th><th>За 90 дней / открытых</th><th>Рассылка</th><th>Правка в строке</th></tr>{body}</table>"
     add = form(
         request, "/panel/staff/add",
         ('<div class="full"><label>MAX ID — можно сразу нескольких (через запятую, @ник или ссылку на профиль)</label>'
          '<input name="user_id" value="" placeholder="12345, 67890"></div>')
-        + input("full_name", "") + position_input("") + input("department", "")
-        + select("role", role_options, "") + input("office", "")
-        + select("ticket_category", dict(STAFF_CATS), "all")
-        + select("can_broadcast", {"0": "нет", "1": "да"}, "0"),
+        + label_input("full_name") + position_input("") + label_input("department")
+        + select("role", role_options, "", label=FIELD_LABELS["role"]) + label_input("office")
+        + select("ticket_category", dict(STAFF_CATS), "all", label=FIELD_LABELS["ticket_category"])
+        + select("can_broadcast", {"0": "нет", "1": "да"}, "0", label=FIELD_LABELS["can_broadcast"]),
         "Добавить сотрудника", "btn-ok",
     )
     add_sys = form(

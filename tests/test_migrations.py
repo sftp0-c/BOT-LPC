@@ -200,7 +200,7 @@ async def test_init_db_adds_only_missing_objects(legacy):
         assert {k: v for k, v in after_cols[name].items() if k in cols} == cols, name
         expected = {
             "admins": {"role", "office", "position", "department", "see_all_tickets",
-                       "vacation_until"},
+                       "vacation_until", "is_test"},
             "tickets": {"topic", "ready_until", "doc_url", "pickup_place",
                         "deleted_at", "deleted_by"},
             "broadcasts": {"sender_name", "sender_role"},

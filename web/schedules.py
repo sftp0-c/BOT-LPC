@@ -1,5 +1,6 @@
 """Расписания групп: ссылка на PDF, разбор файла, звонки и импорт с сайта колледжа."""
 import re
+from urllib.parse import quote
 
 import database as db
 import repository as repo
@@ -12,7 +13,7 @@ from panel_theme import icon
 from timetable import WEEKDAYS_FULL
 from utils import as_str, fmt_when, norm_group, short, to_int, valid_group
 
-from .common import (_action_form, csrf, esc, flash, form, input, log, page, redirect, require_form,
+from .common import (_action_form, csrf, esc, flash, input, log, page, redirect, require_form,
                      require_user, value)
 from .router import router
 
@@ -42,32 +43,49 @@ async def schedules_list(request: Request):
         else:
             state = "<span class='mut'>не разобрано</span>"
         found = ", ".join(stamp["found_groups"][:8]) or "—"
+        hidden = f'<input type="hidden" name="group_code" value="{esc(code)}">'
+        # Кнопки строки лежат в .wb-tools: у темы там зазор и перенос по словам.
+        # Раньше они стояли в ячейке вплотную - одна формой, другая через пробел,
+        # а удаление было вовсе без подписи, только иконка: по кнопке нельзя было
+        # понять, что она делает. Обёртка задаёт кнопкам зазор, а ширину -
+        # собственная подпись, поэтому текст всегда в одну строку.
+        #
+        # Класс .num на ячейке с кнопками - запрет переноса подписи. td в теме
+        # рвёт слова в любом месте (overflow-wrap:anywhere), и в узкой ячейке на
+        # телефоне кнопка рассыпалась по одной букве в строке. Из общих классов
+        # темы запрет переноса есть только у .num, поэтому он и стоит здесь.
         body += (
-            f"<tr><td><b>{esc(code)}</b></td><td class='small'>{esc(short(full['pdf_url'], 70))}</td>"
+            f'<tr><td><a href="/panel/schedules/{quote(code)}"><b>{esc(code)}</b></a></td>'
+            f"<td class='small'>{esc(short(full['pdf_url'], 70))}</td>"
             f"<td>{state}</td><td class='small mut'>{esc(found)}</td>"
-            f"<td>{_action_form(request, '/panel/schedules/parse', f'{icon("search", 16)} Разобрать', f'<input type=\"hidden\" name=\"group_code\" value=\"{esc(code)}\">')}"
-            f" {_action_form(request, '/panel/schedules/delete', icon("delete", 16), f'<input type=\"hidden\" name=\"group_code\" value=\"{esc(code)}\">', f'Удалить расписание группы {code}?', 'btn-bad')}</td></tr>"
+            f"<td class='num'><div class='wb-tools'>"
+            f"{_action_form(request, '/panel/schedules/parse', f'{icon("search", 16)} Разобрать', hidden)}"
+            f"{_action_form(request, '/panel/schedules/delete', f'{icon("delete", 16)} Удалить', hidden, f'Удалить расписание группы {code}?', 'btn-bad')}"
+            f"</div></td></tr>"
         )
-    table = (f"<table><tr><th>Группа</th><th>Ссылка на PDF</th><th>Разбор</th><th>Группы в PDF</th><th></th></tr>"
+    table = (f"<table><tr><th>Группа</th><th>Ссылка на PDF</th><th>Разбор</th>"
+             f"<th>Группы в PDF</th><th>Действия</th></tr>"
              f"{body or '<tr><td colspan=5 class=mut>Расписаний пока нет</td></tr>'}</table>")
-    save = form(
-        request, "/panel/schedules/save",
-        input("group_code", "") + input("pdf_url", "", full=True),
-        "Сохранить (сразу разберём)", "btn-ok",
+    save = (
+        f'<form method="post" action="/panel/schedules/save">{csrf(request)}'
+        f'<div class="grid">{input("group_code", "")}{input("pdf_url", "", full=True)}</div>'
+        f'<div class="grid"><div><button class="btn-ok">'
+        f'{icon("check", 16)} Сохранить (сразу разберём)</button></div></div></form>'
     )
     bells = await _lesson_times_form(request)
-    import_box = form(
-        request, "/panel/schedules/import",
-        ('<div class="full"><label>Адрес страницы с расписаниями или список ссылок на PDF '
-         '(по одной в строке)</label>'
-         f'<textarea name="source">{esc(COLLEGE_SCHEDULE_PAGE)}</textarea></div>'),
-        f'{icon("download", 16)} Импортировать с сайта', "btn-ok",
+    import_box = (
+        f'<form method="post" action="/panel/schedules/import">{csrf(request)}'
+        '<div class="grid"><div class="full"><label>Адрес страницы с расписаниями или список ссылок на PDF '
+        '(по одной в строке)</label>'
+        f'<textarea name="source">{esc(COLLEGE_SCHEDULE_PAGE)}</textarea></div></div>'
+        '<div class="grid"><div><button class="btn-ok">'
+        f'{icon("download", 16)} Импортировать с сайта</button></div></div></form>'
     )
     body_all = f"""
 <div class="card"><h2>{icon("schedules", 20)} Расписания</h2>{table}
 <p class="small mut">Разобранных пар: {parsed_total}. Скачанные PDF лежат рядом с базой в папке
 <code>schedules</code> и перечитываются, когда файл по ссылке меняется.</p>
-{_action_form(request, '/panel/schedules/parse_all', f'{icon("refresh", 16)} Обновить все расписания')}</div>
+<div class="wb-tools">{_action_form(request, '/panel/schedules/parse_all', f'{icon("refresh", 16)} Обновить все расписания')}</div></div>
 <div class="grid" style="align-items:stretch">
   <div class="card" style="flex:2"><h2>Сохранить расписание</h2>{save}
   <p class="small mut">Ссылку достаёт преподаватель или бот. Сначала проверяем, что по ней отдаётся PDF,
@@ -87,17 +105,25 @@ async def _lesson_times_form(request: Request) -> str:
 
     Нумерация — как в PDF и в боте: 1 урок, 2 урок, … (в паре их два, поэтому
     номера идут подряд). Время подставляется в расписание по номеру урока.
+
+    Строки - обычная таблица темы, а не ряд полей: номер урока и два времени
+    встают в колонки и не липнут друг к другу ни на телефоне, ни на широком
+    экране.
     """
     times = await schedules.lesson_times()
     rows = []
     for index, (start, end) in enumerate(times, start=1):
         rows.append(
-            f"<div class='full' style='display:flex;gap:8px;align-items:center'>"
-            f"<span style='width:72px'>{index} урок</span>"
-            f"<input name='t{index}a' value='{esc(start)}' pattern='\\d{{1,2}}:\\d{{2}}' size='5'>"
-            f"<input name='t{index}b' value='{esc(end)}' pattern='\\d{{1,2}}:\\d{{2}}' size='5'></div>"
+            f"<tr><td>{index}</td>"
+            f"<td><input name='t{index}a' value='{esc(start)}' pattern='\\d{{1,2}}:\\d{{2}}' size='5'></td>"
+            f"<td><input name='t{index}b' value='{esc(end)}' pattern='\\d{{1,2}}:\\d{{2}}' size='5'></td></tr>"
         )
-    return (form(request, "/panel/schedules/times", "".join(rows), "Сохранить звонки", "btn-ok")
+    editor = ('<div class="grid"><div class="full">'
+              '<table><tr><th>№</th><th>Начало</th><th>Конец</th></tr>'
+              + "".join(rows) + "</table></div></div>")
+    return (f'<form method="post" action="/panel/schedules/times">{csrf(request)}{editor}'
+            '<div class="grid"><div><button class="btn-ok">'
+            f'{icon("check", 16)} Сохранить звонки</button></div></div></form>'
             + "<p class='small mut'>Номер урока — как в расписании и как показывает бот: в паре уроков два, "
               "поэтому 1 и 2 уроки — это первая пара, 3 и 4 — вторая. Формат 09:00. Изменение сразу "
               "применяется к уже разобранным занятиям, перечитывать PDF не нужно.</p>")
@@ -111,16 +137,18 @@ async def schedule_card(request: Request, group_code: str):
     rows = await repo.lessons_for_group(code)
     if not rows:
         return page("Расписание", f'<div class="card msg-bad">Для группы {esc(code)} расписание не разобрано. '
-                                  f'<a class="btn-grey" href="/panel/schedules">К списку</a></div>', user, "/schedules")
+                                  f'<a class="btn btn-grey" href="/panel/schedules">К списку</a></div>', user, "/schedules")
     by_day: dict[int, list] = {}
     for row in rows:
         by_day.setdefault(int(row["weekday"]), []).append(row)
     days = ""
     for weekday in sorted(by_day):
+        # Форма правки времени - ряд с зазором темы (.wb-tools): два поля и
+        # кнопка не липнут, а кнопка остаётся по размеру своей подписи.
         lessons = "".join(
             f"<tr><td>{esc(lesson['lesson_num'])}</td><td>{esc(lesson['subject'])}</td>"
             f"<td>{esc(lesson['teacher'] or '—')}</td><td>{esc(lesson['room'] or '—')}</td>"
-            f"<td><form method='post' action='/panel/schedules/lesson-time' class='inline'>{csrf(request)}"
+            f"<td><form method='post' action='/panel/schedules/lesson-time' class='wb-tools'>{csrf(request)}"
             f"<input type='hidden' name='group_code' value='{esc(code)}'>"
             f"<input type='hidden' name='weekday' value='{weekday}'>"
             f"<input type='hidden' name='lesson_num' value='{esc(lesson['lesson_num'])}'>"
@@ -133,7 +161,9 @@ async def schedule_card(request: Request, group_code: str):
                  f"<table><tr><th>Пара</th><th>Предмет</th><th>Преподаватель</th><th>Ауд.</th><th>Время</th></tr>"
                  f"{lessons}</table>")
     return page(f"Расписание {code}", f'<div class="card">{days}'
-                                       f'<p><a class="btn-grey" href="/panel/schedules">{icon("chevron-left", 16)} К списку</a></p></div>',
+                                       f'<div class="wb-tools">'
+                                       f'<a class="btn btn-grey" href="/panel/schedules">'
+                                       f'{icon("chevron-left", 16)} К списку</a></div></div>',
                 user, "/schedules")
 
 
@@ -291,3 +321,6 @@ async def schedules_delete(request: Request):
     await repo.log_action(actor, "расписание удалено", f"{code}, подписчики уведомлены")
     flash(f"Расписание группы {code} удалено.")
     return redirect("/panel/schedules")
+
+
+

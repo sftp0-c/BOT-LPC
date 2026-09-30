@@ -1418,6 +1418,7 @@ MONTHS = ("января", "февраля", "марта", "апреля", "ма�
 """Месяцы в родительном падеже: дата в письме — «28 сентября 2026»."""
 
 TPL_STUDENT = "студент"        # ФИО неизвестно - лучше слово, чем дыра в письме
+TPL_MISSING = "не указано"     # данных нет - в письме слово лучше дыры
 TPL_FIELDS: tuple[str, ...] = (
     "ФИО", "фамилия", "имя", "отчество", "группа", "преподаватель", "должность",
     "кабинет", "кабинет_выдачи", "дата", "время", "номер", "тема",
@@ -1451,7 +1452,7 @@ async def template_values(t, staff=None) -> dict:
         "фио": full or TPL_STUDENT,
         "фамилия": parts[0] if parts else TPL_STUDENT,
         "имя": parts[1] if len(parts) > 1 else TPL_STUDENT,
-        "отчество": parts[2] if len(parts) > 2 else "",
+        "отчество": parts[2] if len(parts) > 2 else TPL_MISSING,
         "группа": _row_value(student, "group_code") or "не указана",
         "преподаватель": _row_value(person, "full_name") or "сотрудник",
         "должность": (position_of(person) if person is not None else "") or "не назначена",
@@ -1463,7 +1464,7 @@ async def template_values(t, staff=None) -> dict:
                            or PICKUP_FALLBACK),
         "дата": f"{now.day} {MONTHS[now.month - 1]} {now.year}",
         "время": now.strftime("%H:%M"),
-        "номер": as_str(_get(t, "ticket_id")),
+        "номер": as_str(_get(t, "ticket_id")) or TPL_MISSING,
         "тема": _row_value(t, "topic") or CATS.get(_row_value(t, "category"), "обращения"),
         # телефоны берём из справочника college (их правят в панели, в шаблоне
         # писать номера нельзя - устареют первыми). {колледж} и {учебная_часть} -

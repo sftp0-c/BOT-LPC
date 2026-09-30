@@ -212,7 +212,8 @@ async def vacations_bulk() -> dict[str, dict]:
 # ── подбор и правка сотрудников ───────────────────────────────────────────────
 async def staff_for_category(category: str, limit: int = 25) -> list:
     return await db.many(
-        "SELECT user_id, full_name, role, position, department, office FROM admins "
+        "SELECT user_id, full_name, role, position, department, office, is_test "
+        "FROM admins "
         f"WHERE role_type {STAFF_ROLES_SQL} AND (ticket_category=? OR ticket_category='all') "
         "ORDER BY full_name LIMIT ?",
         (category, limit),
@@ -410,3 +411,148 @@ async def staff_names() -> set:
     """
     rows = await db.many("SELECT full_name FROM admins WHERE full_name<>''")
     return {as_str(row["full_name"]) for row in rows}
+
+
+# ── тестовые сотрудники: стенд для сквозной проверки пути ────────────────────
+# Тестовый сотрудник нужен для одной вещи: проверить путь «студент → панель →
+# MAX» целиком, не занимая живого человека. Он не пишет в MAX, не читает
+# обращений и не отвечает - он цель, которую студент выбирает в боте.
+#
+# Настоящего MAX ID у него нет и быть не может: идентификатор выдаёт мессенджер.
+# Поэтому ID синтетический - «test-1», «test-2», … Числом он быть не должен, и
+# проект его числом и не считает: admins.user_id - это TEXT, max_api.send сам
+# оставляет строку, когда int() не получился, а handlers.common.notify гасит
+# неудачную отправку. Всё остальное (списки сотрудников, выбор сотрудника в
+# боте, карточка, права) работает с той же строкой admins - отдельной таблицы
+# для тестовых нет и не нужно.
+TEST_ID_PREFIX = "test-"
+TEST_ID_TRIES = 20                 # сколько раз ищем свободный номер, прежде чем сдаться
+TEST_NAME = "Тестовый сотрудник"   # подпись, если ФИО не заполнили
+
+
+async def next_test_staff_id() -> str:
+    """Ближайший свободный синтетический ID: «test-1», «test-2», …
+
+    Номер считается по занятым, а не по числу строк: удалённый «test-2» снова
+    свободен, и следующим его и выдадут. Строки, не подходящие под шаблон,
+    пропускаются - они не занимают номер.
+    """
+    rows = await db.many("SELECT user_id FROM admins WHERE user_id LIKE ?",
+                         (f"{TEST_ID_PREFIX}%",))
+    taken = set()
+    for row in rows:
+        tail = as_str(row["user_id"])[len(TEST_ID_PREFIX):]
+        if tail.isdigit():
+            taken.add(int(tail))
+    number = 1
+    while number in taken:
+        number += 1
+    return f"{TEST_ID_PREFIX}{number}"
+
+
+async def add_test_staff(full_name: str = "", position: str = "", department: str = "",
+                         office: str = "", ticket_category: str = "all",
+                         see_all: bool = False) -> str:
+    """Завести тестового сотрудника; возвращает его синтетический user_id.
+
+    Пустая строка - завести не удалось: свободного номера не нашлось. Случается
+    только если занято TEST_ID_TRIES номеров подряд, но молча «создать» строку
+    без ID было бы хуже: её потом не нашёл бы никто.
+    """
+    user_id = ""
+    for _ in range(TEST_ID_TRIES):
+        wanted = await next_test_staff_id()
+        if not await get_admin(wanted):
+            user_id = wanted
+            break
+    if not user_id:
+        return ""
+    # can_broadcast всегда 0: тестовый сотрудник не должен попасть в рассылку.
+    await db.run(
+        "INSERT INTO admins(user_id, full_name, role_type, position, department, office, "
+        "ticket_category, can_broadcast, see_all_tickets, is_test, created_at) "
+        "VALUES(?,?, 'staff', ?,?,?,?, 0, ?, 1, ?)",
+        (user_id, as_str(full_name).strip()[:100] or TEST_NAME, norm_position(position)[:100],
+         as_str(department).strip()[:100], as_str(office).strip()[:100],
+         as_str(ticket_category).strip()[:40] or "all", int(bool(see_all)), clock.stamp()),
+    )
+    return user_id
+
+
+async def get_test_staff(user_id: str) -> dict | None:
+    """Карточка тестового сотрудника; None - если такой строки нет или она обычная."""
+    return _row_dict(await db.one("SELECT * FROM admins WHERE user_id=? AND is_test=1",
+                                  (as_str(user_id),)))
+
+
+async def list_test_staff() -> list:
+    """Тестовые сотрудники: ровно те, у кого is_test=1.
+
+    Метка лежит в самой строке admins, поэтому и этот список, и список всех
+    сотрудников, и выбор сотрудника в боте читают одни и те же строки - расходиться
+    им негде.
+    """
+    return await db.many("SELECT * FROM admins WHERE is_test=1 ORDER BY full_name")
+
+
+async def test_staff_count() -> int:
+    """Сколько тестовых сотрудников заведено: счётчик на странице раздела."""
+    return int((await db.one("SELECT COUNT(*) n FROM admins WHERE is_test=1"))["n"])
+
+
+async def update_test_staff(user_id: str, full_name: str = "", position: str = "",
+                            department: str = "", office: str = "",
+                            ticket_category: str = "", see_all: str = "") -> bool:
+    """Правка тестового сотрудника. Пустое поле - «не трогать», а не «стереть».
+
+    Так же, как при правке сотрудника: очищенное поле не должно молча забрать
+    кабинет у того, кого правят на бегу. ``see_all`` приходит строкой «0» или «1»
+    из выпадающего списка, и пустое значение (его не бывает) ничего бы не изменило.
+    """
+    if not await get_test_staff(user_id):
+        return False
+    values: list[tuple[str, object]] = []
+    for name, raw in (("full_name", full_name), ("position", position),
+                      ("department", department), ("office", office),
+                      ("ticket_category", ticket_category)):
+        # должность сводится к справочнику, как и при обычном добавлении
+        text = (norm_position(raw) if name == "position" else as_str(raw)).strip()
+        if text:
+            values.append((name, text[:100]))
+    right = as_str(see_all).strip()
+    if right in ("0", "1"):
+        values.append(("see_all_tickets", int(right)))
+    if not values:
+        return False
+    await db.run(
+        f"UPDATE admins SET {', '.join(f'{name}=?' for name, _ in values)} WHERE user_id=?",
+        tuple(value for _, value in values) + (as_str(user_id),),
+    )
+    return True
+
+
+async def delete_test_staff(user_id: str) -> bool:
+    """Удалить тестового сотрудника. Обычного - нет, False.
+
+    Строку с is_test=0 удаляют через delete_staff - осознанно и по правилам
+    проекта. Здесь такая попытка - ошибка выбора в панели, и она обязана быть
+    отказом, а не тихим исчезновением живого сотрудника.
+    """
+    if not await get_test_staff(user_id):
+        return False
+    await db.run("DELETE FROM admins WHERE user_id=?", (as_str(user_id),))
+    return True
+
+
+async def set_staff_test(user_id: str, value: bool = True) -> bool:
+    """Переключить сотрудника: обычный → тестовый и обратно.
+
+    Следа в других колонках не остаётся - тот же человек и те же обращения, меняется
+    только метка. Поэтому вернуть можно без потерь, и администратору не нужно
+    заводить дубля, чтобы проверить путь на живом сотруднике.
+    """
+    row = await db.one("SELECT is_test FROM admins WHERE user_id=?", (as_str(user_id),))
+    if not row:
+        return False
+    await db.run("UPDATE admins SET is_test=? WHERE user_id=?", (1 if value else 0, as_str(user_id),))
+    return True

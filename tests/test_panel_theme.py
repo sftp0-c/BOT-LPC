@@ -5,6 +5,7 @@
 было случайно вернуть «магический» цвет в CSS, разную толщину у иконок или
 тему, которая ломается на телефоне.
 """
+import json
 import re
 import sys
 from pathlib import Path
@@ -17,9 +18,10 @@ import panel_theme as theme                        # noqa: E402  (путь за�
 
 # ── что должно быть в модуле ────────────────────────────────────────────────
 # Иконки всех разделов панели: пока вместо них в меню стояли эмодзи.
-REQUIRED_SECTIONS = ("home", "tickets", "analytics", "people", "user-off", "college",
-                     "students", "staff", "access", "link", "templates", "groups",
-                     "schedules", "broadcasts", "database", "settings", "logs")
+REQUIRED_SECTIONS = ("home", "activity", "tickets", "analytics", "people", "user-off",
+                     "college", "students", "staff", "access", "link", "templates",
+                     "groups", "schedules", "broadcasts", "database", "archive",
+                     "check", "settings", "logs")
 # Иконки действий, которые бот и панель рисуют рядом с текстом.
 REQUIRED_ACTIONS = ("archive", "reply", "delete", "edit", "search", "chevron-down",
                     "chevron-right", "chevron-left", "close", "plus", "check",
@@ -32,6 +34,7 @@ PANE_MARKERS = (
     ".mut{", ".small{", ".num{", ".lead{", "h3{", "th.col-key", ".kpi .warn", ".kpi .good",
     "nav a.on", ".workbench{", ".wb-queue", ".wb-list", ".wb-item", ".wb-on", ".wb-head",
     ".wb-status", ".wb-date", ".wb-text", ".wb-bulk", ".wb-card", ".wb-access",
+    ".nav-sub{", ".nav-sub-label", ".nav-sub-items", ".nav-sub a", ".pal-sub",
     ".charts{", ".chart-box", ".chart{", ".grid-line", ".axis", ".donut{", ".donut-total",
     ".donut-sub", ".donut-wrap", ".legend{", ".legend-list", ".hbar-list", ".hbar-label",
     ".hbar-track", ".chart-empty", ".spark", "pre{", "footer{", "code,",
@@ -39,7 +42,224 @@ PANE_MARKERS = (
 # Элементы, которых раньше не было, но без них панель выглядит бедно.
 EXTRA_MARKERS = (".theme-toggle", ".toast-stack", ".toast{", ".toast.is-out", ".skel{",
                  ".skel-line", ".skel-block", ".loading-dot", ".spin", ".empty{",
-                 ".is-loading", "details{", ".count{", "tbody tr.is-found", ".ico{")
+                 ".is-loading", "details{", ".count{", "tbody tr.is-found", ".ico{",
+                 ".btn-row", "min-width:var(--table-min)", "table-layout:auto")
+
+
+def test_stylesheet_is_balanced():
+    assert theme.STYLESHEET.count("{") == theme.STYLESHEET.count("}"), "скобки не сходятся"
+    assert "@media" in theme.STYLESHEET and "@supports" in theme.STYLESHEET
+
+
+def test_dark_theme_is_the_default():
+    root = re.search(r":root\s*\{[^}]*\}", theme.STYLESHEET)
+    assert root, "нет блока :root с токенами"
+    block = root.group(0)
+    assert "color-scheme:dark" in block, "тёмная тема не объявлена по умолчанию"
+    assert "--d-bg:" in block and "--l-bg:" in block, "нет обеих палитр"
+    assert "--bg:var(--d-bg)" in block, "по умолчанию включён не тёмный вариант"
+
+
+def test_light_theme_by_switcher_and_by_system():
+    assert '[data-theme="light"]' in theme.STYLESHEET
+    assert re.search(r"@media \(prefers-color-scheme: light\)", theme.STYLESHEET)
+    assert "--bg:var(--l-bg)" in theme.STYLESHEET, "светлая тема нигде не включается"
+    # Системная настройка не должна затирать выбор сис-админа.
+    assert ':root:not([data-theme="dark"])' in theme.STYLESHEET
+    assert 'color-scheme:light' in theme.STYLESHEET
+
+
+def test_only_declared_tokens_are_used():
+    declared = set(re.findall(r"(--[a-z-]+)\s*:", theme.STYLESHEET)) | theme.css_names()
+    used = set(re.findall(r"var\((--[a-z-]+)", theme.STYLESHEET))
+    unknown = used - declared
+    assert not unknown, f"CSS ссылается на необъявленные переменные: {sorted(unknown)}"
+
+
+def test_no_bare_colours_outside_root():
+    body = without_root(STYLE)
+    for pattern, label in ((r"#[0-9a-fA-F]{3,8}\b", "hex"),
+                           (r"\brgba?\(", "rgb"),
+                           (r"\bhsla?\(", "hsl"),
+                           (r":\s*(white|black|red|blue|green|grey|gray)\b", "названный цвет")):
+        found = re.findall(pattern, body)
+        assert not found, f"вне :root остались цвета ({label}): {found[:5]}"
+
+
+def test_root_palettes_have_no_magic_spaces():
+    """Значение токена - ровно значение: без «rgba(0,0,0,.3) / 2» и лишних пробелов."""
+    for key, value in theme.TOKENS.items():
+        assert " " not in str(value) or "," in str(value), f"{key}: {value}"
+
+
+def test_old_variable_names_are_gone():
+    """Стили панели приходят одним листом: смешивать старое и новое нельзя."""
+    for gone in ("var(--muted)", "var(--accent)", "var(--sb)"):
+        assert gone not in theme.STYLESHEET, f"осталось имя из прошлой версии: {gone}"
+
+
+def test_pane_sections_are_styled():
+    missing = [marker for marker in PANE_MARKERS if marker not in STYLE]
+    assert not missing, f"в стилях нет: {missing}"
+
+
+def test_new_sections_are_styled():
+    missing = [marker for marker in EXTRA_MARKERS if marker not in STYLE]
+    assert not missing, f"в стилях нет: {missing}"
+
+
+# ── анимации ─────────────────────────────────────────────────────────────────
+def test_motion_is_declared_through_tokens():
+    transitions = re.findall(r"transition:[^;}]+", STYLE)
+    assert transitions, "в стилях нет переходов вообще"
+    for rule in transitions:
+        for value in re.findall(r"\b\d+m?s\b", rule):
+            assert "var(--motion-" in rule, f"переход с временем руками: {rule}"
+    # Цвет, граница и тень меняются в пределах 120-200 мс.
+    assert theme.TOKENS["base.motion-fast"] == "120ms"
+    assert theme.TOKENS["base.motion-base"] == "170ms"
+    assert "150ms" in STYLE or "200ms" in STYLE or "170ms" in STYLE
+
+
+def test_animations_are_restrained():
+    names = set(re.findall(r"@keyframes\s+([\w-]+)", STYLE))
+    for needed in ("page-in", "card-in", "nav-in", "reveal", "grow-x", "breathe",
+                   "spin", "skel-slide", "toast-in", "toast-out", "count-up"):
+        assert needed in names, f"нет анимации {needed}"
+    # Секунды живут только у бесконечных «дышащих» индикаторов загрузки.
+    for value in set(re.findall(r"[\d.]+s\b", STYLE)):
+        assert value in ("1.5s", "1.6s"), f"слишком долгая анимация: {value}"
+    for rule in re.findall(r"[^{}]*\{[^}]*infinite[^}]*\}", STYLE):
+        assert ".skel" in rule or ".loading-dot" in rule or ".spin" in rule, rule
+    # Никаких «прыжков»: масштаб не превышает единицу.
+    for value in re.findall(r"scale\(([\d.]+)\)", STYLE) + re.findall(r"scale:([\d.]+)", STYLE):
+        assert float(value) <= 1.05, f"анимация с прыжком: scale({value})"
+
+
+def test_card_hover_lifts_without_jumping():
+    assert ".card:hover" in STYLE and "translateY(-2px)" in STYLE
+    assert "box-shadow:var(--shadow-md)" in STYLE
+    # Подъём карточки не должен ломаться о входную анимацию: анимируем
+    # отдельное свойство translate, а наведение - transform.
+    assert "@keyframes card-in{from{opacity:0;translate:" in STYLE
+    assert "transform:translateY(-2px)" in STYLE
+
+
+def test_counter_is_animated_by_css_only():
+    assert "@property --n" in STYLE, "нет регистрации целочисленного свойства"
+    assert "counter-reset:c var(--n)" in STYLE
+    assert ".count::after{content:counter(c)}" in STYLE
+    assert "@keyframes count-up{from{--n:0}to{--n:var(--to)}}" in STYLE
+    assert "<script" not in theme.STYLESHEET
+
+
+def test_reduced_motion_switches_animation_off():
+    block = re.search(r"@media \(prefers-reduced-motion: reduce\)\s*\{", STYLE)
+    assert block, "нет правила для prefers-reduced-motion"
+    depth, index = 1, block.end()
+    while index < len(STYLE) and depth:
+        depth += (STYLE[index] == "{") - (STYLE[index] == "}")
+        index += 1
+    body = STYLE[block.end():index - 1]
+    assert "animation-duration:1ms !important" in body
+    assert "transition-duration:1ms !important" in body
+    assert "animation-iteration-count:1 !important" in body
+    # Счётчик при выключенной анимации обязан показать конечное число.
+    assert "--n:var(--to)" in body
+
+
+# ── телефон и планшет ────────────────────────────────────────────────────────
+def test_phone_breakpoint_is_ready_for_finger():
+    block = media_block(STYLE, 640)
+    assert "nav a" in block and "button" in block
+    assert "min-height:44px" in block, "цель нажатия меньше 44px"
+    assert re.search(r"button[^{]*\{[^}]*padding:1[01]px", block)
+    assert re.search(r"input[^{]*\{[^}]*font-size:16px", block), "iOS зумит страницу"
+    assert ".brand small{display:none}" in block
+    assert ".who{display:none}" in block
+    assert ".wb-list{max-height:none}" in block
+    assert "th.col-key{width:auto}" in block
+
+
+def test_tablet_menu_is_one_scrollable_row():
+    block = media_block(STYLE, 1000)
+    assert "flex-wrap:nowrap" in block and "overflow-x:auto" in block
+    assert ".workbench{grid-template-columns:1fr}" in block
+    assert ":root{--sidebar:0px}" in block, "боковое меню не сложилось"
+    assert "nav{position:sticky" in block
+
+
+def test_tables_and_cards_scroll_inside():
+    assert "overflow-x:auto" in STYLE
+    card = re.search(r"\.card\{[^}]*\}", STYLE).group(0)
+    assert "overflow-x:auto" in card, "широкая таблица растянет всю страницу"
+    assert re.search(r"td\{[^}]*break-word", STYLE)
+
+
+# ── скрипт темы ──────────────────────────────────────────────────────────────
+def test_theme_script_remembers_choice():
+    script = theme.theme_script()
+    assert script.strip(), "скрипт пустой"
+    assert "localStorage" in script
+    assert 'data-theme' in script
+    assert "panel-theme" in script, "нет ключа для выбора темы"
+    assert "prefers-color-scheme: light" in script
+    assert ".theme-toggle" in script, "нет кнопки переключения темы"
+
+
+def test_theme_script_marks_search_rows():
+    script = theme.theme_script()
+    assert "is-found" in script, "нет подсветки найденных строк"
+    assert ".gsearch input" in script
+    assert "classList.toggle" in script
+
+
+def test_theme_script_is_bare_javascript():
+    """Вставляется внутрь <script>: своих тегов и внешних загрузок быть не должно."""
+    script = theme.theme_script()
+    assert "<script" not in script and "</script>" not in script
+    for bad in ("http://", "https://", "src=", "import ", "require(", "fetch("):
+        assert bad not in script, f"в скрипте есть {bad}"
+    assert "<svg" in script, "кнопка темы осталась без иконки"
+
+
+def test_theme_script_is_reproducible():
+    """Скрипт собирается заново на каждый вызов: правка разметки иконок
+    подхватывается, а не остаётся в старой строке."""
+    first, second = theme.theme_script(), theme.theme_script()
+    assert isinstance(first, str) and first == second and first.strip()
+
+
+# ── подпункты меню и палитры ────────────────────────────────────────────────
+# Пользователь попросил «больше подкатегорий для меню». Разметку рисует
+# web/common.py, а тема обязана быть готова к ней раньше: без правил
+# .nav-sub подпункты просто встали бы вровень с пунктами и ничем не отличались.
+def test_submenu_has_its_own_style():
+    assert ".nav-sub{" in STYLE
+    for marker in (".nav-sub-label{", ".nav-sub-items{", ".nav-sub a{"):
+        assert marker in STYLE, f"в стилях нет {marker}"
+    # подпункт отступлен и отделён линией - иначе это просто ещё один пункт
+    rule = re.search(r"\.nav-sub\{[^}]*\}", STYLE).group(0)
+    assert "border-left:1px solid var(--line)" in rule and "padding-left:var(--nav-indent)" in rule
+    # подпись подпункта не должна зваться .nav-group-label: число подписей групп
+    # в меню сверяют проверки разметки, лишняя подпись сбила бы счёт
+    assert re.search(r"\.nav-sub-label\{[^}]*\}", STYLE)
+    assert not re.search(r"nav-sub[^,{]*\.nav-group-label", STYLE)
+
+
+def test_palette_knows_about_subitems():
+    assert ".palette-list a.pal-sub{" in STYLE
+    script = theme.hotkeys_script([("Группа", (("Раздел", "/panel/x", theme.icon("home", 16)),))])
+    assert "pal-sub" in script and "function collect(" in script
+    # подпункт - четвёртый элемент пункта; раздел без подпунктов остаётся тройкой
+    nested = theme.hotkeys_script([
+        ("Группа", (("Раздел", "/panel/x", theme.icon("home", 16),
+                     (("Вложенный", "/panel/y", theme.icon("logs", 16)),)),)),
+    ])
+    data = json.loads(re.search(r"var SECTIONS = (\[.*?\]);", nested, re.S).group(1))
+    assert len(data[0][1][0]) == 4, "подпункт не доехал до палитры"
+    flat = json.loads(re.search(r"var SECTIONS = (\[.*?\]);", script, re.S).group(1))
+    assert len(flat[0][1][0]) == 3, "раздел без подпунктов должен остаться тройкой"
 
 
 def without_comments(css: str) -> str:
@@ -317,192 +537,10 @@ def test_nav_paths_have_distinct_icons():
     assert not unknown, f"нет иконки для разделов: {unknown}"
     used = [theme.ICONS[name] for name in theme.ICON_NAMES_BY_PATH.values()]
     assert len(set(used)) == len(used), "два раздела поделили одну иконку"
-    for path in ("/", "/tickets", "/analytics", "/people", "/nostaff", "/college",
+    for path in ("/", "/activity", "/tickets", "/analytics", "/people", "/nostaff", "/college",
                  "/students", "/staff", "/access", "/templates", "/groups",
                  "/schedules", "/broadcasts", "/database", "/settings", "/logs"):
         assert path in theme.ICON_NAMES_BY_PATH, f"раздел {path} без иконки"
 
 
 # ── стили ────────────────────────────────────────────────────────────────────
-def test_stylesheet_is_balanced():
-    assert theme.STYLESHEET.count("{") == theme.STYLESHEET.count("}"), "скобки не сходятся"
-    assert "@media" in theme.STYLESHEET and "@supports" in theme.STYLESHEET
-
-
-def test_dark_theme_is_the_default():
-    root = re.search(r":root\s*\{[^}]*\}", theme.STYLESHEET)
-    assert root, "нет блока :root с токенами"
-    block = root.group(0)
-    assert "color-scheme:dark" in block, "тёмная тема не объявлена по умолчанию"
-    assert "--d-bg:" in block and "--l-bg:" in block, "нет обеих палитр"
-    assert "--bg:var(--d-bg)" in block, "по умолчанию включён не тёмный вариант"
-
-
-def test_light_theme_by_switcher_and_by_system():
-    assert '[data-theme="light"]' in theme.STYLESHEET
-    assert re.search(r"@media \(prefers-color-scheme: light\)", theme.STYLESHEET)
-    assert "--bg:var(--l-bg)" in theme.STYLESHEET, "светлая тема нигде не включается"
-    # Системная настройка не должна затирать выбор сис-админа.
-    assert ':root:not([data-theme="dark"])' in theme.STYLESHEET
-    assert 'color-scheme:light' in theme.STYLESHEET
-
-
-def test_only_declared_tokens_are_used():
-    declared = set(re.findall(r"(--[a-z-]+)\s*:", theme.STYLESHEET)) | theme.css_names()
-    used = set(re.findall(r"var\((--[a-z-]+)", theme.STYLESHEET))
-    unknown = used - declared
-    assert not unknown, f"CSS ссылается на необъявленные переменные: {sorted(unknown)}"
-
-
-def test_no_bare_colours_outside_root():
-    body = without_root(STYLE)
-    for pattern, label in ((r"#[0-9a-fA-F]{3,8}\b", "hex"),
-                           (r"\brgba?\(", "rgb"),
-                           (r"\bhsla?\(", "hsl"),
-                           (r":\s*(white|black|red|blue|green|grey|gray)\b", "названный цвет")):
-        found = re.findall(pattern, body)
-        assert not found, f"вне :root остались цвета ({label}): {found[:5]}"
-
-
-def test_root_palettes_have_no_magic_spaces():
-    """Значение токена - ровно значение: без «rgba(0,0,0,.3) / 2» и лишних пробелов."""
-    for key, value in theme.TOKENS.items():
-        assert " " not in str(value) or "," in str(value), f"{key}: {value}"
-
-
-def test_old_variable_names_are_gone():
-    """Стили панели приходят одним листом: смешивать старое и новое нельзя."""
-    for gone in ("var(--muted)", "var(--accent)", "var(--sb)"):
-        assert gone not in theme.STYLESHEET, f"осталось имя из прошлой версии: {gone}"
-
-
-def test_pane_sections_are_styled():
-    missing = [marker for marker in PANE_MARKERS if marker not in STYLE]
-    assert not missing, f"в стилях нет: {missing}"
-
-
-def test_new_sections_are_styled():
-    missing = [marker for marker in EXTRA_MARKERS if marker not in STYLE]
-    assert not missing, f"в стилях нет: {missing}"
-
-
-# ── анимации ─────────────────────────────────────────────────────────────────
-def test_motion_is_declared_through_tokens():
-    transitions = re.findall(r"transition:[^;}]+", STYLE)
-    assert transitions, "в стилях нет переходов вообще"
-    for rule in transitions:
-        for value in re.findall(r"\b\d+m?s\b", rule):
-            assert "var(--motion-" in rule, f"переход с временем руками: {rule}"
-    # Цвет, граница и тень меняются в пределах 120-200 мс.
-    assert theme.TOKENS["base.motion-fast"] == "120ms"
-    assert theme.TOKENS["base.motion-base"] == "170ms"
-    assert "150ms" in STYLE or "200ms" in STYLE or "170ms" in STYLE
-
-
-def test_animations_are_restrained():
-    names = set(re.findall(r"@keyframes\s+([\w-]+)", STYLE))
-    for needed in ("page-in", "card-in", "nav-in", "reveal", "grow-x", "breathe",
-                   "spin", "skel-slide", "toast-in", "toast-out", "count-up"):
-        assert needed in names, f"нет анимации {needed}"
-    # Секунды живут только у бесконечных «дышащих» индикаторов загрузки.
-    for value in set(re.findall(r"[\d.]+s\b", STYLE)):
-        assert value in ("1.5s", "1.6s"), f"слишком долгая анимация: {value}"
-    for rule in re.findall(r"[^{}]*\{[^}]*infinite[^}]*\}", STYLE):
-        assert ".skel" in rule or ".loading-dot" in rule or ".spin" in rule, rule
-    # Никаких «прыжков»: масштаб не превышает единицу.
-    for value in re.findall(r"scale\(([\d.]+)\)", STYLE) + re.findall(r"scale:([\d.]+)", STYLE):
-        assert float(value) <= 1.05, f"анимация с прыжком: scale({value})"
-
-
-def test_card_hover_lifts_without_jumping():
-    assert ".card:hover" in STYLE and "translateY(-2px)" in STYLE
-    assert "box-shadow:var(--shadow-md)" in STYLE
-    # Подъём карточки не должен ломаться о входную анимацию: анимируем
-    # отдельное свойство translate, а наведение - transform.
-    assert "@keyframes card-in{from{opacity:0;translate:" in STYLE
-    assert "transform:translateY(-2px)" in STYLE
-
-
-def test_counter_is_animated_by_css_only():
-    assert "@property --n" in STYLE, "нет регистрации целочисленного свойства"
-    assert "counter-reset:c var(--n)" in STYLE
-    assert ".count::after{content:counter(c)}" in STYLE
-    assert "@keyframes count-up{from{--n:0}to{--n:var(--to)}}" in STYLE
-    assert "<script" not in theme.STYLESHEET
-
-
-def test_reduced_motion_switches_animation_off():
-    block = re.search(r"@media \(prefers-reduced-motion: reduce\)\s*\{", STYLE)
-    assert block, "нет правила для prefers-reduced-motion"
-    depth, index = 1, block.end()
-    while index < len(STYLE) and depth:
-        depth += (STYLE[index] == "{") - (STYLE[index] == "}")
-        index += 1
-    body = STYLE[block.end():index - 1]
-    assert "animation-duration:1ms !important" in body
-    assert "transition-duration:1ms !important" in body
-    assert "animation-iteration-count:1 !important" in body
-    # Счётчик при выключенной анимации обязан показать конечное число.
-    assert "--n:var(--to)" in body
-
-
-# ── телефон и планшет ────────────────────────────────────────────────────────
-def test_phone_breakpoint_is_ready_for_finger():
-    block = media_block(STYLE, 640)
-    assert "nav a" in block and "button" in block
-    assert "min-height:44px" in block, "цель нажатия меньше 44px"
-    assert re.search(r"button[^{]*\{[^}]*padding:1[01]px", block)
-    assert re.search(r"input[^{]*\{[^}]*font-size:16px", block), "iOS зумит страницу"
-    assert ".brand small{display:none}" in block
-    assert ".who{display:none}" in block
-    assert ".wb-list{max-height:none}" in block
-    assert "th.col-key{width:auto}" in block
-
-
-def test_tablet_menu_is_one_scrollable_row():
-    block = media_block(STYLE, 1000)
-    assert "flex-wrap:nowrap" in block and "overflow-x:auto" in block
-    assert ".workbench{grid-template-columns:1fr}" in block
-    assert ":root{--sidebar:0px}" in block, "боковое меню не сложилось"
-    assert "nav{position:sticky" in block
-
-
-def test_tables_and_cards_scroll_inside():
-    assert "overflow-x:auto" in STYLE
-    card = re.search(r"\.card\{[^}]*\}", STYLE).group(0)
-    assert "overflow-x:auto" in card, "широкая таблица растянет всю страницу"
-    assert re.search(r"td\{[^}]*break-word", STYLE)
-
-
-# ── скрипт темы ──────────────────────────────────────────────────────────────
-def test_theme_script_remembers_choice():
-    script = theme.theme_script()
-    assert script.strip(), "скрипт пустой"
-    assert "localStorage" in script
-    assert 'data-theme' in script
-    assert "panel-theme" in script, "нет ключа для выбора темы"
-    assert "prefers-color-scheme: light" in script
-    assert ".theme-toggle" in script, "нет кнопки переключения темы"
-
-
-def test_theme_script_marks_search_rows():
-    script = theme.theme_script()
-    assert "is-found" in script, "нет подсветки найденных строк"
-    assert ".gsearch input" in script
-    assert "classList.toggle" in script
-
-
-def test_theme_script_is_bare_javascript():
-    """Вставляется внутрь <script>: своих тегов и внешних загрузок быть не должно."""
-    script = theme.theme_script()
-    assert "<script" not in script and "</script>" not in script
-    for bad in ("http://", "https://", "src=", "import ", "require(", "fetch("):
-        assert bad not in script, f"в скрипте есть {bad}"
-    assert "<svg" in script, "кнопка темы осталась без иконки"
-
-
-def test_theme_script_is_reproducible():
-    """Скрипт собирается заново на каждый вызов: правка разметки иконок
-    подхватывается, а не остаётся в старой строке."""
-    first, second = theme.theme_script(), theme.theme_script()
-    assert isinstance(first, str) and first == second and first.strip()

@@ -1,4 +1,4 @@
-"""Редизайн панели: меню по группам, «Пульт», лента событий, горячие клавиши.
+﻿"""Редизайн панели: меню по группам, «Пульт», лента событий, горячие клавиши.
 
 Тесты проверяют договорённости, из-за которых панель переписана:
 
@@ -26,10 +26,16 @@ import webpanel
 from conftest import add_staff, login_panel, post_form, register
 from utils import to_int
 
-# Все разделы, которые были в меню до редизайна: ни один не должен потеряться.
-OLD_PATHS = ("/", "/tickets", "/analytics", "/people", "/nostaff", "/college", "/students",
+# Все разделы, которые были в меню до редизайна: ни один не должен потеряться
+# ПО СЛУЧАЮ. Раздел, который убрали намеренно, перечислен отдельно ниже -
+# иначе проверка «ничего не пропало» мешала бы сознательному решению.
+OLD_PATHS = ("/", "/tickets", "/people", "/nostaff", "/college", "/students",
              "/staff", "/access", "/templates", "/groups", "/schedules", "/broadcasts",
              "/database", "/settings", "/logs")
+# Убраны из меню по прямой просьбе пользователя: раздел пока не нужен. Сам раздел
+# на месте и открывается по своему адресу - убрали пункт, не выкинули страницу.
+# Вернуть: дописать пункт обратно в NAV_GROUPS и убрать путь отсюда.
+HIDDEN_ON_PURPOSE = {"/analytics": "раздел не нужен, попросили убрать с сайта"}
 GROUP_NAMES = ("Пульт", "Обращения", "Люди", "Справочники", "Система")
 # Куда ведут крупные счётчики главной страницы.
 COUNTER_LINKS = ("/panel/tickets?scope=waiting", "/panel/access", "/panel/nostaff",
@@ -113,9 +119,25 @@ def test_every_old_section_belongs_to_a_group():
     inside = {path for _group, items in webpanel.NAV_GROUPS for path, _name, _icon in items}
     missing = [path for path in OLD_PATHS if path not in inside]
     assert not missing, f"разделы выпали из меню: {missing}"
+    # намеренно скрытые действительно вне меню - иначе список врёт
+    for path, why in HIDDEN_ON_PURPOSE.items():
+        assert path not in inside, f"{path} убрали по просьбе ({why}), но он в меню"
     # старые адреса продолжают работать: они же адреса страниц
-    for path in OLD_PATHS:
+    for path in OLD_PATHS + tuple(HIDDEN_ON_PURPOSE):
         assert path != "" and path.startswith("/")
+
+
+def test_hidden_section_still_works_and_is_reachable():
+    """Убрали пункт из меню - раздел не должен пропасть вместе с ним."""
+    for path in HIDDEN_ON_PURPOSE:
+        # в меню пути хранятся без префикса /panel - его добавляет сборка меню
+        assert path.startswith("/") and not path.startswith("/panel/"), path
+    # раздел объявлен маршрутом: страница жива, её просто не видно в меню.
+    # В webpanel.router пути уже с префиксом /panel, в меню - без него.
+    routes = {route.path for route in webpanel.router.routes}
+    for path in HIDDEN_ON_PURPOSE:
+        assert f"/panel{path}" in routes, \
+            f"маршрут {path} исчез - это уже не «скрыть», а «удалить»"
 
 
 def test_activity_is_in_the_control_group():

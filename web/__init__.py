@@ -5,7 +5,7 @@
 имена панели живут в webpanel.py, этот пакет для внешних потребителей закрыт.
 """
 from . import (access, common, data, database, diagnostics, directory, dossier, mailer, overview, people,
-               router, schedules, settings, staff_bulk, tickets)
+               router, schedules, settings, staff_bulk, test_lab, tickets)
 
 __all__ = ["access", "common", "data", "database", "diagnostics", "directory", "dossier", "mailer",
-           "overview", "people", "router", "schedules", "settings", "staff_bulk", "tickets"]
+           "overview", "people", "router", "schedules", "settings", "staff_bulk", "test_lab", "tickets"]

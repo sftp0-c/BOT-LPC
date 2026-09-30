@@ -83,10 +83,26 @@ async def test_pickup_place_of_the_ticket_wins():
     assert text == "Иванов|Иван|Иванович|203"
 
 
-async def test_patronymic_is_empty_when_absent():
+async def test_patronymic_is_named_when_absent():
+    """Отчества у студента нет - подставляем слово, а не пустоту.
+
+    Пустая строка даёт в письме дыру с лишним пробелом («Иванов Иван| |») и
+    видом сломанной подстановки, а docstring template_values() обещает слово.
+    """
     tid = await make_ticket(name="Иванов Иван")
     text = await tickets.render_template("{ФИО}|{отчество}|", await repo.get_ticket(tid))
-    assert text == "Иванов Иван||"       # отчество пустое, а не «None»
+    assert text == "Иванов Иван|не указано|"      # не пустое и уж точно не «None»
+    assert "  " not in text
+
+
+async def test_ticket_number_is_named_when_absent():
+    """У обращения нет номера - в письме слово, а не «Обращение № принято»."""
+    tid = await make_ticket()
+    ticket = dict(await repo.get_ticket(tid))
+    ticket.pop("ticket_id", None)          # обращение ещё не сохранено
+    text = await tickets.render_template("Обращение №{номер} принято, я отвечаю.", ticket)
+    assert text == "Обращение №не указано принято, я отвечаю."
+    assert "№ " not in text                # номера не осталось - дыры тоже нет
 
 
 async def test_missing_data_gives_words_not_holes():

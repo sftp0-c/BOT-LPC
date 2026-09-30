@@ -1,4 +1,4 @@
-"""Журнал, самопроверка и JSON-API для скриптов."""
+﻿"""Журнал, самопроверка и JSON-API для скриптов."""
 import time
 
 import config
@@ -36,8 +36,10 @@ async def logs_page(request: Request, lines: int = LOG_LINES, level: str = ""):
 {csrf(request)}
 <div><label>Отправить тестовое сообщение сис-админу (MAX ID)</label><input name="to" value="{esc(user)}"></div>
 <div><button>{icon("send", 16)} Отправить</button></div>
-<div><button name="action" value="api" class="btn-grey">{icon("check", 16)} Проверить API MAX</button></div>
-<div><button name="action" value="ping" class="btn-grey">{icon("logs", 16)} Записать строку в журнал</button></div>
+</form>
+<form method="post" action="/panel/logs/test" class="wb-tools">{csrf(request)}
+<button name="action" value="api" class="btn-grey">{icon("check", 16)} Проверить API MAX</button>
+<button name="action" value="ping" class="btn-grey">{icon("logs", 16)} Записать строку в журнал</button>
 </form>
 <table style="margin-top:12px">
 <tr><th>Обработано событий</th><td>{esc(dedupe['processed'])}</td></tr>

@@ -209,6 +209,11 @@ TOKENS: dict[str, str] = {
     "base.header-h": "58px",                # высота шапки
     "base.content-max": "1320px",           # предел ширины содержимого
     "base.tap-min": "44px",                 # минимальная цель нажатия на телефоне
+    "base.field-min": "38px",               # высота поля и кнопки: одна у всех
+    "base.field-line": "1.45",              # межстрочный интервал внутри поля
+    "base.nav-indent": "17px",              # отступ подпункта меню
+    "base.table-min": "460px",              # минимальная ширина таблицы переписки
+    "base.table-min-wide": "600px",         # ... и таблицы с произвольными колонками
 }
 
 # Токены, которые не зависят от темы
@@ -419,6 +424,7 @@ ICON_STROKE = "1.75"           # толщина обводки у всех ик�
 # Путь раздела панели -> имя иконки. Заменяет прежний NAV_ICONS с эмодзи.
 ICON_NAMES_BY_PATH: dict[str, str] = {
     "/": "home",
+    "/activity": "activity",
     "/tickets": "tickets",
     "/analytics": "analytics",
     "/people": "people",
@@ -433,7 +439,9 @@ ICON_NAMES_BY_PATH: dict[str, str] = {
     "/schedules": "schedules",
     "/broadcasts": "broadcasts",
     "/database": "database",
+    "/data": "archive",
     "/settings": "settings",
+    "/test": "check",
     "/logs": "logs",
 }
 
@@ -508,12 +516,13 @@ header{position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:var(
 .gsearch input:hover{border-color:var(--line-strong)}
 .gsearch input:focus{outline:0;background:var(--surface);color:var(--ink);
        border-color:var(--acc);box-shadow:var(--shadow-focus)}
-.gsearch button{display:grid;place-items:center;width:34px;height:34px;flex:0 0 34px;padding:0;
-       border:1px solid var(--head-line);border-radius:50%;background:var(--head-field);
-       color:var(--head-ink);cursor:pointer;
-       transition:background-color var(--motion-fast) var(--ease-standard),
-                  border-color var(--motion-fast) var(--ease-standard),
-                  transform var(--motion-fast) var(--ease-standard)}
+.gsearch button{display:grid;place-items:center;width:34px;height:34px;min-height:0;
+      flex:0 0 34px;padding:0;
+      border:1px solid var(--head-line);border-radius:50%;background:var(--head-field);
+      color:var(--head-ink);cursor:pointer;
+      transition:background-color var(--motion-fast) var(--ease-standard),
+                 border-color var(--motion-fast) var(--ease-standard),
+                 transform var(--motion-fast) var(--ease-standard)}
 .gsearch button:hover{background:var(--line-strong);border-color:var(--line-strong)}
 .gsearch button:active{transform:scale(.94)}
 .gsearch input.is-filled{border-color:var(--acc);box-shadow:var(--shadow-focus)}
@@ -525,11 +534,12 @@ header{position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:var(
      transition:background-color var(--motion-fast) var(--ease-standard),
                 border-color var(--motion-fast) var(--ease-standard)}
 .who a:hover{text-decoration:none;background:var(--head-field);border-color:var(--line-strong)}
-.theme-toggle{display:grid;place-items:center;width:34px;height:34px;flex:0 0 34px;padding:0;
-     border:1px solid var(--head-line);border-radius:50%;background:var(--head-field);
-     color:var(--head-ink);cursor:pointer;
-     transition:background-color var(--motion-fast) var(--ease-standard),
-                transform var(--motion-fast) var(--ease-standard)}
+.theme-toggle{display:grid;place-items:center;width:34px;height:34px;min-height:0;
+      flex:0 0 34px;padding:0;
+      border:1px solid var(--head-line);border-radius:50%;background:var(--head-field);
+      color:var(--head-ink);cursor:pointer;
+      transition:background-color var(--motion-fast) var(--ease-standard),
+                 transform var(--motion-fast) var(--ease-standard)}
 .theme-toggle:hover{background:var(--line-strong)}
 .theme-toggle:active{transform:scale(.94)}
 
@@ -571,6 +581,24 @@ nav a.on .nav-ico{color:var(--acc)}
                 border-color var(--motion-fast) var(--ease-standard),
                 color var(--motion-fast) var(--ease-standard)}
 .nav-badge.hot{background:var(--bad-soft);border-color:var(--bad-line);color:var(--bad-ink)}
+/* ── подпункты меню: подкатегории внутри группы ─────────────────────────────
+   Внутри «Люди» шесть разделов, внутри «Справочники» четыре, и половина из
+   них открывают раз в месяц: плоский список выглядит списком равных, хотя
+   половина пунктов - «прочие». Подпункт - это подпись и свои ссылки внутри
+   той же группы, поэтому разметка остаётся <a> внутри <nav>, и все прежние
+   проверки меню живы: подпись подпункта намеренно .nav-sub-label, а не
+   .nav-group-label (число подписей групп в меню сверяется проверками).
+   Пометку «on» на подпункте ставит разметка, а не CSS. */
+.nav-sub{display:flex;flex-direction:column;gap:2px;min-width:0;
+     margin:var(--space-xs) 0 var(--space-sm);padding-left:var(--nav-indent);
+     border-left:1px solid var(--line)}
+.nav-sub-label{display:block;padding:3px 10px 2px;color:var(--mut);
+     font-size:var(--text-xs);font-weight:var(--weight-semi);letter-spacing:.4px;
+     text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nav-sub-items{display:flex;flex-direction:column;gap:2px;min-width:0}
+.nav-sub a{padding:7px 10px;font-size:var(--text-sm)}
+.nav-sub .nav-ico{width:20px;height:20px;flex:0 0 20px}
+.nav-sub .nav-ico .ico{width:16px;height:16px}
 
 /* ── основная область ────────────────────────────────────────────────────── */
 main{margin-left:var(--sidebar);padding:var(--space-xl) 26px var(--space-xxl);
@@ -611,9 +639,14 @@ main > .card:nth-child(7){animation-delay:240ms}
 main > .card:nth-child(n+8){animation-delay:280ms}
 
 /* ── таблицы ─────────────────────────────────────────────────────────────── */
-table{width:100%;border-collapse:separate;border-spacing:0;font-size:var(--text-base)}
+table{width:100%;border-collapse:separate;border-spacing:0;font-size:var(--text-base);
+     table-layout:auto}
+/* min-width:0 у ячейки - обязателен: иначе длинное слово без пробелов (код
+   группы, ссылка, ФИО латиницей) распирает колонку и выталкивает соседние за
+   пределы карточки. Разрывать такой текст умеет overflow-wrap ниже. */
 th,td{text-align:left;padding:10px var(--space-sm);border-bottom:1px solid var(--line-soft);
-      vertical-align:top;transition:background-color var(--motion-fast) var(--ease-standard)}
+      vertical-align:top;min-width:0;overflow-wrap:break-word;
+      transition:background-color var(--motion-fast) var(--ease-standard)}
 th{position:sticky;top:0;z-index:1;background:var(--surface-head);color:var(--mut);
     font-size:var(--text-xs);font-weight:var(--weight-semi);letter-spacing:.4px;
     text-transform:uppercase;white-space:nowrap;border-bottom:1px solid var(--line)}
@@ -623,36 +656,92 @@ tbody tr:hover{background:var(--surface-raised)}
 tbody tr:last-child td{border-bottom:0}
 td b{color:var(--ink);font-weight:var(--weight-semi)}
 th.col-key{width:260px}
+/* Колонка действий. Тема задаёт ячейкам td{overflow-wrap:anywhere}, при
+котором минимальная ширина текста равна одному символу: колонка
+схлопывалась до буквы, и подпись кнопки шла по буквам вниз. Запрет
+переноса даёт ячейке минимум по всей подписи, width:1% отдаёт
+остальное колонке с текстом - тот же приём, что у .data-table. */
+.col-act{white-space:nowrap}
+th.col-act,td.col-act{width:1%}
+/* Ряд подсказок должностей и ряд действий сотрудника - разные ряды,
+иначе кнопки одного ряда наезжали на кнопки другого. */
+.staff-hints{margin-top:var(--space-sm)}
+.staff-actions{margin-top:var(--space-sm)}
+/* Форма правки в строке: без минимума ширины таблица отдавала колонке
+190px и поля в ней выглядели сжатыми. */
+.staff-table th:last-child,.staff-table td:last-child{min-width:210px}
+
 tbody tr.is-found{background:var(--glow);box-shadow:inset 3px 0 0 var(--acc)}
+/* Узкая колонка не должна ложиться в «букву в столбик»: у таблиц, где
+   содержимое заранее неизвестно, есть минимальная ширина, а лишнее уходит в
+   горизонтальную прокрутку карточки - она для того и прокручивается. */
+.data-table{min-width:var(--table-min-wide)}
+.wb-card table{min-width:var(--table-min)}
 
 /* ── формы ───────────────────────────────────────────────────────────────── */
-input,select,textarea{width:100%;padding:9px 11px;border:1px solid var(--line-strong);
-     border-radius:var(--radius-sm);background:var(--surface-sunken);color:var(--ink);font:inherit;
-     transition:border-color var(--motion-fast) var(--ease-standard),
-                box-shadow var(--motion-fast) var(--ease-standard),
-                background-color var(--motion-fast) var(--ease-standard)}
+/* Поле не ложится на подпись и не наезжает на соседнее по трём причинам:
+   подпись - отдельный блок, само поле - блочная коробка с min-width:0 (без
+   него длинный <select> распирает ячейку .grid, и ряд выходит за карточку),
+   а вертикальный ритм задаёт зазор .grid, а не отступы внутри ячеек. */
+input,select,textarea{width:100%;max-width:100%;min-width:0;display:block;
+      min-height:var(--field-min);padding:9px 11px;border:1px solid var(--line-strong);
+      border-radius:var(--radius-sm);background:var(--surface-sunken);color:var(--ink);
+      font:inherit;line-height:var(--field-line);
+      transition:border-color var(--motion-fast) var(--ease-standard),
+                 box-shadow var(--motion-fast) var(--ease-standard),
+                 background-color var(--motion-fast) var(--ease-standard)}
 input::placeholder,textarea::placeholder{color:var(--mut)}
 input:hover,select:hover,textarea:hover{border-color:var(--acc-line)}
 input:focus,select:focus,textarea:focus{outline:0;background:var(--surface);
-     border-color:var(--acc);box-shadow:var(--shadow-focus)}
-input[type=checkbox],input[type=radio]{width:auto;accent-color:var(--acc)}
+      border-color:var(--acc);box-shadow:var(--shadow-focus)}
+/* Флажок - не поле ввода: своя ширина и своя высота, иначе он растянулся бы
+   на всю ячейку .grid и съел её. */
+input[type=checkbox],input[type=radio]{display:inline-block;width:auto;min-width:0;
+      min-height:0;margin:0;accent-color:var(--acc)}
+/* Высота у всех полей одна (--field-min): у select своя метка, у textarea
+   своя высота, и без общего минимума подписи в одной строке расходились. */
+select{padding-right:var(--space-xl)}
 textarea{min-height:110px;resize:vertical}
 label{display:block;margin:var(--space-md) 0 var(--space-xs);color:var(--mut);
-      font-size:var(--text-sm);font-weight:var(--weight-semi);letter-spacing:.2px}
+      font-size:var(--text-sm);font-weight:var(--weight-semi);letter-spacing:.2px;
+      overflow-wrap:anywhere}
 .grid{display:flex;flex-wrap:wrap;align-items:flex-end;gap:var(--space-md)}
-.grid>*{flex:1 1 180px}
+.grid>*{flex:1 1 180px;min-width:0}
 .grid .full{flex:1 1 100%}
+/* Подпись внутри ячейки формы: верхний отступ не нужен, его даёт зазор .grid. */
+.grid>div>label{margin-top:0}
+/* Кнопка в .grid - по размеру своего текста, а не во всю строку. Раньше
+   .grid>* тянул и одиночную «Сохранить», и каждую кнопку ряда: действия
+   выглядели разбросанными по странице (это и есть «неправильно расположенные
+   кнопки»). Ячейка с полем по-прежнему растягивается - за это отвечает
+   условие «в ячейке больше нет полей ввода». */
+.grid>button,.grid>.btn,.grid>form.inline,
+.grid>div:has(> button):not(:has(input,select,textarea)),
+.grid>div:has(> .btn):not(:has(input,select,textarea)),
+.grid>div:has(> form.inline):not(:has(input,select,textarea)){flex:0 0 auto}
 form.inline{display:inline}
 
 /* ── кнопки ──────────────────────────────────────────────────────────────── */
-button,.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:9px 15px;
-     border:1px solid transparent;border-radius:var(--radius-sm);background:var(--acc);
-     color:var(--acc-ink);font:inherit;font-weight:var(--weight-medium);cursor:pointer;
-     text-decoration:none;
-     transition:background-color var(--motion-fast) var(--ease-standard),
-                border-color var(--motion-fast) var(--ease-standard),
-                box-shadow var(--motion-fast) var(--ease-standard),
-                transform var(--motion-fast) var(--ease-standard)}
+/* Высота кнопки - та же, что у поля рядом с ней (--field-min): иначе в одной
+   строке формы кнопка либо подпрыгивала, либо липла к рамке. margin:0 - без
+   него кнопка в контейнере вставала на пиксель вбок от своих соседей. У
+   квадратных кнопок (поиск, тема, копирование) min-height сбрасывается ниже:
+   им нужна своя сторона, а не общая высота поля. */
+button,.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;
+      min-height:var(--field-min);margin:0;max-width:100%;padding:9px 15px;
+      border:1px solid transparent;border-radius:var(--radius-sm);background:var(--acc);
+      color:var(--acc-ink);font:inherit;font-weight:var(--weight-medium);cursor:pointer;
+      text-decoration:none;
+      transition:background-color var(--motion-fast) var(--ease-standard),
+                 border-color var(--motion-fast) var(--ease-standard),
+                 box-shadow var(--motion-fast) var(--ease-standard),
+                 transform var(--motion-fast) var(--ease-standard)}
+/* Подпись кнопки не переносится. Раньше такого правила не было вовсе, и кнопка
+схлопывалась в несколько строк: «Вкл/выкл» - 183px высотой в восемь строк,
+«Удалить» - 66px в три строки. В .grid ячейка становится шире подписи, а
+flex-wrap переносит её на следующую строку - наложения на соседей не будет. */
+button,.btn{white-space:nowrap}
+
 button:hover,.btn:hover{transform:translateY(-1px);box-shadow:var(--shadow-md);text-decoration:none}
 button:active,.btn:active{transform:translateY(0);box-shadow:var(--shadow-sm)}
 .btn-grey{background:var(--surface-raised);border-color:var(--line);color:var(--ink-soft)}
@@ -660,6 +749,33 @@ button:active,.btn:active{transform:translateY(0);box-shadow:var(--shadow-sm)}
 .btn-ok{background:var(--ok);color:var(--ok-ink)}
 .btn-bad{background:var(--bad);color:var(--bad-ink)}
 .btn-sm{padding:5px 10px;border-radius:var(--radius-xs);font-size:var(--text-sm)}
+
+/* ── ряд кнопок ────────────────────────────────────────────────────────────
+   Жалоба «кнопки слипшиеся» повторялась несколько раз, потому что панель
+   печатает кнопки прямо в контейнер: в шапке страницы (.page-actions), в
+   карточке обращения (.wb-tools), в форме (.grid) - и прямо в ячейке
+   таблицы, а последнее ни одним правилом не ловилось: «Правка» и «Удалить»
+   в списке шаблонов стояли бортами и читались как одна кнопка. Поэтому зазор
+   задан тремя независимыми способами, чтобы новая разметка снова не осталась
+   без него:
+
+   1. именованный класс - .btn-row, .page-actions, .wb-tools, .actions,
+      .toolbar: достаточно одной строки, чтобы ряд разъехался;
+   2. счётчик соседей (:has) - контейнер, у которого две и более кнопки
+      подряд, становится рядом с зазором сам, даже если класс не проставлен.
+      Список тегов задан явно: с уголком правило задевало бы .card и ломало
+      бы раскладку. Специфичность нулевая (:where), поэтому именованный класс
+      переопределяет его молча - и наоборот, правило ничего не ломает тихо;
+   3. .grid и .pager - зазор у них был всегда, ячейка с кнопкой теперь не
+      растягивается на всю строку (см. правило .grid выше). */
+.btn-row,.page-actions,.wb-tools,.actions,.toolbar{
+      display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-sm);margin:0}
+.btn-row>button,.btn-row>.btn,.page-actions>button,.page-actions>.btn,
+.wb-tools>button,.wb-tools>.btn,.actions>button,.actions>.btn,
+.toolbar>button,.toolbar>.btn{margin:0}
+:where(td,th,p,li,summary,label,fieldset,caption)
+  :has(> :is(button,.btn,form.inline) + :is(button,.btn,form.inline)){
+      display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-sm)}
 
 /* ── сообщения и метки ───────────────────────────────────────────────────── */
 .msg{display:flex;align-items:flex-start;gap:var(--space-sm);padding:12px 14px;margin-bottom:var(--space-lg);
@@ -764,12 +880,13 @@ button:active,.btn:active{transform:translateY(0);box-shadow:var(--shadow-sm)}
      padding-top:var(--space-md);border-top:1px solid var(--line)}
 
 /* ── копирование значения по клику ────────────────────────────────────────── */
-.copy-btn{display:inline-grid;place-items:center;width:26px;height:26px;padding:0;vertical-align:middle;
-     border:1px solid var(--line);border-radius:var(--radius-xs);background:var(--surface-raised);
-     color:var(--mut);cursor:pointer;
-     transition:background-color var(--motion-fast) var(--ease-standard),
-                border-color var(--motion-fast) var(--ease-standard),
-                color var(--motion-fast) var(--ease-standard)}
+.copy-btn{display:inline-grid;place-items:center;width:26px;height:26px;min-height:0;
+      padding:0;vertical-align:middle;
+      border:1px solid var(--line);border-radius:var(--radius-xs);background:var(--surface-raised);
+      color:var(--mut);cursor:pointer;
+      transition:background-color var(--motion-fast) var(--ease-standard),
+                 border-color var(--motion-fast) var(--ease-standard),
+                 color var(--motion-fast) var(--ease-standard)}
 .copy-btn:hover{background:var(--acc-soft);border-color:var(--acc-line);color:var(--acc)}
 .copy-btn .ico{width:14px;height:14px}
 .copy-btn.is-done{background:var(--ok-soft);border-color:var(--ok-line);color:var(--ok-ink)}
@@ -803,6 +920,12 @@ button:active,.btn:active{transform:translateY(0);box-shadow:var(--shadow-sm)}
 .palette-list a.on .ico{color:var(--acc)}
 .palette-list .pal-group{padding:8px 11px 3px;color:var(--mut);font-size:var(--text-xs);
      letter-spacing:.7px;text-transform:uppercase}
+/* Подпункт показан с отступом, а справа - название группы: иначе строка
+   выглядит ещё одним разделом и не видно, что он часть подкатегории. */
+.palette-list a.pal-sub{padding-left:var(--space-xxl);color:var(--mut)}
+.palette-list a.pal-sub .ico{width:14px;height:14px}
+.palette-list a.pal-sub::after{content:attr(data-group);margin-left:auto;
+      font-size:var(--text-xs);color:var(--mut);opacity:.8}
 .palette-foot{padding:var(--space-sm) var(--space-lg);border-top:1px solid var(--line);
      color:var(--mut);font-size:var(--text-xs)}
 
@@ -884,8 +1007,8 @@ tr.hk-on td:first-child{box-shadow:inset 3px 0 0 var(--acc)}
 .wb-bulk summary{cursor:pointer;color:var(--mut)}
 .wb-card table{table-layout:fixed}
 .wb-card table td,.wb-card table th{vertical-align:top;word-break:break-word}
-.wb-card table td:nth-child(1){width:130px}
-.wb-card table td:nth-child(2){width:180px}
+.wb-card table td:nth-child(1){width:130px;min-width:130px}
+.wb-card table td:nth-child(2){width:180px;min-width:180px}
 .wb-card table td small{color:var(--mut)}
 .wb-access{display:inline-block;margin:0 var(--space-sm) var(--space-xs) 0;
      vertical-align:top}
@@ -996,6 +1119,12 @@ pre{max-height:560px;margin:0;padding:var(--space-lg);overflow:auto;border:1px s
   .nav-group-items{flex-direction:row;gap:4px}
   .nav-group-name{display:none}
   .nav-group-label{padding:0 2px}
+  /* подпункты в горизонтальной ленте слились бы с основными, поэтому подпись
+     убирается, а сами ссылки встают в ряд - как все остальные */
+  .nav-sub{flex-direction:row;align-items:center;gap:4px;margin:0;padding-left:0;
+      border-left:0}
+  .nav-sub-label{display:none}
+  .nav-sub-items{flex-direction:row;gap:4px}
   .workbench{grid-template-columns:1fr}
   .wb-queue{position:static}
   .wb-list{max-height:40vh}
@@ -1045,7 +1174,7 @@ pre{max-height:560px;margin:0;padding:var(--space-lg);overflow:auto;border:1px s
   .grid .full{flex:1 1 100%}
   button,.btn{padding:11px 14px;min-height:44px}
   .btn-sm{padding:8px 11px}
-  input,select,textarea{padding:11px 12px;font-size:16px}
+  input,select,textarea{padding:11px 12px;font-size:16px;min-height:var(--tap-min)}
   textarea{min-height:96px}
   label{margin-top:12px}
   .stat,.kpi div{flex:1 1 calc(50% - 6px);padding:12px 13px}
@@ -1053,8 +1182,12 @@ pre{max-height:560px;margin:0;padding:var(--space-lg);overflow:auto;border:1px s
   .kpi b{font-size:var(--text-lg)}
   .wb-list{max-height:none}
   .wb-item{padding:11px 9px}
+  .wb-tools{gap:var(--space-xs)}
   .wb-head{white-space:normal;flex-wrap:wrap}
-  .wb-card table td:nth-child(1),.wb-card table td:nth-child(2){width:auto}
+  /* на телефоне минимальная ширина только мешала бы: карточка переписки и без
+     того в одну колонку, и лишняя прокрутка вбок тут ни к чему */
+  .wb-card table{min-width:0}
+  .wb-card table td:nth-child(1),.wb-card table td:nth-child(2){width:auto;min-width:0}
   .donut{width:130px;height:130px;flex:0 0 130px}
   pre{font-size:11.5px;padding:12px;max-height:none}
   footer{padding:14px 12px 30px;text-align:center}
@@ -1076,9 +1209,13 @@ pre{max-height:560px;margin:0;padding:var(--space-lg);overflow:auto;border:1px s
 
 @media print{
   header,nav,footer,.gsearch,.theme-toggle,.toast-stack,.palette,.copy-btn,
-  .dochead .page-actions,.wb-queue,.wb-edit,.wb-reply,.wb-access,.wb-bulk,.wb-tools,
+  .dochead .page-actions,.page-actions,.btn-row,.toolbar,.actions,
+  .wb-queue,.wb-edit,.wb-reply,.wb-access,.wb-bulk,.wb-tools,
   .no-print{display:none!important}
   main{margin:0;padding:0;max-width:none}
+  /* липкая шапка таблицы на бумаге бесполезна и пристаёт к следующей странице */
+  th{position:static}
+  table{font-size:var(--text-sm)}
   .workbench{grid-template-columns:1fr}
   .wb-list{max-height:none;overflow:visible}
   /* На бумаге многоточие не видно - текст обрезался бы молча. Поэтому у
@@ -1322,7 +1459,18 @@ _HOTKEYS_SCRIPT = """
   }
 
   /* ── палитра разделов (Ctrl+K) ─────────────────────────────────────────── */
-  var box = null, list = null, field_ = null, chosen = 0, shown = [];
+  var box = null, list = null, field_ = null, chosen = 0, shown = [], ALL = [];
+  /* Подпункты подкатегории разворачиваются в тот же список: палитра остаётся
+     плоским переходом «что куда», но строка подпункта видна как часть группы -
+     отступом и подписью справа. Разворачиваем один раз, при первой сборке. */
+  function collect(list, group, out) {
+    for (var i = 0; i < list.length; i++) {
+      out.push([group, String(list[i][0]), String(list[i][1]),
+                String(list[i][2] || ""), 0]);
+      if (list[i][3] && list[i][3].length) { collect(list[i][3], group, out); }
+    }
+    return out;
+  }
   function build() {
     if (box) { return; }
     box = document.createElement("div");
@@ -1331,6 +1479,11 @@ _HOTKEYS_SCRIPT = """
         'autocomplete="off" aria-label="Поиск по разделам панели"><ul class="palette-list"></ul>' +
         '<div class="palette-foot">↑ и ↓ — выбор, Enter — открыть, Esc — закрыть</div></div>';
     document.body.appendChild(box);
+    for (var g = 0; g < SECTIONS.length; g++) {
+      if (SECTIONS[g] && SECTIONS[g].length) {
+        collect(SECTIONS[g][1], String(SECTIONS[g][0]), ALL);
+      }
+    }
     field_ = box.querySelector("input");
     list = box.querySelector("ul");
     box.addEventListener("click", function (event) {
@@ -1339,8 +1492,8 @@ _HOTKEYS_SCRIPT = """
     field_.addEventListener("input", function () { paint(field_.value); });
     field_.addEventListener("keydown", function (event) {
       if (event.key === "Escape") { close(); return; }
-      if (event.key === "ArrowDown") { move(1); event.preventDefault(); return; }
-      if (event.key === "ArrowUp") { move(-1); event.preventDefault(); return; }
+      if (event.key === "ArrowDown") { choose(1); event.preventDefault(); return; }
+      if (event.key === "ArrowUp") { choose(-1); event.preventDefault(); return; }
       if (event.key === "Enter") {
         event.preventDefault();
         if (shown[chosen]) { window.location.href = shown[chosen].getAttribute("href"); }
@@ -1351,27 +1504,29 @@ _HOTKEYS_SCRIPT = """
     var want = (needle || "").trim().toLowerCase();
     list.innerHTML = "";
     shown = [];
-    for (var g = 0; g < SECTIONS.length; g++) {
-      var group = SECTIONS[g];
-      var head = null;
-      for (var i = 0; i < group[1].length; i++) {
-        var item = group[1][i];
-        if (want && item[0].toLowerCase().indexOf(want) < 0) { continue; }
-        if (!head) {
-          head = document.createElement("li");
-          head.className = "pal-group";
-          head.textContent = group[0];
-          list.appendChild(head);
-        }
-        var row = document.createElement("li");
-        var link = document.createElement("a");
-        link.href = item[1];
-        link.innerHTML = item[2] + "<span></span>";
-        link.lastChild.textContent = item[0];
-        row.appendChild(link);
-        list.appendChild(row);
-        shown.push(link);
+    var group = "";
+    for (var i = 0; i < ALL.length; i++) {
+      var row = ALL[i];
+      if (want && row[1].toLowerCase().indexOf(want) < 0) { continue; }
+      if (row[0] !== group) {
+        group = row[0];
+        var head = document.createElement("li");
+        head.className = "pal-group";
+        head.textContent = group;
+        list.appendChild(head);
       }
+      var link = document.createElement("a");
+      link.href = row[2];
+      link.innerHTML = row[3] + "<span></span>";
+      link.lastChild.textContent = row[1];
+      if (row[4]) {
+        link.className = "pal-sub";
+        link.setAttribute("data-group", row[0]);
+      }
+      var item = document.createElement("li");
+      item.appendChild(link);
+      list.appendChild(item);
+      shown.push(link);
     }
     if (!shown.length) {
       var empty = document.createElement("li");
@@ -1385,7 +1540,10 @@ _HOTKEYS_SCRIPT = """
   function paintChoice() {
     for (var i = 0; i < shown.length; i++) { shown[i].classList.toggle("on", i === chosen); }
   }
-  function move(step) {
+  /* choose, а не move: второе имя уже занято переходом по очереди, и в JS
+     повторное объявление функции перебивает первое - клавиши j и k уводили
+     бы в палитру вместо очереди. */
+  function choose(step) {
     if (!shown.length) { return; }
     chosen = Math.min(shown.length - 1, Math.max(0, chosen + step));
     paintChoice();
@@ -1429,16 +1587,31 @@ HOTKEY_HINT: tuple[tuple[str, str], ...] = (
 )
 
 
+def _palette_item(item: Sequence[Sequence[str]]) -> list:
+    """Пункт палитры: название, путь, иконка и - необязательно - подпункты.
+
+    Четвёртый элемент нужен подкатегориям меню: развернуть их должен сам
+    скрипт, иначе подпункты пришлось бы дописывать в палитру руками. Раздел
+    без подпунктов остаётся тройкой, поэтому прежние вызовы не меняются.
+    """
+    row = [str(item[0]), str(item[1]), str(item[2]) if len(item) > 2 else ""]
+    subs = [_palette_item(sub) for sub in (item[3] if len(item) > 3 else ()) or ()]
+    if subs:
+        row.append(subs)
+    return row
+
+
 def hotkeys_script(groups: Iterable[Sequence[Sequence[str]]] = ()) -> str:
     """JS для конца ``<body>``: горячие клавиши и палитра разделов по ``Ctrl+K``.
 
     ``groups`` - разделы панели как ``[(группа, [(название, путь, иконка), ...]), ...]``;
     из них собирается палитра, поэтому список разделов не дублируется в скрипте.
+    Пункт может нести подпункты подкатегории четвёртым элементом - они попадают
+    в палитру как вложенные строки с отступом.
     Клавиши игнорируются, когда фокус в поле ввода, а при выключенной анимации
     (``prefers-reduced-motion``) прокрутка к выбранной строке идёт без сглаживания.
     """
-    sections = [[str(group[0]), [[str(item[0]), str(item[1]), str(item[2])]
-                                for item in group[1]]]
+    sections = [[str(group[0]), [_palette_item(item) for item in group[1]]]
                 for group in groups if group and group[1]]
     payload = json.dumps(sections, ensure_ascii=False).replace("<", "\\u003c")
     hint = json.dumps([list(item) for item in HOTKEY_HINT], ensure_ascii=False)
@@ -1480,6 +1653,59 @@ _ACTIONS_SCRIPT = """
     }, function () {
       panelToast("Браузер не дал скопировать - выделите значение вручную", "bad");
     });
+  });
+
+  /* ── шаблон ответа подставляется прямо в поле ─────────────────────────────
+     Подстановку делает и сервер - она уходит студенту с подстановками <ФИО> и
+     номера обращения, и это главный путь. Но сотрудник правит текст здесь, на
+     странице, и ждать перезагрузки, чтобы увидеть выбранный шаблон, неудобно:
+     список выбора сам себе ничего не делал. Поэтому текст шаблона (он лежит в
+     data-text пункта списка) кладём в поле рядом и сразу ставим туда курсор.
+
+     Написанное руками не затираем молча - спрашиваем. Поле помечается, что оно
+     заполнено из шаблона, и тогда выбор другого шаблона не спрашивает заново;
+     первая же правка руками пометку снимает, и вопрос возвращается. Пометка
+     живёт в data-атрибутах, а не в классе: печать и тёмная тема её не видят,
+     и в разметку ничего не добавляется. */
+  var TEMPLATE_FIELD = "template";
+  function replyField(select) {
+    var owner = select.form || (select.closest ? select.closest("form") : null);
+    return owner ? owner.querySelector('textarea[name="text"]') : null;
+  }
+  function applyTemplate(select) {
+    var option = select.options[select.selectedIndex];
+    var text = option ? (option.getAttribute("data-text") || "") : "";
+    if (!text) { return; }
+    var field = replyField(select);
+    if (!field) { return; }
+    var own = (field.value || "").trim();
+    if (own && field.getAttribute("data-from-template") !== "1" &&
+        !window.confirm("Заменить набранный ответ текстом шаблона «" +
+                        option.textContent.trim() + "»?")) {
+      return;
+    }
+    field.value = text;
+    field.setAttribute("data-from-template", "1");
+    field.setAttribute("data-template-text", text);
+    field.focus();
+    try { field.setSelectionRange(text.length, text.length); } catch (err) {}
+  }
+  /* Слушатель на документе, а не на сам список: форму ответа может
+     перерисовать другой раздел, и тогда подписка на элемент молча отвалилась
+     бы вместе с ним. */
+  document.addEventListener("change", function (event) {
+    var node = event.target;
+    if (node && node.tagName === "SELECT" && node.getAttribute("name") === TEMPLATE_FIELD) {
+      applyTemplate(node);
+    }
+  });
+  document.addEventListener("input", function (event) {
+    var node = event.target;
+    if (node && node.tagName === "TEXTAREA" && node.getAttribute("data-from-template") &&
+        node.value !== node.getAttribute("data-template-text")) {
+      node.removeAttribute("data-from-template");
+      node.removeAttribute("data-template-text");
+    }
   });
 
   /* ── сохранённые фильтры рабочего места ───────────────────────────────── */
@@ -1527,12 +1753,16 @@ _ACTIONS_SCRIPT = """
 
 
 def actions_script() -> str:
-    """JS для конца ``<body>``: копирование по клику и сохранённые фильтры.
+    """JS для конца ``<body>``: копирование по клику, шаблон ответа и фильтры.
 
-    Копирование живёт на кнопках ``[data-copy]`` (MAX ID, код группы, код
-    приглашения, ссылка на обращение) и подтверждается тостом. Фильтры рабочего
-    места лежат в ``localStorage`` под ключом ``panel-filters`` и возвращаются при
-    следующем открытии страницы, если в адресе фильтра не было.
+    Копирование живёт на кнопках ``[data-copy]`` (MAX ID, код группы, кода
+    приглашения, ссылка на обращение) и подтверждается тостом. Выбор шаблона в
+    форме ответа кладёт его текст в ``textarea[name="text"]`` рядом и ставит
+    туда курсор; написанный руками текст спрашивает ``confirm()``, а поле,
+    заполненное шаблоном, помечается ``data-from-template``, и следующий шаблон
+    уже не переспрашивает. Фильтры рабочего места лежат в ``localStorage`` под
+    ключом ``panel-filters`` и возвращаются при следующем открытии страницы,
+    если в адресе фильтра не было.
     """
     return _ACTIONS_SCRIPT
 

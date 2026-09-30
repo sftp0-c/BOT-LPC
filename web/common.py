@@ -290,7 +290,11 @@ NAV_GROUPS: tuple[tuple[str, tuple[tuple[str, str, str], ...]], ...] = (
                ("/activity", "Лента событий", "activity"))),
     ("Обращения", (("/tickets", "Рабочее место", "tickets"),
                    ("/templates", "Шаблоны", "templates"),
-                   ("/analytics", "Аналитика", "analytics"))),
+                   # «Аналитика» убрана из меню по просьбе: пока не нужна.
+                   # Сам раздел живёт - /panel/analytics открывается, его
+                   # графики на месте. Вернуть: дописать пункт обратно
+                   # в этот список, остальное уже готово.
+                   )),
     ("Люди", (("/people", "Реестр", "people"),
               ("/students", "Студенты", "students"),
               ("/staff", "Сотрудники", "staff"),
@@ -306,6 +310,7 @@ NAV_GROUPS: tuple[tuple[str, tuple[tuple[str, str, str], ...]], ...] = (
     ("Система", (("/settings", "Настройки", "settings"),
                   ("/database", "База данных", "database"),
                   ("/data", "Данные", "archive"),
+                  ("/test", "Тест", "check"),
                   ("/logs", "Журнал", "logs"))),
 )
 
@@ -463,7 +468,8 @@ def input(name: str, value="", kind: str = "text", full: bool = False) -> str:
 
 
 def select(name: str, options: dict, current: str, full: bool = False,
-           label: str = "", titles: dict | None = None) -> str:
+           label: str = "", titles: dict | None = None,
+           datas: dict | None = None) -> str:
     """Список выбора с подписью: по умолчанию - имя поля, у важных фильтров
     подпись задаётся явно («Статус», «Раздел», «Тип события»).
 
@@ -471,12 +477,20 @@ def select(name: str, options: dict, current: str, full: bool = False,
     Выпадающий список режет всё, что не помещается, сам и без предупреждения,
     поэтому важное - ФИО целиком - должно быть в самом пункте, а
     второстепенное - в ``title``, где оно остаётся читаемым.
+
+    ``datas`` - дополнительные атрибуты пункта: ``{код: {"data-text": "..."}}``.
+    Нужен там, где значение не помещается в подпись и должно достаться на
+    стороне браузера - например текст шаблона ответа, который выбирают из
+    списка, а подставить его должна форма.
     """
     hints = titles or {}
+    extras = datas or {}
 
     def option(code, text) -> str:
         hint = as_str(hints.get(code))
         extra = f' title="{esc(hint)}"' if hint else ""
+        for attr, value in (extras.get(code) or {}).items():
+            extra += f' {esc(attr)}="{esc(value)}"'
         picked = " selected" if code == current else ""
         return f'<option value="{esc(code)}"{picked}{extra}>{esc(text)}</option>'
 
@@ -536,6 +550,26 @@ def window_tail(found: int, window: int, hint: str) -> str:
         return ""
     return (f'<p class="small mut">Список длиннее окна в {window} строк: показаны первые. '
             f'{esc(hint)}</p>')
+
+
+def safe_return(data, fallback: str = "/panel/tickets") -> str:
+    """Адрес возврата из формы: только свой раздел панели.
+
+    Значение приходит из запроса и уходит в redirect, поэтому берём его не
+    как есть. Разрешаем лишь путь внутри /panel: без схемы, без "//" (иначе
+    это "http://чужой-сайт" относительным адресом) и без переводов строк -
+    иначе в Location попадёт новая строка и ответ развалится на два.
+
+    Нужно не для красоты. Без проверки поле return уезжало в Location без
+    слеша, браузер разрешал адрес относительно текущего и получался
+    /panel/tickets/status=&category=&q=&scope= - 422 вместо списка.
+    """
+    raw = as_str(value(data, "return")).strip()
+    if not raw or not raw.startswith("/panel/") or raw.startswith("//"):
+        return fallback
+    if "\n" in raw or "\r" in raw or "://" in raw or raw.startswith("/panel/../"):
+        return fallback
+    return raw
 
 
 def value(form, *names: str, default: str = "") -> str:
