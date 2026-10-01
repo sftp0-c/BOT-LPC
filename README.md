@@ -606,11 +606,17 @@ FAQ-бот отвечает на частые вопросы сам: челов�
 подсказывает, что вписать, собирает образ, запускает контейнер и дожидается
 готовности.
 
+Репозиторий приватный, поэтому обычное `git clone` без прав не пройдёт — сначала
+войдите в GitHub:
+
 ```powershell
+gh auth login
 git clone https://github.com/sftp0-c/BOT-LPC.git
 cd BOT-LPC
 .\install.ps1
 ```
+
+Без `gh` подойдёт и обычный вход: `git clone https://<ваш-логин>@github.com/sftp0-c/BOT-LPC.git`.
 
 Во время первого запуска скрипт спросит **токен бота** и **ваш MAX ID** (их можно
 не вводить и дописать позже в `.env` — скрипт предупредит). Пароль панели он
@@ -636,7 +642,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 Нужен **Docker Desktop** (Windows/macOS) или Docker Engine + docker compose (Linux).
 
 ```bash
-git clone https://github.com/sftp0-c/BOT-LPC.git && cd BOT-LPC
+git clone https://<ваш-логин>@github.com/sftp0-c/BOT-LPC.git && cd BOT-LPC
 cp .env.example .env          # Windows PowerShell: copy .env.example .env
 ```
 

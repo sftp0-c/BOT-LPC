@@ -76,7 +76,7 @@ async def test_menu_button_cancels_draft_and_returns_home(env, api):
     assert await repo.recent_student_tickets(STUDENT) == []
     # клавиатура последнего сообщения - это меню бота, а не кнопки черновика
     payloads = api.payloads(STUDENT)
-    assert {"tickets", "sched", "profile", "student_more"} <= set(payloads)
+    assert {"ticket_menu", "sched", "profile", "help"} <= set(payloads)
     assert "ticketsend" not in payloads and "draftclr" not in payloads
 
 

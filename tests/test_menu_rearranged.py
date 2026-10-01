@@ -101,5 +101,5 @@ async def test_sysadmin_view_command_still_works(api):
 
     await repo.grant_sysadmin(SYS, "Иванов Иван Иванович")
     await bot.process(msg(SYS, "/view:student"))
-    assert "student_more" in api.payloads(SYS)
+    assert "ticket_menu" in api.payloads(SYS)
     assert await db.get_setting(f"menu_view:{SYS}") == "student"

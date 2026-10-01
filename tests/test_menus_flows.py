@@ -142,23 +142,32 @@ async def test_student_menu_contract(api):
 
     api.sent.clear()
     await press(USER, "home")
-    # главный экран похудел: обращение, расписание, профиль и «Ещё».
-    assert api.payloads(USER) == ["tickets", "sched", "profile", "student_more"]
+    # главный экран: обращения, расписание, профиль и справка бота.
+    assert api.payloads(USER) == ["ticket_menu", "sched", "profile", "help"]
 
-    # и второстепенные разделы не потеряны - они достижимы через «Ещё»
+    # и второстепенные разделы не потеряны - они внутри «Создать обращение»,
+    # до него два нажатия: «Обращения», потом «Создать обращение»
     api.sent.clear()
-    await press(USER, "student_more")
+    await press(USER, "ticket_menu")
+    await press(USER, "ticket_create")
     assert set(api.payloads(USER)) >= {"sub:cert", "sub:acc", "sub:fb", "faq"}, \
-        "разделы убрали с первого экрана и не вернули в «Ещё»"
+        "разделы убрали с первого экрана и не вернули в «Создать обращение»"
+
+    # в каждом разделе теперь есть «Назад» - он возвращает в «Создать
+    # обращение», откуда пришли, а не в главное меню. Владелец просил именно
+    # этого: возвращаться в начало из глубины неудобно.
+    НАЗАД = "back:ticket_create"
 
     await press(USER, "sub:cert")
     assert set(api.payloads(USER)) == {"ask:certificates:place", "ask:certificates:period",
-                                      "ask:certificates:vacancies", "new:certificates", "home"}
+                                      "ask:certificates:vacancies", "new:certificates",
+                                      "home", НАЗАД}, "в «Справке» нет «Назад»"
     assert "Выберите, что именно" in api.last(USER)[1]
 
     await press(USER, "sub:acc")
     assert set(api.payloads(USER)) == {"ask:accounting:scholarship", "ask:accounting:payout",
-                                      "ask:accounting:other", "new:accounting", "home"}
+                                      "ask:accounting:other", "new:accounting",
+                                      "home", НАЗАД}, "в «Бухгалтерии» нет «Назад»"
     assert "Выберите, что именно" in api.last(USER)[1]
 
     # обратная связь адресная: сначала должность, потом человек этой должности
@@ -166,6 +175,7 @@ async def test_student_menu_contract(api):
     payloads = set(api.payloads(USER))
     assert "fbrole:director" in payloads
     assert "new:feedback" in payloads and "home" in payloads
+    assert НАЗАД in payloads, "в «Обратной связи» нет «Назад»"
     assert "Директор" in " ".join(button["text"] for row in api.last(USER)[2] for button in row)
     assert "Сидоров" in api.last(USER)[1]
     await press(USER, "fbrole:director")
@@ -235,7 +245,7 @@ async def test_regok_saves_normalized_group_and_preserves_colon(flow):
 
     assert repo.saved == [(USER, "Иванов:Иван", "НОВАЯ-99")]
     # после сохранения - меню бота, а не старые разделы обращений
-    assert {"tickets", "sched", "profile", "student_more"} <= set(api.payloads(USER))
+    assert {"ticket_menu", "sched", "profile", "help"} <= set(api.payloads(USER))
 
 
 async def test_empty_registry_accepts_normalized_group(flow):
@@ -252,7 +262,7 @@ async def test_empty_registry_accepts_normalized_group(flow):
     await menus.cb_registration_confirm(USER, "")
     assert repo.saved == [(USER, "Иванов Иван", "НОВЫЙ-7")]
     # сохранили - показали меню бота
-    assert {"tickets", "sched", "profile", "student_more"} <= set(api.payloads(USER))
+    assert {"ticket_menu", "sched", "profile", "help"} <= set(api.payloads(USER))
 
 
 async def test_registration_offers_known_groups(flow):

@@ -37,8 +37,8 @@ def test_student_menu_is_short_and_starts_with_tickets():
     rows = menus.student_menu()
     assert len(rows) == 3, f"ожидалось 3 ряда, получилось {len(rows)}"
     payloads = [b["payload"] for row in rows for b in row]
-    assert payloads == ["tickets", "sched", "profile", "student_more"], payloads
-    assert payloads[0] == "tickets", "обращение должно быть первым на экране"
+    assert payloads == ["ticket_menu", "sched", "profile", "help"], payloads
+    assert payloads[0] == "ticket_menu", "обращение должно быть первым на экране"
 
 
 def test_secondary_sections_are_not_on_the_first_screen():

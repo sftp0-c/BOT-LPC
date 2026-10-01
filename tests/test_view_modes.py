@@ -35,8 +35,8 @@ async def test_switcher_marks_current_mode(api, env):
 async def test_switch_to_student_shows_student_menu(api, env):
     await press(SYS, "view:student")
     payloads = api.payloads(SYS)
-    # student_more есть только в меню студента - надёжный признак режима
-    assert "student_more" in payloads and "sched" in payloads
+    # ticket_menu есть только в меню студента - надёжный признак режима
+    assert "ticket_menu" in payloads and "sched" in payloads
     assert "Режим студента" in api.to(SYS)[-1][1]
 
 
@@ -66,7 +66,7 @@ async def test_view_command_explains_modes(api, env):
 
 async def test_view_command_switches(api, env):
     await say(SYS, "/view:student")
-    assert "student_more" in api.payloads(SYS)
+    assert "ticket_menu" in api.payloads(SYS)
 
 
 # ── режим студента без профиля не ломается ───────────────────────────────────
@@ -112,4 +112,4 @@ async def test_mode_persists_between_presses(api, env):
     await press(SYS, "view:student")
     assert await db.get_setting(f"menu_view:{SYS}") == "student"
     await press(SYS, "home")
-    assert "student_more" in api.payloads(SYS)
+    assert "ticket_menu" in api.payloads(SYS)

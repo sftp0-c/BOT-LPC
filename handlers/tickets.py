@@ -64,6 +64,11 @@ MINE_VIEW = "mine"              # значение фильтра очереди
 ARCHIVE_LIMIT = 200             # сколько архивных обращений держим в одном экране
 ARCHIVE_BTN = "🗄 В архив"      # закрытое дело - в архив
 RESTORE_BTN = "📂 Вернуть из архива"
+# Ряд «Назад» + «Меню». Обе подписи влезают в 16 ячеек ряда из двух
+# кнопок, поэтому показываются целиком, без многоточия. Это список
+# рядов, как BACK: раскладывается в клавиатуру через *.
+BACK_TO_CREATE = [[btn("↩️ Назад", "back:ticket_create"), btn("🏠 Меню", "home")]]
+BACK_TO_TICKETS = [[btn("↩️ Назад", "back:ticket_menu"), btn("🏠 Меню", "home")]]
 
 
 def _get(row, key: str, default=None):
@@ -907,7 +912,7 @@ async def cb_submenu(x, arg):
     category, items = SUBMENU_TOPICS[key]
     keyboard = [[btn(label, f"ask:{category}:{code}")] for code, label in items]
     keyboard += [[btn("👥 Другой сотрудник", f"new:{category}")],
-                 [btn("🏠 Меню", "home")]]
+                 *BACK_TO_CREATE]
     await api.send(x, f"{CATS[category]}\nВыберите, что именно:", keyboard)
 
 
@@ -925,7 +930,7 @@ async def _feedback_menu(x: str) -> None:
     groups = group_by_position(await repo.list_staff())
     tail = [[btn("👥 Другой сотрудник", "new:feedback")],
             [btn("⚠️ Ошибка в боте", "bugreport")],
-            [btn("🏠 Меню", "home")]]
+            *BACK_TO_CREATE]
     if not groups:
         await api.send(
             x, "👤 Обратная связь\n\nДолжности ещё не назначены в системе — напишите "
@@ -1260,7 +1265,9 @@ async def cb_my_tickets(x, arg):
         return
     rows = await repo.recent_student_tickets(x)
     if not rows:
-        return await api.send(x, "У вас пока нет обращений.", BACK)
+        return await api.send(
+            x, "У вас пока нет обращений.",
+            BACK_TO_TICKETS)
     arch_n = sum(1 for row in rows if is_archived(row))
     if as_str(arg).strip() == ARCHIVE_VIEW:
         rows = [row for row in rows if is_archived(row)]
@@ -1270,7 +1277,10 @@ async def cb_my_tickets(x, arg):
         title = ("📋 Мои обращения (последние 15). "
                  "Нажмите на обращение, чтобы открыть переписку:")
         switch = btn(f"🗄 Архив: {arch_n}", f"tickets:{ARCHIVE_VIEW}")
-    await api.send(x, title, [*await ticket_rows_kb(rows), [switch], *BACK])
+    # «Назад» возвращает на экран «Обращения», а «Меню» остаётся в
+    # главном меню: из карточки студент выходит сюда «Мои обращения».
+    await api.send(x, title,
+                   [*await ticket_rows_kb(rows), [switch], *BACK_TO_TICKETS])
 
 
 @callback("staff")

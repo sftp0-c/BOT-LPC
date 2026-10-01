@@ -76,6 +76,11 @@ NO_HELP_DONE = "✅ Уже отправлено - это обращение со
 # 15 ячеек, чтобы влезть в пару с «🔍 Спросить бота»: полное название
 # «📥 Спросить сотрудника» (23) обрезалось до «📥 Спросить…»
 STAFF_ASK_BUTTON = "📥 Спросить"
+# Ряд «Назад» + «Меню», как BACK - список рядов. Из списка разделов
+# вопросов мы пришли из «Создать обращение», а со страницы вопросов - из
+# списка разделов: «back:faq» без аргумента открывает разделы, не страницу.
+BACK_TO_CREATE = [[btn("↩️ Назад", "back:ticket_create"), btn("🏠 Меню", "home")]]
+BACK_TO_SECTIONS = [[btn("↩️ Назад", "back:faq"), btn("🏠 Меню", "home")]]
 
 # Вес совпадений. Порог MIN_SCORE отсекает единичные общие слова, а разбор по
 # баллам с «покрытием сообщения» ловит короткие запросы вида «стипендия»,
@@ -564,7 +569,7 @@ async def _question_page(x, items: list, page: int, back_payload: str, section: 
     keyboard += [[btn(ALL_BUTTON, "faqall:0")],
                  [btn(SEARCH_BUTTON, "faqask")],
                  [btn(STAFF_BUTTON, "new:feedback")],
-                 [btn(COLLEGE_BUTTON, "college")], *BACK]
+                 [btn(COLLEGE_BUTTON, "college")], *BACK_TO_SECTIONS]
     head = f"❓ {title} ({len(items)})"
     if pages > 1:
         head += f", страница {page + 1} из {pages}"
@@ -595,7 +600,7 @@ async def _sections_menu(x, items: list | None = None) -> None:
     keyboard += [[btn(ALL_BUTTON, "faqall:0")],
                  [btn(SEARCH_BUTTON, "faqask")],
                  [btn(STAFF_BUTTON, "new:feedback")],
-                 [btn(COLLEGE_BUTTON, "college")], *BACK]
+                 [btn(COLLEGE_BUTTON, "college")], *BACK_TO_CREATE]
     return await api.send(
         x, f"❓ Частые вопросы: {len(items)}. Выберите раздел — или задайте вопрос боту.\n\n"
            + "\n".join(lines),

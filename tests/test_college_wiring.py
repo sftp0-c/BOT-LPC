@@ -17,10 +17,12 @@ async def test_student_menu_has_faq_only(api):
     await register(STUDENT)
     await press(STUDENT, "home")
     payloads = api.payloads(STUDENT)
-    # вопросы ушли с первого экрана под «Ещё», но остались достижимы
+    # вопросы ушли с первого экрана внутрь «Создать обращение», но остались
+    # достижимы - ровно два нажатия от главного экрана
     assert "faq" not in payloads, "вопросы снова висят на главном экране"
-    assert "student_more" in payloads
-    await press(STUDENT, "student_more")
+    assert "ticket_menu" in payloads
+    await press(STUDENT, "ticket_menu")
+    await press(STUDENT, "ticket_create")
     assert "faq" in api.payloads(STUDENT), "вопросы потерялись при переносе"
     assert "college" not in payloads
 
