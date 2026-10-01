@@ -15,7 +15,7 @@
     env_file: .env
     environment:
       HOST: "0.0.0.0"
-      PORT: "8080"
+      PORT: "8090"
       # Всё изменяемое живёт в томе: база, бэкапы, кэш PDF расписаний, журнал.
       DATABASE_PATH: /app/data/database.db
       BACKUP_DIR: /app/data/backups
@@ -31,13 +31,13 @@
       # бот сам стартует опрос событий (см. config.py и bot.py:lifespan).
     ports:
       # 0.0.0.0 - панель видна с других устройств в вашей домашней сети:
-      # http://<IP-компьютера>:8080/panel (вход: MAX ID + WEB_PANEL_PASSWORD).
+      # http://<IP-компьютера>:8090/panel (вход: MAX ID + WEB_PANEL_PASSWORD).
       # Нужно открыть порт в брандмауэре Windows. Наружу в интернет не выставляем.
-      - "0.0.0.0:8080:8080"
+      - "0.0.0.0:8090:8090"
     volumes:
       - bot_data:/app/data
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=4)"]
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8090/health',timeout=4)"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -88,7 +88,7 @@
       TZ: ${TZ:-Europe/Yekaterinburg}
       # 0 в .env - контейнер поднимется, но туннель запускать не будет.
       TUNNEL_ENABLED: ${TUNNEL_ENABLED:-1}
-      TUNNEL_TARGET: http://bot:8080
+      TUNNEL_TARGET: http://bot:8090
       # Имя файла в томе bot_data. У бота этот же файл - /app/data/tunnel_url.txt.
       TUNNEL_URL_FILE: /data/tunnel_url.txt
     volumes:
@@ -132,8 +132,8 @@
         (
           while true; do
             rm -f /data/tunnel_url.txt /data/tunnel.log
-            echo "поднимаем туннель на $${TUNNEL_TARGET:-http://bot:8080}"
-            cloudflared tunnel --no-autoupdate --url "$${TUNNEL_TARGET:-http://bot:8080}" > /data/tunnel.log 2>&1
+            echo "поднимаем туннель на $${TUNNEL_TARGET:-http://bot:8090}"
+            cloudflared tunnel --no-autoupdate --url "$${TUNNEL_TARGET:-http://bot:8090}" > /data/tunnel.log 2>&1
             echo "cloudflared завершился с кодом $$?, через 5 секунд попробуем снова"
             sleep 5
           done

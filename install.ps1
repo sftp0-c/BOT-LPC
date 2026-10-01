@@ -125,7 +125,7 @@ $ready = $false
 for ($i = 0; $i -lt 30; $i++) {
     Start-Sleep -Seconds 2
     try {
-        $health = Invoke-RestMethod -Uri "http://127.0.0.1:8080/health" -TimeoutSec 3
+        $health = Invoke-RestMethod -Uri "http://127.0.0.1:8090/health" -TimeoutSec 3
         if ($health.ok) { $ready = $true; break }
     } catch { }
 }
@@ -157,8 +157,8 @@ if (-not $tunnelUrl -and (Test-Path $tunnelFile)) {
 
 Say "`n== Готово ==" "Green"
 Say "Панель сис-админа (вход: ваш MAX ID + пароль из .env):"
-foreach ($address in $addresses) { Say "    http://${address}:8080/panel" "White" }
-Say "    http://127.0.0.1:8080/panel`n"
+foreach ($address in $addresses) { Say "    http://${address}:8090/panel" "White" }
+Say "    http://127.0.0.1:8090/panel`n"
 if ($tunnelUrl -match '^https://') {
     Say "Туннель Cloudflare - тот же бот из интернета:"
     Say "    $tunnelUrl/panel" "White"

@@ -56,7 +56,7 @@ BACKUP_EVERY_HOURS = max(0, to_int(_get("BACKUP_EVERY_HOURS", "6"), 6))
 SCHEDULE_CACHE_HOURS = max(1, to_int(_get("SCHEDULE_CACHE_HOURS", "12"), 12))
 # Сколько скачанных PDF держать на диске.
 SCHEDULE_CACHE_FILES = max(1, to_int(_get("SCHEDULE_CACHE_FILES", "20"), 20))
-# Пароль веб-панели сис-админа (http://host:8080/panel). Пусто — панель выключена.
+# Пароль веб-панели сис-админа (http://host:8090/panel). Пусто — панель выключена.
 WEB_PANEL_PASSWORD = _get("WEB_PANEL_PASSWORD")
 WEB_PANEL_HOURS = to_int(_get("WEB_PANEL_HOURS", "12"), 12)  # время жизни сессии панели
 # Файл журнала: нужен веб-панели (вкладка «Логи») и команде /logs.
@@ -67,7 +67,7 @@ STAFF_CODE_ATTEMPTS = to_int(_get("STAFF_CODE_ATTEMPTS", "5"), 5)
 # Шаблон ссылки на профиль бота в MAX. {username} подставляется тем, что бот узнал о себе
 # при старте (GET /me). Используется в приглашении по ссылке: «Открыть бота в MAX».
 MAX_PROFILE_LINK = _get("MAX_PROFILE_LINK", "https://max.ru/{username}")
-# Публичный адрес панели для ссылок-приглашений: http://192.168.0.102:8080.
+# Публичный адрес панели для ссылок-приглашений: http://192.168.0.102:8090.
 # Пусто - ссылки получаются относительными (открываются внутри сети, где панель видна).
 PUBLIC_URL = _get("PUBLIC_URL", "")
 # Необязательный путь к PEM-файлу с доверенными сертификатами (если нужен свой набор CA).

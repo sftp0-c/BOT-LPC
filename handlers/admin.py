@@ -1,4 +1,4 @@
-"""Панель сис-админа: сотрудники, справочник групп, расписания, настройки, статистика."""
+﻿"""Панель сис-админа: сотрудники, справочник групп, расписания, настройки, статистика."""
 import clock
 import ipaddress
 import time
@@ -1839,7 +1839,7 @@ def panel_url() -> str:
     """Адрес веб-панели: из WEBHOOK_URL, иначе — подсказка для режима polling."""
     if config.WEBHOOK_URL:
         return config.WEBHOOK_URL.rsplit("/", 1)[0] + "/panel"
-    return "http://<хост>:8080/panel"
+    return "http://<хост>:8090/panel"
 
 
 def panel_hint() -> str:

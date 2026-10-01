@@ -1,4 +1,4 @@
-"""docker-compose.yml и .env.example: конфигурация туннеля не должна разъехаться
+﻿"""docker-compose.yml и .env.example: конфигурация туннеля не должна разъехаться
 с кодом. Тест читает файлы как текст - запускать docker не нужно.
 """
 from pathlib import Path
@@ -48,7 +48,7 @@ def test_tunnel_shares_volume_with_bot():
 
 def test_tunnel_looks_at_bot_by_service_name():
     block = service("tunnel")
-    assert "http://bot:8080" in block
+    assert "http://bot:8090" in block
     # ждём готовности бота, а не просто его старта
     assert "depends_on:" in block and "condition: service_healthy" in block
 

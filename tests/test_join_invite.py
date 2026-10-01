@@ -1,4 +1,4 @@
-"""Приглашение по ссылке: страница без входа, команда /join, одноразовость кода."""
+﻿"""Приглашение по ссылке: страница без входа, команда /join, одноразовость кода."""
 import pytest
 import config
 
@@ -103,9 +103,9 @@ async def test_panel_shows_invite_link(panel_client):
 
 async def test_invite_link_uses_public_url(panel_client, monkeypatch):
     assert login_panel(panel_client)
-    monkeypatch.setattr(config, "PUBLIC_URL", "http://192.168.0.102:8080/")
+    monkeypatch.setattr(config, "PUBLIC_URL", "http://192.168.0.102:8090/")
     await repo.create_invite("ABC123", created_by=SYS, ttl_hours=24)
-    assert "http://192.168.0.102:8080/join/ABC123" in panel_client.get("/panel/access").text
+    assert "http://192.168.0.102:8090/join/ABC123" in panel_client.get("/panel/access").text
 
 
 async def test_invite_link_is_relative_without_public_url(panel_client, monkeypatch):

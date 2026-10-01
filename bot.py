@@ -1,6 +1,6 @@
 ﻿"""Колледжный бот для мессенджера MAX — точка входа.
 
-Запуск: uvicorn bot:app --host 0.0.0.0 --port 8080
+Запуск: uvicorn bot:app --host 0.0.0.0 --port 8090
 Режим определяется настройкой MAX_WEBHOOK_URL: задан — webhook, пусто — long polling.
 
 Структура:

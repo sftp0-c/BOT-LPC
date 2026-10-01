@@ -1,4 +1,4 @@
-"""Дополнение к tests/test_tunnel.py: выбор адреса для ссылок-приглашений."""
+﻿"""Дополнение к tests/test_tunnel.py: выбор адреса для ссылок-приглашений."""
 import os
 from pathlib import Path
 
@@ -23,13 +23,13 @@ def _туннель_живой(monkeypatch, url=ТУННЕЛЬ, age=5):
 
 
 @pytest.mark.parametrize("адрес,ожидание", [
-    ("http://192.168.0.102:8080", True),
-    ("http://10.1.2.3:8080", True),
-    ("http://172.20.0.3:8080", True),
-    ("http://127.0.0.1:8080", True),
-    ("http://localhost:8080", True),
-    ("http://[::1]:8080", True),
-    ("http://bot:8080", True),
+    ("http://192.168.0.102:8090", True),
+    ("http://10.1.2.3:8090", True),
+    ("http://172.20.0.3:8090", True),
+    ("http://127.0.0.1:8090", True),
+    ("http://localhost:8090", True),
+    ("http://[::1]:8090", True),
+    ("http://bot:8090", True),
     ("http://panel.local", True),
     ("", True),
     ("https://panel.college-lan.ru", False),
@@ -41,7 +41,7 @@ def test_is_private_url(адрес, ожидание):
 
 def test_туннель_важнее_внутреннего_адреса(monkeypatch):
     """Главный случай: в .env внутренний адрес, но туннель работает."""
-    monkeypatch.setenv("PUBLIC_URL", "http://192.168.0.102:8080")
+    monkeypatch.setenv("PUBLIC_URL", "http://192.168.0.102:8090")
     _туннель_живой(monkeypatch)
     assert tunnel.public_url() == ТУННЕЛЬ
 
@@ -55,14 +55,14 @@ def test_публичный_public_url_важнее_туннеля(monkeypatch):
 
 def test_протухший_туннель_не_подставляется(monkeypatch):
     """Мёртвый адрес хуже, чем честная внутренняя ссылка."""
-    monkeypatch.setenv("PUBLIC_URL", "http://192.168.0.102:8080")
+    monkeypatch.setenv("PUBLIC_URL", "http://192.168.0.102:8090")
     _туннель_живой(monkeypatch, age=tunnel.STALE_AFTER_SECONDS + 60)
-    assert tunnel.public_url() == "http://192.168.0.102:8080"
+    assert tunnel.public_url() == "http://192.168.0.102:8090"
 
 
 def test_без_туннеля_остаётся_public_url(monkeypatch):
-    monkeypatch.setenv("PUBLIC_URL", "http://192.168.0.102:8080")
-    assert tunnel.public_url() == "http://192.168.0.102:8080"
+    monkeypatch.setenv("PUBLIC_URL", "http://192.168.0.102:8090")
+    assert tunnel.public_url() == "http://192.168.0.102:8090"
 
 
 def test_без_всего_пусто(monkeypatch):
@@ -70,7 +70,7 @@ def test_без_всего_пусто(monkeypatch):
 
 
 def test_статус_виден_и_не_противоречит_выбору(monkeypatch):
-    monkeypatch.setenv("PUBLIC_URL", "http://192.168.0.102:8080")
+    monkeypatch.setenv("PUBLIC_URL", "http://192.168.0.102:8090")
     _туннель_живой(monkeypatch)
     state = tunnel.status()
     assert state["usable"] is True

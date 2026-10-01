@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 setlocal enableextensions enabledelayedexpansion
 rem UTF-8 mode: Russian texts in the code, logs and console must not depend on the
 rem system locale (cp1251 breaks output and can mangle characters on startup).
@@ -142,17 +142,17 @@ if errorlevel 1 (
 
 if not exist "data" mkdir "data"
 
-powershell -NoProfile -Command "$listener = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue; if (-not $listener) { exit 1 }; try { $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8080/health' -TimeoutSec 2; if ($health.platform -eq 'MAX') { exit 0 } } catch {}; exit 2"
+powershell -NoProfile -Command "$listener = Get-NetTCPConnection -LocalPort 8090 -State Listen -ErrorAction SilentlyContinue; if (-not $listener) { exit 1 }; try { $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8090/health' -TimeoutSec 2; if ($health.platform -eq 'MAX') { exit 0 } } catch {}; exit 2"
 set "PORT_STATUS=%ERRORLEVEL%"
 if "%PORT_STATUS%"=="0" (
     echo.
-    echo BOT-LPC is already running: http://localhost:8080/health
+    echo BOT-LPC is already running: http://localhost:8090/health
     exit /b 0
 )
 if "%PORT_STATUS%"=="2" (
     echo.
-    echo [ERROR] Port 8080 is occupied by another application.
-    echo Stop that application or free port 8080, then run start.bat again.
+    echo [ERROR] Port 8090 is occupied by another application.
+    echo Stop that application or free port 8090, then run start.bat again.
     goto fail
 )
 
@@ -199,11 +199,11 @@ if errorlevel 1 (
 
 rem ---- run ----
 echo.
-echo Starting bot on http://localhost:8080  ^(health check: /health^)
-echo Web admin panel: http://localhost:8080/panel  ^(MAX ID + WEB_PANEL_PASSWORD^)
+echo Starting bot on http://localhost:8090  ^(health check: /health^)
+echo Web admin panel: http://localhost:8090/panel  ^(MAX ID + WEB_PANEL_PASSWORD^)
 echo Stop: press Ctrl+C or close this window.
 echo.
-"%VPY%" -m uvicorn bot:app --host 0.0.0.0 --port 8080
+"%VPY%" -m uvicorn bot:app --host 0.0.0.0 --port 8090
 echo.
 echo ===== Bot process ended. Read the text above for details. =====
 pause
