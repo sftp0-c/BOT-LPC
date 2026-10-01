@@ -15,13 +15,14 @@ import json
 import logging
 import os
 import re
+from datetime import datetime, time
 
 import httpx
 
 import config
 import database as db
 import repository as repo
-from schedule_import import week_is_fresh
+from schedule_import import remember_week, saved_week, week_is_fresh
 import timetable as tt
 from handlers.common import api
 from handlers.registry import callback, state
@@ -161,9 +162,18 @@ async def parse_group(group: str, force: bool = False) -> ScheduleResult:
     if not await week_is_fresh(code, schedule.week, url):
         stored = await schedule_from_db(code)
         if stored.days:
+            # Файл мы посмотрели, и он не подходит: запоминаем его отпечаток,
+            # чтобы следующий круг не качал и не разбирал его заново. Занятия в
+            # базе остаются от свежей недели - см. schedule_import.week_is_fresh.
+            await _remember_seen(code, digest)
             return ScheduleResult(group=code, schedule=stored, url=url)
 
     await repo.save_lessons(code, schedule, digest, found)
+    if schedule.week:
+        # Неделя, за которую теперь лежит расписание группы. Из неё потом
+        # берётся и защита от отката старым файлом, и ответ в уведомлении
+        # «с какой даты это действует» - в самой таблице lessons недели нет.
+        await remember_week(code, schedule.week)
     await _prune_cache(digest)
     log.info("расписание %s разобрано: %s пар по %s дням", code, schedule.lessons_count, len(schedule.days))
     return ScheduleResult(group=code, schedule=schedule, url=url)
@@ -177,6 +187,16 @@ async def _remember_failure(code: str, reason: str, digest: str = "", found: lis
         (reason[:200], digest, ",".join(found or []), clock.stamp(), code),
     )
     log.warning("расписание %s: %s", code, reason)
+
+
+async def _remember_seen(code: str, digest: str) -> None:
+    """Файл посмотрен, но его неделя старше уже сохранённой: запоминаем отпечаток.
+
+    Занятия не трогаем. Без этого бот качал бы и разбирал один и тот же старый
+    файл на каждом круге слежения, ничего не записывая и никого не уведомляя.
+    """
+    await db.run("UPDATE schedules SET parsed_hash=?, parsed_at=? WHERE group_code=?",
+                 (digest, clock.stamp(), code))
 
 
 async def _prune_cache(keep: str) -> None:
@@ -251,32 +271,130 @@ async def refresh_all(limit: int = 50) -> dict:
     results: dict[str, ScheduleResult] = {}
     for row in await repo.schedule_groups(limit):
         code = as_str(row["group_code"])
-        before = await repo.lessons_count(code)
-        before_text = await _signature(code)
+        before = await lessons_snapshot(code)
         result = await parse_group(code, force=True)
         results[code] = result
         if not result.has_lessons:
             continue
-        changed = await _signature(code) != before_text or (await repo.lessons_count(code)) != before
-        if changed:
-            await notify_changed(code, result)
+        if await lessons_snapshot(code) != before:
+            await notify_changed(code, result, before)
     return results
 
 
-async def _signature(group: str) -> str:
-    """Отпечаток содержимого расписания: нужен, чтобы понять, что занятия поменялись."""
-    parts = [f"{r['weekday']}:{r['lesson_num']}:{as_str(r['subject'])}:{as_str(r['room'])}"
-             for r in await repo.lessons_for_group(group)]
-    return "|".join(parts)
+# ── уведомление об изменениях ─────────────────────────────────────────────────
+# Текст собирается здесь, а не в боте и не в панели: сообщение о перемене пишут
+# два пути - фоновое слежение (schedule_watch) и кнопка «Обновить всё» в панели, -
+# и студент должен получать одно и то же.
 
 
-async def notify_changed(group: str, result: ScheduleResult) -> None:
+async def lessons_snapshot(group: str) -> dict:
+    """Снимок занятий группы: (день недели, номер урока) -> (предмет, кабинет,
+    преподаватель, начало, конец).
+
+    Сравнение снимков «до» и «после» разбора отвечает сразу на два вопроса:
+    менялись ли занятия вообще (иначе уведомлять не о чем) и что именно
+    поменялось (иначе студент не поймёт, зачем ему это сообщение).
+    """
+    snapshot: dict = {}
+    for row in await repo.lessons_for_group(group):
+        snapshot[(int(row["weekday"]), int(row["lesson_num"]))] = (
+            as_str(row["subject"]), as_str(row["room"]), as_str(row["teacher"]),
+            as_str(row["start"]), as_str(row["end"]))
+    return snapshot
+
+
+def changes_lines(before: dict, after: dict, limit: int = 6) -> list[str]:
+    """Что поменялось в расписании - строки для уведомления."""
+    lines: list[str] = []
+    for key in sorted(set(before) | set(after)):
+        weekday, number = key
+        was, now = before.get(key), after.get(key)
+        place = f"{clock.WEEKDAYS[weekday % 7]}, {number} урок"
+        if was is None:
+            lines.append(f"• {place}: добавили {now[0]}")
+        elif now is None:
+            lines.append(f"• {place}: убрали {was[0]}")
+        else:
+            parts = []
+            if was[0] != now[0]:
+                parts.append(f"«{was[0]}» → «{now[0]}»")
+            if was[1] != now[1]:
+                parts.append(f"аудитория {was[1] or '—'} → {now[1] or '—'}")
+            if was[3:] != now[3:]:
+                parts.append(f"время {was[3] or '—'}–{was[4] or '—'}"
+                             f" → {now[3] or '—'}–{now[4] or '—'}")
+            if parts:
+                lines.append(f"• {place}: " + ", ".join(parts))
+    if len(lines) > limit:
+        lines = lines[:limit] + [f"• …и ещё {len(lines) - limit}."]
+    return lines
+
+
+def week_line(week) -> str:
+    """С какой даты действует новое расписание."""
+    if not week:
+        return ""
+    monday = tt.today_monday()
+    if week == monday:
+        return "Действует с этой недели."
+    if week > monday:
+        return f"Действует с недели {week:%d.%m.%Y}."
+    return f"Файл за неделю с {week:%d.%m.%Y} — свежее расписание колледж ещё не выложил."
+
+
+def nearest_lines(schedule, limit: int = 3) -> str:
+    """Ближайшие занятия с датами недели самого файла.
+
+    tt.format_upcoming считает даты от сегодняшнего дня, а колледж выкладывает
+    файл на конкретную неделю: для следующей недели он показал бы сегодняшние
+    даты. Поэтому опорный момент - понедельник недели из PDF.
+    """
+    if not schedule or not schedule.days:
+        return ""
+    if schedule.week and schedule.week != tt.today_monday():
+        items = schedule.upcoming(now=datetime.combine(schedule.week, time.min), limit=limit)
+    else:
+        items = schedule.upcoming(limit=limit)
+    if not items:
+        return ""
+    lines = ["⏰ Ближайшие занятия"]
+    for day, lesson, day_date in items:
+        lines.append(f"{day_date:%d.%m.%Y} · {clock.WEEKDAYS[day.weekday]} · {lesson.line()}")
+    return "\n".join(lines)
+
+
+async def change_notice(group: str, schedule=None, before: dict | None = None,
+                        intro: str = "обновилось") -> str:
+    """Текст уведомления подписчику: что изменилось, с какой даты и что делать.
+
+    schedule - разбор файла, в нём есть неделя PDF (в базе недели нет, она лежит
+    в настройках). before - снимок занятий ДО разбора: без него в сообщении не
+    будет строки «что именно поменялось».
+    """
+    code = repo._code(group)  # noqa: SLF001 - нормализация кода группы одна на весь проект
+    if schedule is None or not getattr(schedule, "days", None):
+        schedule = await schedule_from_db(code)
+    parts = [f"🔔 Расписание группы {code} {intro}."]
+    week = getattr(schedule, "week", None) or await saved_week(code)
+    if week:
+        parts.append(week_line(week))
+    if before:
+        lines = changes_lines(before, await lessons_snapshot(code))
+        if lines:
+            parts.append("\n".join(lines))
+    parts.append("Ничего делать не нужно — посмотрите расписание и приходите к своим парам.")
+    nearest = nearest_lines(schedule)
+    if nearest:
+        parts.append(nearest)
+    return "\n\n".join(part for part in parts if part)
+
+
+async def notify_changed(group: str, result: ScheduleResult, before: dict | None = None) -> None:
     """Сообщает подписчикам группы, что расписание обновилось."""
     from handlers.admin import notify_schedule_subscribers  # импорт внутри: избегаем цикла
 
-    head = f"🔔 Расписание группы {group} обновилось."
-    upcoming = tt.format_upcoming(result.schedule) if result.has_lessons else ""
-    await notify_schedule_subscribers(group, f"{head}\n\n{upcoming}" if upcoming else head)
+    code = repo._code(group)  # noqa: SLF001
+    await notify_schedule_subscribers(code, await change_notice(code, result.schedule, before))
 
 
 # ── расписание преподавателя ─────────────────────────────────────────────────

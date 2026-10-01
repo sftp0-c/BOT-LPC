@@ -32,9 +32,12 @@ IDS = TITLES
 # не по забывчивости, а по смыслу: письмо «всем сразу» не пишут с отчеством
 # или с телефоном директора. Список явный, чтобы новое имя в TPL_FIELDS нельзя
 # было добавить молча и забыть.
+# «номер» в типовом письме тоже не нужен: при создании обращения бот уже
+# пишет студенту «Обращение №N отправлено», и повторять номер в письме
+# незачем - на обращении без номера он превращался в «№ не указано».
 STAFF_ONLY = frozenset({
     "фамилия", "отчество", "преподаватель", "должность", "кабинет",
-    "кабинет_выдачи", "время", "тема", "учебная_часть", "директор",
+    "кабинет_выдачи", "время", "тема", "учебная_часть", "директор", "номер",
 })
 
 # Пустое обращение: данных нет вообще, даже номера. Ровно тот случай, из-за
@@ -130,16 +133,17 @@ async def test_shipped_template_renders_with_full_data(title, category, text):
     assert "не указано" not in text            # данных хватало на всё
 
 
-async def test_taken_into_work_template_survives_ticket_without_number():
-    """«Обращение взято в работу» на обращении без номера - без «№ » с пустотой."""
-    template = dict((t, text) for t, _c, text in SHIPPED)["Обращение взято в работу"]
-    text = await tickets.render_template(template, BARE_TICKET)
-    assert "№  " not in text and not re.search(r"№\s", text), text
-    assert holes(text) == [], text
-    assert "Обращение №не указано принято" in text
+@pytest.mark.parametrize("title,category,text", SHIPPED, ids=IDS)
+async def test_shipped_template_renders_without_the_ticket(title, category, text):
+    """Обращения нет вообще - даже ключей. Письмо всё равно остаётся связным.
 
-    with_number = await tickets.render_template(template, FULL_TICKET)
-    assert "Обращение №7 принято" in with_number
+    Хуже пустого обращения представить трудно: ни данных, ни номера. Шаблон,
+    который и тут оставляет дыру, студенту отправят одним нажатием.
+    """
+    text = await tickets.render_template(text, BARE_TICKET)
+    assert holes(text) == [], f"«{title}» без обращения: {text}"
+    assert tickets.TPL_STUDENT in text      # вместо ФИО - слово, а не пустота
+    assert "{" not in text and "}" not in text
 
 
 # ── подстановки не молчат ────────────────────────────────────────────────────

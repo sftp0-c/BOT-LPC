@@ -1,4 +1,4 @@
-"""Три недавних решения: жалоба, контакты и режимы просмотра."""
+﻿"""Три недавних решения: жалоба, контакты и режимы просмотра."""
 import database as db
 import repository as repo
 from conftest import add_staff, press, register
@@ -101,5 +101,5 @@ async def test_sysadmin_view_command_still_works(api):
 
     await repo.grant_sysadmin(SYS, "Иванов Иван Иванович")
     await bot.process(msg(SYS, "/view:student"))
-    assert "sub:cert" in api.payloads(SYS)
+    assert "student_more" in api.payloads(SYS)
     assert await db.get_setting(f"menu_view:{SYS}") == "student"

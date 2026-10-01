@@ -142,10 +142,14 @@ async def test_student_menu_contract(api):
 
     api.sent.clear()
     await press(USER, "home")
-    # три подменю, три частых дела и частые вопросы. Жалоба и контакты живут
-    # внутри подменю, в меню их нет.
-    assert api.payloads(USER) == ["sub:cert", "sub:acc", "sub:fb", "sched", "tickets",
-                                  "profile", "faq"]
+    # главный экран похудел: обращение, расписание, профиль и «Ещё».
+    assert api.payloads(USER) == ["tickets", "sched", "profile", "student_more"]
+
+    # и второстепенные разделы не потеряны - они достижимы через «Ещё»
+    api.sent.clear()
+    await press(USER, "student_more")
+    assert set(api.payloads(USER)) >= {"sub:cert", "sub:acc", "sub:fb", "faq"}, \
+        "разделы убрали с первого экрана и не вернули в «Ещё»"
 
     await press(USER, "sub:cert")
     assert set(api.payloads(USER)) == {"ask:certificates:place", "ask:certificates:period",
@@ -231,7 +235,7 @@ async def test_regok_saves_normalized_group_and_preserves_colon(flow):
 
     assert repo.saved == [(USER, "Иванов:Иван", "НОВАЯ-99")]
     # после сохранения - меню бота, а не старые разделы обращений
-    assert {"sub:cert", "sub:acc", "sub:fb", "sched", "tickets", "profile"} <= set(api.payloads(USER))
+    assert {"tickets", "sched", "profile", "student_more"} <= set(api.payloads(USER))
 
 
 async def test_empty_registry_accepts_normalized_group(flow):
@@ -248,7 +252,7 @@ async def test_empty_registry_accepts_normalized_group(flow):
     await menus.cb_registration_confirm(USER, "")
     assert repo.saved == [(USER, "Иванов Иван", "НОВЫЙ-7")]
     # сохранили - показали меню бота
-    assert {"sub:cert", "sub:acc", "sub:fb", "sched", "tickets", "profile"} <= set(api.payloads(USER))
+    assert {"tickets", "sched", "profile", "student_more"} <= set(api.payloads(USER))
 
 
 async def test_registration_offers_known_groups(flow):

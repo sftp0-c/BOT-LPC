@@ -1,4 +1,4 @@
-"""Бот отвечает на частый вопрос сам, а не заставляет читать меню."""
+﻿"""Бот отвечает на частый вопрос сам, а не заставляет читать меню."""
 import college
 from conftest import register, say
 from handlers import faq
@@ -26,7 +26,7 @@ async def test_unrelated_text_falls_back_to_menu(api):
     await seeded()
     await say(STUDENT, "ааааа")
     assert "Используйте кнопки меню" in api.to(STUDENT)[-2][1]
-    assert "faq" in api.payloads(STUDENT)
+    assert "student_more" in api.payloads(STUDENT)
 
 
 async def test_answer_suggests_writing_to_staff(api):

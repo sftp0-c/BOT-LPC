@@ -1,4 +1,4 @@
-"""Справочник колледжа и частые вопросы: врезка в меню и панель."""
+﻿"""Справочник колледжа и частые вопросы: врезка в меню и панель."""
 import pytest
 import college
 
@@ -17,7 +17,11 @@ async def test_student_menu_has_faq_only(api):
     await register(STUDENT)
     await press(STUDENT, "home")
     payloads = api.payloads(STUDENT)
-    assert "faq" in payloads
+    # вопросы ушли с первого экрана под «Ещё», но остались достижимы
+    assert "faq" not in payloads, "вопросы снова висят на главном экране"
+    assert "student_more" in payloads
+    await press(STUDENT, "student_more")
+    assert "faq" in api.payloads(STUDENT), "вопросы потерялись при переносе"
     assert "college" not in payloads
 
 
