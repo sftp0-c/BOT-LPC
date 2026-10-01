@@ -37,11 +37,6 @@ from .panel import (  # noqa: F401 - публичный интерфейс па�
     _duration_ru, admin_today, all_admins, all_settings, data_gaps, dedupe_stats,
     event_feed_label, list_users, list_users_count, recent_ticket_events,
 )
-from . import bridge
-
-# Наружу очередь отдаётся под своим именем: bridge - имя модуля пакета,
-# а в разделах зовут repo.bridge_store, чтобы не спутать с пакетом store.bridge.
-bridge_store = bridge
 from .people import (  # noqa: F401 - публичный интерфейс пакета
     CONTACT_KINDS, CONTACT_KIND_LABELS, KIND_TITLES, consent_of, contact_full_name,
     contact_kind, delete_user, get_user, give_consent, is_registered, people, people_count,

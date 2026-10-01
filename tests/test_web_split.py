@@ -33,39 +33,25 @@ PREFIXES = {"router": "/panel", "open_router": ""}
 HTTP_METHODS = ("get", "post", "put", "patch", "delete")
 
 # Модули пакета, которые можно импортировать по одному.
-SECTION_MODULES = ("access", "bridge")
+SECTION_MODULES = ("access",)
 
 # '_flash' пишет conftest как обычный атрибут модуля - самого такого имени в
 # панели нет и раньше не было; 'app' - это bot.app, у панели своего нет.
 IGNORED_EXTERNAL = {"_flash", "app"}
 
 
-# Модули пакета, чьи маршруты намеренно НЕ входят в панель.
-# bridge.py - служебные адреса очереди моста. Он объявляет их на своём роутере
-# и поднимается отдельной службой на порту, который снаружи не виден. В общем
-# приложении (порт 8080, открыт в локальную сеть и в туннель) этих адресов быть
-# не должно: иначе очередь заданий и право выполнять команды на машине выходят
-# в интернет. Проверка этих адресов - test_bridge_routes_are_registered.
-NON_PANEL_MODULES = {"bridge.py"}
-
-
 def panel_sources() -> list:
-    """Файлы, в которых панель объявляет маршруты: фасад и модули пакета.
-
-    Модули из NON_PANEL_MODULES здесь не участвуют: их маршруты живут в другой
-    службе и в панели появляться не должны.
-    """
-    return [FACADE] + sorted(path for path in PACKAGE.glob("*.py")
-                             if path.name not in NON_PANEL_MODULES)
+    """Файлы, в которых панель объявляет маршруты: фасад и модули пакета."""
+    return [FACADE] + sorted(PACKAGE.glob("*.py"))
 
 
 def router_prefixes(source: str) -> dict:
     """Префиксы роутеров, объявленных в самом модуле: имя -> префикс.
 
     Читается из исходника, а не из таблицы: префикс - свойство модуля, и у
-    разных разделов он разный. У моста, например, свой роутер с /bridge, и по
-    таблице панели его адреса читались бы как /panel/... - то есть проверка
-    сравнивала бы разные адреса и ругалась впустую.
+    разных разделов он разный. Свой роутер со своим префиксом по таблице панели
+    читался бы как /panel/... - то есть проверка сравнивала бы разные адреса и
+    ругалась впустую.
     """
     found: dict = {}
     for node in ast.walk(ast.parse(source)):
@@ -383,17 +369,3 @@ def test_no_module_pulls_webpanel_at_import_time():
                 for alias in node.names:
                     if alias.name.split(".")[0] == "webpanel":
                         pytest.fail("%s импортирует webpanel на верхнем уровне" % path.name)
-
-def test_bridge_routes_are_registered():
-    """Каждый путь, объявленный в web/bridge.py, есть в службе моста.
-
-    Та же дисциплина, что и у панели, только для другой службы: потерянный адрес
-    исчезает молча, и программа-мост узнаёт об этом на живой задаче.
-    """
-    import bridge_service
-
-    declared = declared_routes((PACKAGE / "bridge.py").read_text(encoding="utf-8-sig"))
-    assert declared, "в web/bridge.py не нашлось ни одного объявленного адреса"
-    registered = registered_routes(bridge_service.app.routes)
-    missing = sorted(declared - registered)
-    assert not missing, f"служебные адреса потеряны: {missing}"

@@ -10,8 +10,7 @@ import clock
 import config
 import database as db
 import webpanel
-from web import bridge as web_bridge
-from handlers import admin, bridge, broadcast, common, faq, invites, menus, schedules, tickets
+from handlers import admin, broadcast, common, faq, invites, menus, schedules, tickets
 
 BOT_ID = 999
 PANEL_PASSWORD = "test-panel-pass"
@@ -217,7 +216,7 @@ async def env(tmp_path, monkeypatch):
     _seal_real_api(monkeypatch, fake)
     # Дополнительно подменяем имя в тех модулях, где код берёт не сам объект,
     # а, например, сравнивает с ним. Это удобство чтения, а не защита.
-    for module in (*API_MODULES, bot, bridge, web_bridge):
+    for module in (*API_MODULES, bot):
         if hasattr(module, "api"):
             monkeypatch.setattr(module, "api", fake)
     bot._locks.clear()

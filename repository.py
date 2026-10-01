@@ -36,7 +36,7 @@ from store import (  # noqa: F401 - фасад переэкспортирует 
     event_feed_label, list_users, list_users_count, recent_ticket_events,
     # store.people
     CONTACT_KINDS, CONTACT_KIND_LABELS, KIND_TITLES, consent_of, contact_full_name,
-    bridge as bridge_store, contact_kind, delete_user, get_user, give_consent, is_registered,
+contact_kind, delete_user, get_user, give_consent, is_registered,
     people, people_count,
     people_overview, set_user_group, set_user_name, student_ids_by_name, student_open_tickets_count, touch_contact,
     upsert_user, user_card, users_without_consent,

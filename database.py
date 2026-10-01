@@ -173,19 +173,6 @@ CREATE TABLE IF NOT EXISTS contacts(
 );
 CREATE INDEX IF NOT EXISTS idx_contacts_last_seen ON contacts(last_seen);
 -- Правило SQLite, которое тут легко нарушить: после ПОСЛЕДНЕЙ колонки
--- запятая не ставится. Не ошибка чтения, а ошибка init_db при старте.
-CREATE TABLE IF NOT EXISTS bridge_messages(                      -- очередь моста: владелец пишет боту, программа на компе отвечает
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id     TEXT NOT NULL DEFAULT '',                  -- кто прислал — ворота проверяют, что это владелец
-    text        TEXT NOT NULL DEFAULT '',                  -- задание целиком
-    status      TEXT NOT NULL DEFAULT 'new',               -- new | busy | done | failed
-    answer      TEXT NOT NULL DEFAULT '',                  -- мой ответ, который увидел владелец
-    error       TEXT NOT NULL DEFAULT '',                  -- чем кончилось, если не удалось
-    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    taken_at    TEXT NOT NULL DEFAULT '',                  -- когда мост взял в работу
-    answered_at TEXT NOT NULL DEFAULT ''                    -- когда пришёл ответ
-);
-
 CREATE TABLE IF NOT EXISTS staff_invites(
     code       TEXT PRIMARY KEY,                         -- код из букв и цифр, регистр не важен
     user_id    TEXT NOT NULL DEFAULT '',                 -- приглашение личному ID; пусто — любой, у кого есть код
@@ -232,20 +219,6 @@ COLUMN_UPGRADES: dict[str, dict[str, str]] = {
     },
     "reply_templates": {
         "text": "TEXT NOT NULL DEFAULT ''",   # тело ответа сотрудника
-    },
-    # Мост: таблица новая, поэтому и целиком, и по колонкам - страховка от
-    # забытой правки. Проверка test_no_column_added_later_is_lost требует, чтобы
-    # ни одна колонка не потерялась на уже созданной базе.
-    "bridge_messages": {
-        "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
-        "user_id": "TEXT NOT NULL DEFAULT ''",
-        "text": "TEXT NOT NULL DEFAULT ''",
-        "status": "TEXT NOT NULL DEFAULT 'new'",
-        "answer": "TEXT NOT NULL DEFAULT ''",
-        "error": "TEXT NOT NULL DEFAULT ''",
-        "created_at": "TEXT NOT NULL DEFAULT ''",
-        "taken_at": "TEXT NOT NULL DEFAULT ''",
-        "answered_at": "TEXT NOT NULL DEFAULT ''",
     },
     "staff_invites": {
         "position": "TEXT NOT NULL DEFAULT ''",   # должность: по приглашению человек сразу становится сотрудником
@@ -405,9 +378,6 @@ TIME_COLUMNS: tuple[tuple[str, str], ...] = (
     ("staff_invites", "created_at"),
     ("staff_invites", "expires_at"),
     ("staff_invites", "used_at"),
-    ("bridge_messages", "created_at"),
-    ("bridge_messages", "taken_at"),
-    ("bridge_messages", "answered_at"),
     ("login_attempts", "created_at"),
     ("processed_updates", "created_at"),
     ("reply_templates", "created_at"),

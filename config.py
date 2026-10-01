@@ -56,17 +56,6 @@ BACKUP_EVERY_HOURS = max(0, to_int(_get("BACKUP_EVERY_HOURS", "6"), 6))
 SCHEDULE_CACHE_HOURS = max(1, to_int(_get("SCHEDULE_CACHE_HOURS", "12"), 12))
 # Сколько скачанных PDF держать на диске.
 SCHEDULE_CACHE_FILES = max(1, to_int(_get("SCHEDULE_CACHE_FILES", "20"), 20))
-# Мост: владелец пишет боту с командного слова, программа на его компьютере
-# отвечает. Личная связь, студентам не доступна. Всё выключено, пока не
-# включено явно и не задан токен.
-BRIDGE_ENABLED = _get("BRIDGE_ENABLED", "0") == "1" and bool(_get("BRIDGE_TOKEN"))
-BRIDGE_PREFIX = _get("BRIDGE_PREFIX", "!")
-BRIDGE_TOKEN = _get("BRIDGE_TOKEN")
-# BRIDGE_LOCAL_HOSTS больше нет и не нужен. Проверка адреса клиента внутри
-# бота не работала: Docker Desktop публикует порт через виртуальную машину, и
-# бот видит адрес её шлюза даже для запроса с этой же машины. Границу держит
-# порт, слушающий только локально на хосте (см. bridge_service.py и
-# docker-compose.yml), а внутри остаётся токен.
 # Пароль веб-панели сис-админа (http://host:8080/panel). Пусто — панель выключена.
 WEB_PANEL_PASSWORD = _get("WEB_PANEL_PASSWORD")
 WEB_PANEL_HOURS = to_int(_get("WEB_PANEL_HOURS", "12"), 12)  # время жизни сессии панели

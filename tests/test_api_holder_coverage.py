@@ -4,7 +4,7 @@
 атрибут `api` у перечисленных модулей. Но `from handlers.common import api`
 кладёт в модуль ССЫЛКУ на объект, и модуль, которого нет в списке, продолжает
 держать настоящий MaxAPI. За приём я забыл об этом три раза: сначала про
-handlers.bridge, потом про web.bridge, потом про web.diagnostics, где объект
+web.diagnostics, где объект
 импортирован под именем max_api. Каждый раз тест падал не своей ошибкой, а
 «Что-то пошло не так», и виновника приходилось искать отдельно.
 
@@ -148,8 +148,6 @@ def test_the_check_sees_a_planted_leak(env, monkeypatch):
 
 def test_module_walk_is_not_shrinking(env):
     """Обход модулей не должен молча сокращаться до пустоты."""
-    from web import bridge as web_bridge
 
     for package in ("handlers", "web"):
         assert len(modules_of(package)) >= 8, f"в пакете {package} мало модулей"
-    assert web_bridge.__name__.endswith("web.bridge")
