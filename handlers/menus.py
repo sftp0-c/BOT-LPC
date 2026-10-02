@@ -507,8 +507,20 @@ async def st_reg_name(x, text, p):
     name = _clean_fio(text)
     if not _valid_fio(name):
         return await api.send(x, "Укажите ФИО полностью (минимум фамилия и имя), например: Иванов Иван Иванович.")
+    # Код группы мог быть введён ДО того, как пропало имя. Тогда не заставляем
+    # человека вводить его второй раз, а сразу идём дальше по сохранённому коду.
+    сохранённый = as_str((p or {}).get("group")).strip()
+    if saved_ok(сохранённый):
+        await db.set_state(x, "reg_group", {"name": name})
+        return await st_reg_group(x, сохранённый, {"name": name})
     await db.set_state(x, "reg_group", {"name": name})
     return await _ask_group(x, name)
+
+
+def saved_ok(code: str) -> bool:
+    """Похож ли сохранённый код на код группы."""
+    normalized = group_code(code)
+    return bool(normalized) and valid_group(normalized)
 
 
 @state("reg_group")
@@ -523,8 +535,33 @@ async def st_reg_group(x, text, p):
     if not typed:
         return await _ask_group(x, fio)
     if not _valid_fio(fio):
-        return await start(x)
-    if not group_code(typed):
+        # Имя потерялось: раньше здесь был вызов start(), который начинал всю
+        # регистрацию заново и присылал приветствие, которое человек уже читал -
+        # он видел «Здравствуйте» второй раз и не понимал, что произошло.
+        # Теперь просто спрашиваем ФИО ещё раз и сохраняем уже введённый код
+        # группы, чтобы не заставлять вводить его повторно.
+        await db.set_state(x, "reg_name", {"group": typed})
+        return await api.send(
+            x,
+            "Не нашёл, как вас зовут. Напишите ФИО ещё раз — например, "
+            "Иванов Иван Иванович.")
+    normalized = group_code(typed)
+    if not normalized:
+        # После нормализации не осталось ничего («-», «!!!», одни пробелы).
+        # Так человек просит показать справочник групп - раньше это работало,
+        # и отдельный тест на это есть. Отказывать здесь нельзя.
+        return await _ask_group(x, fio)
+    # Слово без цифр - не код группы: код в колледже всегда начинается с цифр
+    # («24-23», «25-27»). Так отвечают «не знаю» и вводят своё ФИО вместо группы.
+    # Раньше «Петрова Анна» становилась названием группы «ПЕТРОВААННА», и
+    # сис-админ потом её не находил.
+    #
+    # Проверка на «два слова» здесь была бы слишком широкой: код «24 23 п» тоже
+    # три слова, и человек пишет группу через пробел - это норма, а не ошибка.
+    # Поэтому смотрим на цифры, а «похоже на ФИО» уточняем отдельно.
+    if not group_digits(typed):
+        return await _not_a_group(x, fio, typed)
+    if not valid_group(normalized):
         return await _ask_group(x, fio, typed)
 
     resolved = await repo.resolve_group(typed)
@@ -534,6 +571,9 @@ async def st_reg_group(x, text, p):
         # ещё не завёл группу в справочнике
         if _looks_like_typo(typed, resolved["suggestions"]):
             return await _ask_group(x, fio, typed, resolved["suggestions"])
+        # Проверки «есть ли цифры» здесь уже нет: она стоит выше по коду, до
+        # обращения к базе. Дублировать её было бы ошибкой - снять одну из двух
+        # и не заметить этого невозможно, а проверка мутацией на это и опирается.
         await _register_new_group(x, typed)
     group = resolved["code"]
     if not await _group_allowed(group):
@@ -660,13 +700,25 @@ async def _suggested_name(x: str) -> str:
 
 @callback("regname")
 async def cb_registration_confirm_name(x, arg):
-    """Человек подтвердил ФИО, предложенное из профиля MAX.
+    """Кнопка под именем из профиля MAX.
+
+    С кнопкой приходит готовое ФИО, и регистрация идёт дальше к группе.
+    Без кнопки («✏️ Введу сам») ФИО ещё нет - тогда спрашиваем его, а не код
+    группы. Раньше в обоих случаях сразу спрашивали группу, оставляя имя
+    пустым: человек вводил своё ФИО, и оно уходило в разбор кода группы, а в
+    справочнике появлялась группа «ПЕТРОВААННА».
 
     Проверки «зарегистрирован ли» здесь нет и быть не должно: на этом шаге
-    человек как раз ещё не зарегистрирован. Защита - само состояние reg_group.
+    человек как раз ещё не зарегистрирован.
     """
-    await db.set_state(x, "reg_group", {"name": _clean_fio(arg)})
-    await _ask_group(x, _clean_fio(arg))
+    имя = _clean_fio(arg)
+    if not _valid_fio(имя):
+        await db.set_state(x, "reg_name")
+        return await api.send(
+            x, "Укажите ваши ФИО полностью: фамилия, имя и отчество — "
+               "например, Иванов Иван Иванович.")
+    await db.set_state(x, "reg_group", {"name": имя})
+    return await _ask_group(x, имя)
 
 
 @callback("who")
@@ -707,13 +759,15 @@ async def cb_registration_pick_group(x, arg):
 @callback("regnew")
 async def cb_registration_new_group(x, arg):
     """Студент уверен в коде: заводим группу в справочнике и продолжаем."""
-    code = group_code(arg)
-    if not valid_group(code):
-        return await _ask_group(x, "")
-    await repo.upsert_group(code, title=as_str(arg).strip())
-    await repo.add_group_aliases(code, [as_str(arg)])
+    # Имя читаем ДО проверки кода: если код не подошёл, повторный вопрос должен
+    # по-прежнему обращаться к человеку по имени, а не быть безличным.
     session = await db.get_state(x) or {}
     name = as_str((session.get("payload") or {}).get("name", ""))
+    code = group_code(arg)
+    if not valid_group(code):
+        return await _ask_group(x, name, as_str(arg))
+    await repo.upsert_group(code, title=as_str(arg).strip())
+    await repo.add_group_aliases(code, [as_str(arg)])
     return await st_reg_group(x, code, {"name": name})
 
 
@@ -768,11 +822,57 @@ async def _ask_group(x: str, name: str = "", typed: str = "", suggestions=None) 
         keyboard.append([btn(f"✍️ Создать {cut_plain(group_code(typed), 4)}",
                              f"regnew:{group_code(typed)}")])
     keyboard.append([btn("🔤 Введу код", "regpick:")])
-    head = (f"{name}, группа «{typed}» в списке не найдена. Похожее — проверьте и выберите:"
-            if typed else
-            f"{name}, укажите код группы. Можно выбрать кнопкой или написать: «24-23 (П)» "
-            f"и «2423П» - это одно и то же.")
+    # Обращение к человеку добавляем только когда имя известно. Раньше в шаблон
+    # подставлялось пустое имя, и вопрос начинался с запятой: «, укажите код
+    # группы» - это и выглядело как опечатка в тексте.
+    обращение = f"{name}, " if name else ""
+    if typed and not keyboard[:-1]:
+        head = (f"{обращение}группа «{typed}» в списке не найдена. "
+                "Похожее — проверьте и выберите:")
+    elif typed:
+        head = f"{обращение}группа «{typed}» в списке не найдена. Выберите ниже."
+    else:
+        head = (f"{обращение}укажите код группы. Можно выбрать кнопкой или написать: "
+                "«24-23 (П)», «2423П» и «24-23 п» — это одна и та же группа.")
     await api.send(x, head, [*keyboard, *BACK])
+
+
+def _похоже_на_фио(value: str) -> bool:
+    """Похоже ли на ФИО: несколько слов, все с заглавной буквы, ни одной цифры.
+
+    Узкая проверка нарочно. Широкая («два слова - значит ФИО») ловила код группы,
+    написанный через пробел: «24 23 п» - это тоже три слова, а человек так
+    пишет код почти всегда. А вот «Петрова Анна» - заглавные и без цифр, и
+    это точно имя.
+    """
+    части = [part for part in as_str(value).split() if part]
+    if len(части) < 2:
+        return False
+    if any(ch.isdigit() for ch in value):
+        return False
+    return all(part[0].isupper() for part in части)
+
+
+async def _not_a_group(x: str, name: str, what: str) -> None:
+    """Ответ явно не код группы: объясняем это и спрашиваем ещё раз.
+
+    Отдельный текст нужен, чтобы бот не повторял вопрос слово в слово: человек
+    отвечает «не знаю», а бот присылает ровно тот же вопрос - и кажется, что его
+    не слышат. Здесь прямо сказано, что именно не так и как выглядит код.
+    """
+    обращение = f"{name}, " if name else ""
+    if _похоже_на_фио(what):
+        начало = (f"{обращение}это похоже на ФИО, а нужен код группы. "
+                  "Заведу такую группу только если вы её передумаете.")
+    else:
+        начало = (f"{обращение}это не код группы - заводить такую группу не буду.")
+    await api.send(
+        x,
+        f"{начало} Код выглядит как цифры и, может быть, буквы: 24-23, 25-27, "
+        f"23-29П. Писать можно как угодно: «24-23 (П)», «2423П», «24 23 п». "
+        f"Вы написали: «{short(as_str(what), 30)}».",
+        [[btn("🔤 Введу код", "regpick:")], *BACK],
+    )
 
 
 async def _guest_home(x: str):
