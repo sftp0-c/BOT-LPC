@@ -10,6 +10,7 @@ import config
 import database as db
 import max_api
 import repository as repo
+from store.people import contact_full_name
 import timetable as tt
 from handlers import schedules
 from handlers.common import BACK, DEFAULT_WELCOME, admin_of, api, is_super, log, need_super, notify, spawn
@@ -212,7 +213,9 @@ def staff_list_kb(rows) -> list:
             # Ряд из двух кнопок, значит предел 16 символов, а не 22: длинное
             # ФИО укорачиваем до «Ковалевский К.», раздел берём короткий.
             # short() тут не годится - он ставит многоточие.
-            label = person_label(_field(row, "full_name"), sid, max_api.row_limit(2) - 1)
+            # ФИО через contact_full_name: поля full_name в реестре нет,
+            # вместо ФИО тут же показывался «ID <номер>».
+            label = person_label(contact_full_name(row), sid, max_api.row_limit(2) - 1)
             keyboard.append([btn(label, f"sf:{sid}"),
                              btn(STAFF_CATS_BTN.get(cat, "📄 Справки"), f"sf:{sid}")])
     return keyboard
@@ -701,7 +704,11 @@ async def send_people(x: str, kind: str = "", offset: int = 0):
     for row in rows:
         # в кнопке только фамилия с инициалами: полная строка с ником и группой
         # обрезалась многоточием и всё равно не читалась
-        keyboard.append([btn(person_label(_field(row, "full_name"), _field(row, "user_id")),
+        # ФИО берём через contact_full_name: он смотрит fio, потом staff_name,
+        # потом подпись из контактов. Раньше здесь читалось поле full_name,
+        # которого в _CONTACT_SELECT нет вообще, поэтому у всех людей
+        # показывался «ID <номер>» - включая студентов с нормальными ФИО.
+        keyboard.append([btn(person_label(contact_full_name(row), _field(row, "user_id")),
                              f"person:{_field(row, 'user_id')}")])
     if offset > 0:
         keyboard.append([btn("⬅️ Назад", f"people:{kind}:{max(0, offset - PEOPLE_PAGE)}")])
@@ -969,7 +976,7 @@ async def send_nostaff(x: str):
     if not rows:
         return await api.send(x, "✅ Все, кто писал боту, уже сотрудники.",
                               [[btn("👥 Сотрудники", "admins")], *BACK])
-    keyboard = [[btn(person_label(_field(row, "full_name"), _field(row, "user_id")),
+    keyboard = [[btn(person_label(contact_full_name(row), _field(row, "user_id")),
                   f"make:{_field(row, 'user_id')}")]
                 for row in rows]
     await api.send(

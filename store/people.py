@@ -148,9 +148,18 @@ async def user_card(user_id: str) -> dict | None:
 
 
 def contact_full_name(card) -> str:
-    """ФИО для карточки человека: ФИО из профиля, иначе подпись из контактов."""
+    """ФИО для карточки человека: ФИО из профиля, иначе подпись из контактов.
+
+    Принимает и словарь, и строку sqlite3.Row: функцию зовут и из карточки
+    (там _row_dict, то есть словарь), и прямо из списка реестра (там Row).
+    Раньше стояло card.get(...), а у sqlite3.Row метода get нет - вызов из
+    списка падал с AttributeError. _row_dict умеет оба вида, поэтому приводим
+    через неё: тогда функция не зависит от того, кто и что передал.
+    """
     if not card:
         return ""
+    if not isinstance(card, dict):
+        card = _row_dict(card)
     return as_str(card.get("fio")) or as_str(card.get("staff_name")) or as_str(card.get("display_name"))
 
 
