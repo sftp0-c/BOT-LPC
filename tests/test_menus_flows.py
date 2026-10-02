@@ -1,4 +1,5 @@
 ﻿import re
+from utils import group_code
 
 import pytest
 
@@ -92,10 +93,19 @@ class FakeRepo:
         return sorted(groups, key=lambda g: (0 if g["code"] == str(text).upper() else 1, g["code"]))[:limit]
 
     async def resolve_group(self, text):
-        """Есть ли такая группа в справочнике."""
-        wanted = str(text).strip().upper()
-        if any(g["code"] == wanted for g in self.groups):
-            return {"found": True, "code": wanted, "title": "", "suggestions": []}
+        """Есть ли такая группа в справочнике.
+
+        Код нормализуется через utils.group_code - так же, как в боте
+        (store/groups.py find_group). Раньше здесь было буквальное сравнение,
+        и заготовка не находила «2423 П» для группы «24-23П». Из-за этого
+        проверки рисовали неверную картину: настоящий бот такой код понимает,
+        а тест - нет.
+        """
+        wanted = group_code(text)
+        for row in self.groups:
+            if group_code(row["code"]) == wanted:
+                return {"found": True, "code": row["code"], "title": "",
+                        "suggestions": []}
         return {"found": False, "code": wanted, "title": "",
                 "suggestions": await self.suggest_groups(text)}
 
@@ -262,22 +272,66 @@ async def test_unknown_group_is_not_added_behind_students_back(flow):
 
 
 async def test_typo_gets_suggestions_instead_of_new_group(flow):
-    """Похожий код - это опечатка: предлагаем варианты, новую группу не создаём."""
+    """Опечатка рядом с существующей группой: показываем похожие, новую не создаём.
+
+    Код '24-23Х' - цифры те же, что у 24-23, а сам код другой. По правилу
+    _looks_like_typo это опечатка, и бот предлагает выбрать из известного, а не
+    заводить своё.
+
+    Раньше здесь был «2423», и тест ждал подсказки. Это было неверно: такой код
+    нормализуется в «24-23», группа в справочнике есть, и бот её находит.
+    Опечатка - это '24-23Х', а не «2423».
+    """
+    api, repo, db = flow
+    repo.groups[:] = [{"code": "24-23", "active": 1}, {"code": "24-24", "active": 1}]
+    await db.set_state(USER, "reg_group", {"name": "Иванов Иван"})
+    await menus.st_reg_group(USER, '24-23Х', {"name": "Иванов Иван"})
+
+    assert not any(g["code"] == '24-23Х' for g in repo.groups), "создали мусор в справочнике"
+    assert "regpick:24-23" in api.payloads(USER), f"похожие не предложены: {api.payloads(USER)}"
+    assert "не найдена" in api.last(USER)[1], f"не сказано, что группы нет: {api.last(USER)[1]!r}"
+
+
+async def test_group_written_without_dashes_is_understood(flow):
+    """«2423» - это «24-23», а не опечатка: так человек пишет код от руки.
+
+    Отдельная проверка, потому что старый тест опечаток утверждал обратное.
+    Нормализация - не украшение, а смысл справочника: «24-23 (П)», «24-23П»,
+    «2423П» и «24-23 п» должны вести в одну группу, иначе студент не
+    зарегистрируется из-за того, как он написал код.
+    """
     api, repo, db = flow
     repo.groups[:] = [{"code": "24-23", "active": 1}, {"code": "24-24", "active": 1}]
     await db.set_state(USER, "reg_group", {"name": "Иванов Иван"})
     await menus.st_reg_group(USER, "2423", {"name": "Иванов Иван"})
 
-    assert not any(g["code"] == "2423" for g in repo.groups)  # не создали мусор
-    assert "regpick:24-23" in api.payloads(USER)
-    assert "не найдена" in api.last(USER)[1]
+    assert "regyes" in api.payloads(USER), \
+        f"«2423» должен найти 24-23, показано: {api.payloads(USER)}"
+    assert repo.saved == [], "до подтверждения ничего не сохраняется"
 
 
-async def test_regok_saves_normalized_group_and_preserves_colon(flow):
-    api, repo, _ = flow
-    await menus.cb_regok(USER, "НОВАЯ-99:Иванов:Иван")
+async def test_group_is_normalized_and_fio_with_colon_survives(flow):
+    """Код группы приводится к каноническому виду, а двоеточие в ФИО не ломает.
 
-    assert repo.saved == [(USER, "Иванов:Иван", "НОВАЯ-99")]
+    Старая проверка звала обработчик кнопки «Сохранить» на экране «группа не
+    найдена, сохранить её?». Экрана больше нет - заводить группу нельзя. Но
+    свойство, ради которого проверка существовала, живо: код нормализуется, а
+    ФИО с двоеточием не разваливается.
+    """
+    api, repo, db = flow
+    repo.groups[:] = [{"code": "24-23П", "active": 1}, {"code": "ИС-21", "active": 1}]
+    await db.set_state(USER, "reg_group", {"name": "Иванов:Иван"})
+    # Код набираем буквами так, как его пишут от руки: «2423 П».
+    # Подсказка в тестовой заготовке всегда непустая, поэтому опечатку, на
+    # которую бот ответил бы похожими кодами, берём ту, что в справочнике есть,
+    # - иначе проверка проверяла бы подсказку, а не нормализацию.
+    await menus.st_reg_group(USER, "2423 П", {"name": "Иванов:Иван"})
+
+    assert "regyes" in api.payloads(USER), "до подтверждения данные не сохраняются"
+    assert repo.saved == []
+
+    await menus.cb_registration_confirm(USER, "")
+    assert repo.saved == [(USER, "Иванов:Иван", "24-23П")],         f"группа не нормализована или ФИО с двоеточием развалилось: {repo.saved}"
     # после сохранения - меню бота, а не старые разделы обращений
     assert {"ticket_menu", "sched", "profile", "help"} <= set(api.payloads(USER))
 
@@ -336,12 +390,68 @@ async def test_registration_uses_name_from_profile(flow):
     assert "Укажите ваши ФИО полностью" in api.last(USER)[1]
 
 
-async def test_profile_group_confirmation_does_not_save_until_regok(flow):
+async def test_profile_group_change_refuses_unknown_group(flow):
+    """Смена группы на несуществующую не сохраняется - её нельзя завести.
+
+    Раньше здесь показывалось «Группа не найдена. Сохранить её?» с кнопкой,
+    и студент нажимал «Да» - группа появлялась в справочнике от человека,
+    который просто неправильно написал адрес. Теперь вместо предложения
+    сохранить показан справочник и сказано, куда обратиться.
+    """
     api, repo, _ = flow
+    repo.groups[:] = [{"code": "ИС-21", "active": 1}]
     await menus.st_edit_group(USER, "НОВАЯ-99", {})
 
-    assert repo.saved == []
-    assert "regok:НОВАЯ-99:Иванов Иван" in api.payloads(USER)
+    assert repo.saved == [], "группа сохранена без записи в справочнике"
+    адреса = api.payloads(USER)
+    assert not any(p.startswith("regok") for p in адреса), \
+        f"снова предлагают сохранить несуществующую группу: {адреса}"
+    assert "regpick:ИС-21" in адреса, "не показаны группы из справочника"
+    текст = api.last(USER)[1]
+    # Сообщение зависит от того, нашлось ли похожее: при опечатке бот предлагает
+    # похожие коды, а если похожих нет - прямо отправляет в учебную часть.
+    # Обе ветки верны, и обе обязаны быть: молчаливый отказ недопустим.
+    assert ("Похожее" in текст) or ("учебную часть" in текст), \
+        f"не сказано ни о похожем, ни куда обратиться: {текст!r}"
+
+
+async def test_group_without_similar_says_contact_the_deanery(flow):
+    """Нет похожих групп - прямо совет обратиться в учебную часть.
+
+    Отдельная проверка от предыдущей: там похожее находится, и бот предлагает
+    коды. Здесь похожих нет, и молчать нельзя - человек должен понять, что его
+    группы нет в списке и куда идти.
+    """
+    api, repo, _ = flow
+    repo.groups[:] = [{"code": "ИС-21", "active": 1}]
+    # Пустой справочник подсказок: ни одна существующая группа не похожа.
+    # В настоящем боте так бывает, когда человек написал код из другой коллексии
+    # или с опечаткой в цифрах.
+    await menus.st_reg_group(USER, "99-77", {"name": "Иванов Иван"})
+    repo.groups[:] = [{"code": "ИС-21", "active": 1}]
+    await menus.st_reg_group(USER, "99-77", {"name": "Иванов Иван"})
+    api.sent.clear()
+    repo.groups[:] = []
+    await menus.st_reg_group(USER, "99-77", {"name": "Иванов Иван"})
+
+    текст = api.last(USER)[1]
+    assert "учебную часть" in текст, f"не сказано, куда обратиться: {текст!r}"
+    assert repo.saved == [], "данные сохранились без группы из справочника"
+
+
+async def test_profile_group_change_saves_known_group(flow):
+    """Смена группы на существующую работает как раньше.
+
+    Нужна рядом с запретом: иначе следующий человек решит, что сменить группу
+    теперь нельзя вообще.
+    """
+    api, repo, _ = flow
+    repo.groups[:] = [{"code": "ИС-21", "active": 1}]
+    await menus.st_edit_group(USER, "24-23", {})
+    api.sent.clear()
+    await menus.st_edit_group(USER, "ИС-21", {})
+
+    assert repo.saved, "существующая группа не сохранилась"
 
 
 async def test_saveprofile_without_fields_is_a_noop(flow):
@@ -350,3 +460,56 @@ async def test_saveprofile_without_fields_is_a_noop(flow):
 
     assert repo.saved == []
     assert api.sent == []
+
+
+async def test_hidden_group_is_not_a_way_in(flow):
+    """Скрытая группа не пускает в регистрацию, и сохранить её нельзя.
+
+    Случай отдельный от несуществующей группы: код в справочнике есть, но он
+    помечен неактивным. Раньше отсюда предлагалось сохранить группу, и человек
+    нажимал «Да» - группа появлялась в справочнике в обход правила.
+
+    Проверку нашла проверка мутацией: вернуть этот путь было невозможно
+    заметить, потому что все проверки про несуществующие группы, а не про
+    скрытые.
+    """
+    api, repo, db = flow
+    # Рядом кладём активные группы. Если скрытая группа в справочнике одна,
+    # список активных пуст, а пустой список _group_allowed считает «ограничений
+    # нет» - и проверка проверяла бы не то. Реально групп много, часть скрыта.
+    repo.groups[:] = [{"code": "24-23", "active": 0},
+                      {"code": "24-24", "active": 1},
+                      {"code": "25-27", "active": 1}]
+    await db.set_state(USER, "reg_group", {"name": "Иванов Иван"})
+    await menus.st_reg_group(USER, "24-23", {"name": "Иванов Иван"})
+
+    assert repo.saved == [], "скрытая группа сохранена"
+    адреса = api.payloads(USER)
+    assert "regyes" not in адреса, f"показан подтверждение: {адреса}"
+    assert not any(p.startswith("regok") for p in адреса), \
+        f"снова предлагают сохранить скрытую группу: {адреса}"
+    # и сказано, что группа не подходит
+    текст = api.last(USER)[1]
+    assert "не найдена" in текст or "учебную часть" in текст, \
+        f"не сказано, что группа не подходит: {текст!r}"
+
+
+async def test_hidden_group_change_from_profile_is_refused(flow):
+    """Смена группы на скрытую из профиля тоже не проходит.
+
+    Второй вход в то же самое правило: профиль → «Изменить группу» → скрытый
+    код. Без этой проверки вернуть путь можно было бы и здесь, и никто бы не
+    заметил.
+    """
+    api, repo, _ = flow
+    # Активные группы рядом нужны по той же причине: при одном скрытом коде
+    # список активных пуст и ограничение не срабатывает вовсе.
+    repo.groups[:] = [{"code": "24-23", "active": 0},
+                      {"code": "24-24", "active": 1},
+                      {"code": "25-27", "active": 1}]
+    await menus.st_edit_group(USER, "24-23", {})
+
+    assert repo.saved == [], "скрытая группа сохранена из профиля"
+    адреса = api.payloads(USER)
+    assert not any(p.startswith("regok") for p in адреса), \
+        f"предлагают сохранить скрытую группу: {адреса}"

@@ -232,25 +232,20 @@ async def _save_user(user_id, fio, group) -> None:
         await repo.upsert_user(user_id, fio, group)
 
 
-async def _group_confirmation(x: str, group: str, fio: str) -> None:
-    group = _group_code(group)
-    fio = _clean_fio(fio)
-    await db.set_state(x, "reg_group", {"name": fio, "group": group})
-    await api.send(
-        x,
-        f"⚠️ Группа {group} не найдена в активном справочнике. Сохранить её?",
-        [[btn("✅ Сохранить", f"regok:{group}:{fio}"), btn("✏️ Изменить", "editname")]],
-    )
-
-
 async def _save_or_confirm(x: str, fio: str, group: str, after_save) -> None:
     group = _group_code(group)
     fio = _clean_fio(fio)
     if not _valid_fio(fio) or not valid_group(group):
         return
     if not await _group_allowed(group):
-        await _group_confirmation(x, group, fio)
-        return
+        # Группы нет в справочнике. Завести её отсюда нельзя: справочник ведёт
+        # сис-админ на вкладке «Группы». Раньше здесь предлагалось сохранить
+        # группу, и студент нажимал «Да» - группа появлялась в справочнике от
+        # человека, который просто не ошибся адресом. Теперь ведём в тот же
+        # разбор, что и при регистрации: показать справочник и сказать, куда
+        # обратиться.
+        await db.set_state(x, "reg_group", {"name": fio})
+        return await _ask_group(x, fio, group)
     if not await _consent_ok(x, fio, group):
         return
     await _save_user(x, fio, group)
@@ -585,7 +580,12 @@ async def st_reg_group(x, text, p):
         return await _ask_group(x, fio, typed, [])
     group = resolved["code"]
     if not await _group_allowed(group):
-        return await _group_confirmation(x, group, fio)
+        # Группа в справочнике есть, но скрыта - в неё нельзя вступить.
+        # Раньше отсюда предлагалось сохранить группу и уходило в regok, то
+        # есть в обход правила. Теперь - тот же разбор, что и для незнакомого
+        # кода: показать справочник и сказать, куда обратиться.
+        await db.set_state(x, "reg_group", {"name": fio})
+        return await _ask_group(x, fio, group)
     # последний шаг - сверить данные: опечатка в ФИО потом ищется по всему боту
     await db.set_state(x, "reg_confirm", {"name": fio, "group": group})
     return await api.send(
@@ -598,12 +598,13 @@ async def st_reg_group(x, text, p):
 
 async def _finish_registration(x: str, fio: str, group: str):
     """Сохраняет студента после подтверждения. Единственное место записи в users."""
-    code = group_code(group)
-    if code and not await repo.find_group(code):
-        await repo.upsert_group(code, title=as_str(group).strip())
-    group = code or group
+    group = group_code(group) or group
     if not await _group_allowed(group):
-        return await _group_confirmation(x, group, fio)
+        # Группы нет в справочнике, и завести её отсюда нельзя. Раньше группа
+        # просто сохранялась в справочнике, если её не было, и любая опечатка
+        # в адресе создавала новую группу от студента.
+        await db.set_state(x, "reg_group", {"name": fio})
+        return await _ask_group(x, fio, group)
     if not await _consent_ok(x, fio, group):
         return
     await _save_user(x, fio, group)
@@ -1376,25 +1377,6 @@ async def st_edit_group(x, text, p):
     return await _save_or_confirm(x, fio, group, lambda: cb_profile(x, ""))
 
 
-@callback("regok")
-async def cb_regok(x, payload):
-    payload = str(payload or "")
-    raw = payload if payload.startswith("regok:") else f"regok:{payload}"
-    parts = raw.split(":", 2)
-    if len(parts) != 3 or parts[0] != "regok":
-        return
-    group, fio = _group_code(parts[1]), _clean_fio(parts[2])
-    if not valid_group(group) or not _valid_fio(fio):
-        return
-    if not await _consent_ok(x, fio, group):
-        return
-    await _save_user(x, fio, group)
-    await db.clear_state(x)
-    menu = student_menu()
-    await api.send(x, f"✅ Регистрация завершена: {fio}, группа {group}.", menu)
-    return menu
-
-
 @callback("savegrp")
 async def cb_savegrp(x, arg):
     if not arg:
@@ -1432,7 +1414,9 @@ async def cb_saveprofile(x, arg):
     if not changed_name and not changed_group:
         return
     if changed_group and not await _group_allowed(group):
-        return await _group_confirmation(x, group, name)
+        # Группы нет в справочнике - сюда ведём разбор, а не сохранение.
+        await db.set_state(x, "reg_group", {"name": name})
+        return await _ask_group(x, name, group)
     await _save_user(x, name, group)
     await db.clear_state(x)
     return await cb_profile(x, "")

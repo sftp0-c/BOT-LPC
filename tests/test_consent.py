@@ -55,13 +55,25 @@ async def test_refusal_keeps_nothing_and_explains(api):
 
 
 async def test_consent_asked_only_once():
+    """Смена группы согласия не спрашивает - человек его уже давал.
+
+    Раньше проверка опиралась на экран подтверждения несуществующей группы.
+    Экрана больше нет: группу нельзя завести, поэтому и подтверждать нечего.
+    Смысл проверки сохранён на рабочем пути - меняем группу на другую из
+    справочника.
+    """
+    await repo.upsert_group("25-27", title="Другая группа")
     await register_without_consent()
     await press(STUDENT, "consentyes")
-    # смена группы уже зарегистрированным человеком согласия не спрашивает,
-    # даже когда группа новая и её надо подтвердить
-    await press(STUDENT, "savegrp:24-99")
-    await press(STUDENT, "regok:24-99:Иванов Иван Иванович")
-    assert (await repo.get_user(STUDENT))["group_code"] == "24-99"
+    assert (await repo.get_user(STUDENT))["group_code"] == "24-23"
+
+    # смена группы уже зарегистрированным человеком согласия не спрашивает
+    await press(STUDENT, "savegrp:25-27")
+
+    человек = await repo.get_user(STUDENT)
+    assert человек["group_code"] == "25-27", "группа не сменилась"
+    согласие = await repo.consent_of(STUDENT)
+    assert согласие["at"], "согласие потерялось при смене группы"
 
 
 async def test_consent_text_is_editable_from_settings(api):
