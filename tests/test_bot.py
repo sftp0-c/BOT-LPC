@@ -1,4 +1,4 @@
-import pytest
+﻿import pytest
 from fastapi.testclient import TestClient
 
 import bot
@@ -28,6 +28,11 @@ async def test_start_offers_only_two_ways(api):
 
 
 async def test_registration_validates_and_normalizes(api):
+    # группа заранее в справочнике: студент больше не может завести группу сам,
+    # и неизвестный код её не создаёт. Так же поступает сис-админ в панели.
+    import repository as repo
+
+    await repo.upsert_group("ИС-21", title="Информационные системы")
     await say(STUDENT, "/start")
     await press(STUDENT, "who:student")
     await say(STUDENT, "Иван")  # одно слово - не ФИО

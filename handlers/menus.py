@@ -571,10 +571,17 @@ async def st_reg_group(x, text, p):
         # ещё не завёл группу в справочнике
         if _looks_like_typo(typed, resolved["suggestions"]):
             return await _ask_group(x, fio, typed, resolved["suggestions"])
-        # Проверки «есть ли цифры» здесь уже нет: она стоит выше по коду, до
-        # обращения к базе. Дублировать её было бы ошибкой - снять одну из двух
-        # и не заметить этого невозможно, а проверка мутацией на это и опирается.
-        await _register_new_group(x, typed)
+        # Группы нет в справочнике. Завести её отсюда нельзя: справочник ведёт
+        # сис-админ, он же добавляет новые группы на вкладке «Группы». Поэтому
+        # показываем весь список кнопками и прямо говорим, куда обратиться, если
+        # своей группы там нет.
+        #
+        # Раньше здесь код группы просто сохранялся, и группа появлялась в
+        # справочнике от студента, а сис-админам уходило уведомление. Этого
+        # больше нет и не должно быть: справочник отражает реальные группы
+        # колледжа, и пополнять его должен сотрудник, а не тот, кто первый
+        # написал незнакомый код.
+        return await _ask_group(x, fio, typed, [])
     group = resolved["code"]
     if not await _group_allowed(group):
         return await _group_confirmation(x, group, fio)
@@ -756,21 +763,6 @@ async def cb_registration_pick_group(x, arg):
     return await st_reg_group(x, as_str(arg), {"name": payload.get("name", payload.get("suggest", ""))})
 
 
-@callback("regnew")
-async def cb_registration_new_group(x, arg):
-    """Студент уверен в коде: заводим группу в справочнике и продолжаем."""
-    # Имя читаем ДО проверки кода: если код не подошёл, повторный вопрос должен
-    # по-прежнему обращаться к человеку по имени, а не быть безличным.
-    session = await db.get_state(x) or {}
-    name = as_str((session.get("payload") or {}).get("name", ""))
-    code = group_code(arg)
-    if not valid_group(code):
-        return await _ask_group(x, name, as_str(arg))
-    await repo.upsert_group(code, title=as_str(arg).strip())
-    await repo.add_group_aliases(code, [as_str(arg)])
-    return await st_reg_group(x, code, {"name": name})
-
-
 @callback("regyes")
 async def cb_registration_confirm(x, arg):
     """Финальное подтверждение: одна опечатка в ФИО потом ищется по всему боту."""
@@ -792,48 +784,45 @@ def _looks_like_typo(typed: str, suggestions) -> bool:
     return False
 
 
-async def _register_new_group(x: str, typed: str) -> None:
-    """Новая группа попадает в справочник сразу, сис-админы получают уведомление."""
-    code = group_code(typed)
-    if not code or not valid_group(code):
-        return
-    await repo.upsert_group(code, title=as_str(typed).strip())
-    await repo.add_group_aliases(code, [as_str(typed)])
-    await repo.log_action("bot", "группа добавлена при регистрации", f"{code} (написано: {typed})")
-    for admin_id in {str(value) for value in config.SYSADMIN_IDS} | {as_str(row["user_id"]) for row in await repo.all_admins()}:
-        await notify(admin_id, f"🆕 Новая группа в справочнике: {code} (написал студент: «{typed}»). "
-                              "Проверьте расписание во вкладке «Расписания».")
-    log.info("студент %s добавил группу %s (написал «%s»)", x, code, typed)
-
-
 async def _ask_group(x: str, name: str = "", typed: str = "", suggestions=None) -> None:
-    """Просит группу и показывает подходящие варианты вместо отказа.
+    """Просит группу и показывает варианты из справочника колледжа.
 
-    Если человек уже что-то написал, но такой группы нет, - предлагаем похожие
-    коды: обычно это опечатка в одной букве или забытые скобки.
+    Завести свою группу нельзя: справочник ведёт сис-админ на вкладке «Группы»,
+    и он отражает реальные группы. Раньше здесь была кнопка «✍️ Создать …», и
+    любой код, написанный студентом, попадал в справочник как новая группа.
+
+    Если человек написал код, а такого нет, - показываем похожие (обычно опечатка
+    в одной букве или забытые скобки), а если не нашлось ничего - весь список
+    групп кнопками, чтобы выбрать из известного.
     """
     if suggestions is None:
         suggestions = await repo.suggest_groups(typed)
     keyboard = [[btn(group["code"], f"regpick:{group['code']}")]
                 for group in suggestions[:8] if group.get("active")]
+    похожее_нашлось = bool(keyboard)
     if typed and not keyboard:
-        # Код группы в кнопку не влезает рядом со словом, поэтому коротко, а сам
-        # код идёт строкой текстом в заголовке экрана.
-        keyboard.append([btn(f"✍️ Создать {cut_plain(group_code(typed), 4)}",
-                             f"regnew:{group_code(typed)}")])
+        # Ничего похожего нет: показываем весь справочник, чтобы человек выбрал
+        # из известного, а не заводил своё.
+        keyboard = [[btn(group["code"], f"regpick:{group['code']}")]
+                    for group in (await repo.list_groups(active_only=True))[:20]]
     keyboard.append([btn("🔤 Введу код", "regpick:")])
     # Обращение к человеку добавляем только когда имя известно. Раньше в шаблон
     # подставлялось пустое имя, и вопрос начинался с запятой: «, укажите код
     # группы» - это и выглядело как опечатка в тексте.
     обращение = f"{name}, " if name else ""
-    if typed and not keyboard[:-1]:
-        head = (f"{обращение}группа «{typed}» в списке не найдена. "
-                "Похожее — проверьте и выберите:")
-    elif typed:
-        head = f"{обращение}группа «{typed}» в списке не найдена. Выберите ниже."
-    else:
+    if not typed:
         head = (f"{обращение}укажите код группы. Можно выбрать кнопкой или написать: "
                 "«24-23 (П)», «2423П» и «24-23 п» — это одна и та же группа.")
+    elif похожее_нашлось:
+        head = (f"{обращение}группа «{typed}» в списке не найдена. "
+                "Похожее — проверьте и выберите:")
+    else:
+        # Ключевой случай: группы нет в справочнике. Объясняем это прямо и
+        # говорим, куда обратиться, иначе человек просто застрянет.
+        head = (f"{обращение}группы «{typed}» в списке колледжа нет, и я не могу "
+                "добавить её сам: список ведёт сотрудник. Выберите свою группу "
+                "ниже, а если её здесь не видно — напишите в учебную часть, "
+                "вам добавят группу.")
     await api.send(x, head, [*keyboard, *BACK])
 
 

@@ -228,3 +228,73 @@ async def test_sloppy_group_with_digits_is_still_accepted(api):
     await say(STUDENT, "24 23 п")
     assert "Проверьте данные" in api.last(STUDENT)[1], (
         f"код через пробел не принят: {api.last(STUDENT)[1]!r}")
+
+
+# ── 7. возможности завести свою группу быть не должно ──────────────────────
+# Задача владельца: «удалить возможность создания своей группы, у нас есть свой
+# реестр». Справочник ведёт сис-админ на вкладке «Группы».
+#
+# Проверки на отсутствие, а не на наличие. Проверка мутацией показала, почему:
+# вернуть кнопку «✍️ Создать группу» было невозможно заметить - её никто не
+# нажимает в проверках, и самой кнопки никто не ищет. А вернуться она может
+# вместе с одной строкой, и тогда MAX нарисует кнопку с мёртвым адресом.
+
+async def test_group_prompt_has_no_create_button(api):
+    """В вопросе про группу нет ни одной кнопки «создать группу»."""
+    import repository as repo
+
+    await repo.upsert_group("ИС-21", title="Информационные системы")
+    await начать_регистрацию(api)
+    платные = [p for p in api.payloads(STUDENT) if p.startswith("regnew")]
+    assert not платные, f"в боте снова есть кнопка создания группы: {платные}"
+
+    # и при не найденном коде тоже - это главный момент: раньше кнопка
+    # появлялась именно здесь
+    api.sent.clear()
+    await say(STUDENT, "99-77")
+    платные = [p for p in api.payloads(STUDENT) if p.startswith("regnew")]
+    assert not платные, f"при не найденном коде снова есть кнопка создания: {платные}"
+
+
+def test_there_is_no_handler_for_creating_groups():
+    """Обработчика regnew в реестре нет.
+
+    Проверка на сам реестр, а не на экран: если обработчик зарегистрируют снова,
+    кнопка станет рабочей, даже если сегодня её не видно. И без обработчика
+    кнопка - просто мусор в интерфейсе.
+    """
+    from handlers.registry import CALLBACKS
+
+    assert "regnew" not in CALLBACKS, "обработчик regnew снова в реестре"
+
+
+def test_creating_group_is_not_a_state_protecting_button():
+    """Остатка от старой механики в списке кнопок нет.
+
+    Список STATE_KEEPING_CALLBACKS в bot.py - это кнопки, нажатие которых не
+    стирает начатый диалог. regnew там остался от кнопки создания группы; если он
+    там останется, а кнопку вернут, состояние снова будет теряться.
+    """
+    import bot as bot_module
+
+    assert "regnew" not in bot_module.STATE_KEEPING_CALLBACKS, \
+        "regnew остался в списке кнопок, не стирающих состояние"
+
+
+async def test_student_sees_the_registry_and_not_a_way_to_add(api):
+    """Показывается справочник, а не способ его пополнить."""
+    import repository as repo
+
+    await repo.upsert_group("24-23П", title="Программирование")
+    await repo.upsert_group("25-27", title="Бухгалтерия")
+    await начать_регистрацию(api)
+    await say(STUDENT, "99-77")
+
+    текст = api.last(STUDENT)[1]
+    known = api.payloads(STUDENT)
+    assert "regpick:24-23П" in known, "список групп справочника не показан"
+    assert "regpick:25-27" in known
+    assert not any(p.startswith("regnew") for p in known), \
+        "вместо справочника снова предлагают завести свою группу"
+    # и сказано, куда обратиться, если своей группы в списке нет
+    assert "учебную часть" in текст, f"не сказано, куда обратиться: {текст!r}"

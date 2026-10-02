@@ -4,7 +4,7 @@ import pytest
 
 from conftest import add_staff, press, register
 from handlers import menus
-from repository import set_admin_profile
+from repository import set_admin_profile, upsert_group
 
 
 USER = "100"
@@ -129,7 +129,31 @@ def flow(monkeypatch):
     return api, repo, db
 
 
-async def test_student_menu_contract(api):
+# ── регистрация для проверок меню ───────────────────────────────────────────
+@pytest.fixture
+async def одна_группа_в_справочнике():
+    """Одна группа в справочнике: без неё регистрация не дойдёт до главного меню.
+
+    Своего названия вместо общей college_groups, потому что та определена в
+    tests/test_group_registry.py, а pytest видит фикстуры только своего файла и
+    conftest.py. Реальный набор групп колледжа тут не нужен - достаточно одной.
+    """
+    await upsert_group("ИС-21", title="Информационные системы")
+    return "ИС-21"
+
+
+async def test_student_menu_contract(api, одна_группа_в_справочнике):
+    """Структура главного меню студента.
+
+    Фикстура заводит одну группу в справочнике. Раньше она здесь не нужна была:
+    группа, которой нет в справочнике, молча создавалась при регистрации.
+    Теперь не создаётся, и без справочника регистрация не доходит до конца -
+    а тест проверяет меню, а не создание группы.
+
+    Фикстура своя, а не общая college_groups: та живёт в другом тестовом файле,
+    а из чужого файла pytest фикстуры не видит. И набор реальных групп колледжа
+    для проверки меню не нужен - достаточно одной.
+    """
     """Меню студента - семь кнопок, и каждое подменю открывается по своей.
 
     Проверяем через бота, а не через student_menu(): важно, что человек реально
@@ -211,20 +235,30 @@ async def test_view_schedules_uses_active_registry(flow):
     assert "https://college.example/is-21.pdf" in api.last(USER)[1]
 
 
-async def test_unknown_group_is_added_and_confirmed(flow):
-    """Новой группы нет в справочнике - заводим её сразу и сверяем данные.
+async def test_unknown_group_is_not_added_behind_students_back(flow):
+    """Нет группы в справочнике - значит, её не заводит студент.
 
-    Раньше неизвестный код уходил в отдельное подтверждение «завести группу?».
-    Теперь студент не встаёт из-за того, что группа ещё не заведена, а сис-админы
-    получают уведомление о новой группе.
+    Задача владельца: «удалить возможность создания своей группы, у нас есть свой
+    реестр». Справочник отражает реальные группы колледжа, и пополнять его должен
+    сотрудник на вкладке «Группы», а не тот, кто первый написал незнакомый код.
+
+    Проверяем две стороны: группа не появилась и студенту сказано, куда
+    обратиться. Молчаливый отказ здесь не годится - человек просто застрял бы.
     """
     api, repo, db = flow
     repo.groups[:] = [{"code": "ИС-21", "active": 1}]
     await menus.st_reg_group(USER, "НОВАЯ-99", {"name": "Иванов Иван"})
 
-    assert any(g["code"] == "НОВАЯ-99" for g in repo.groups)  # группа заведена
-    assert db.states[USER]["state"] == "reg_confirm"           # данные показаны
-    assert "regyes" in api.payloads(USER)
+    assert not any(g["code"] == "НОВАЯ-99" for g in repo.groups), \
+        "студент завел группу в справочнике сам - этого больше быть не должно"
+    # Состояние тут не создаётся: тест зовёт st_reg_group напрямую, без
+    # предварительного set_state. Проверять надо, что оно НЕ перешло к
+    # подтверждению, а не то, что оно есть.
+    assert db.states.get(USER, {}).get("state") != "reg_confirm", \
+        "показывать подтверждение данных, пока группа не выбрана"
+    assert "учебную часть" in api.last(USER)[1], \
+        f"не сказано, куда обратиться: {api.last(USER)[1]!r}"
+    assert "regyes" not in api.payloads(USER), "показывать подтверждение данных рано"
 
 
 async def test_typo_gets_suggestions_instead_of_new_group(flow):
@@ -248,10 +282,32 @@ async def test_regok_saves_normalized_group_and_preserves_colon(flow):
     assert {"ticket_menu", "sched", "profile", "help"} <= set(api.payloads(USER))
 
 
-async def test_empty_registry_accepts_normalized_group(flow):
-    """Группа нормализуется, а перед сохранением человек её подтверждает."""
+async def test_empty_registry_does_not_let_student_through(flow):
+    """Справочник пуст - регистрация ждёт, пока группу заведёт сотрудник.
+
+    Раньше при пустом справочнике код группы просто сохранялся, и студент
+    проходил дальше. Теперь это не так, и проверка держит новое правило: группа не
+    заводится, данные не подтверждаются, человек получает понятный ответ.
+    """
     api, repo, db = flow
     repo.groups[:] = []
+    await menus.st_reg_group(USER, " новый-7 ", {"name": "Иванов Иван"})
+
+    assert repo.saved == [], "данные сохранились без группы из справочника"
+    assert repo.groups == [], "студент завел группу сам"
+    assert "regyes" not in api.payloads(USER), "подтверждение показано раньше времени"
+    assert "учебную часть" in api.last(USER)[1]
+
+
+async def test_group_from_registry_still_confirms_normally(flow):
+    """Та же проверка для обычного случая: группа в справочнике есть.
+
+    Нужна рядом с запретом, иначе следующий человек решит, что регистрация стала
+    невозможной: группа, которая в справочнике, обязана работать как раньше -
+    нормализация, показ данных, подтверждение.
+    """
+    api, repo, db = flow
+    repo.groups[:] = [{"code": "НОВЫЙ-7", "active": 1}]
     await menus.st_reg_group(USER, " новый-7 ", {"name": "Иванов Иван"})
 
     assert repo.saved == []          # пока не подтвердил
@@ -261,7 +317,6 @@ async def test_empty_registry_accepts_normalized_group(flow):
 
     await menus.cb_registration_confirm(USER, "")
     assert repo.saved == [(USER, "Иванов Иван", "НОВЫЙ-7")]
-    # сохранили - показали меню бота
     assert {"ticket_menu", "sched", "profile", "help"} <= set(api.payloads(USER))
 
 

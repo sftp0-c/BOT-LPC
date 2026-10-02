@@ -239,7 +239,20 @@ async def press(user, payload):
 
 
 async def register(user, name="Иванов Иван Иванович", group="ис-21"):
-    """Регистрация студента так, как это делает человек: выбор роли, ФИО, группа."""
+    """Регистрация студента так, как это делает человек: выбор роли, ФИО, группа.
+
+    Группа сперва заводится в справочник - так же, как это делает сис-админ на
+    вкладке «Группы». Раньше это было не нужно: неизвестный код молча создавал
+    группу при регистрации. Теперь не создаётся, и тест без подготовки справочника
+    падал бы на том, что регистрация не доходит до конца.
+    """
+    import repository as repository_module
+    from utils import group_code as canonical_group
+
+    код = canonical_group(group)
+    if код:
+        await repository_module.upsert_group(код, title=group.strip())
+
     await say(user, "/start")
     await press(user, "who:student")
     await say(user, name)

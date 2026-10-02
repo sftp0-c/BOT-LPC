@@ -1,4 +1,4 @@
-"""Единый справочник групп: небрежный ввод, псевдонимы, подсказки."""
+﻿"""Единый справочник групп: небрежный ввод, псевдонимы, подсказки."""
 import pytest
 
 import database as db
@@ -138,17 +138,33 @@ async def test_registration_asks_on_typo(college_groups, api):
     assert row["group_code"] == "24-23П"
 
 
-async def test_registration_creates_brand_new_group_and_warns_admins(api):
+async def test_registration_no_longer_creates_group_behind_admins_back(api):
+    """Студент не заводит группу сам, и сис-админ не получает об этом уведомление.
+
+    Задача владельца: «удалить возможность создания своей группы, у нас есть свой
+    реестр». Проверяем обе стороны, потому что раньше было обе:
+    * группа «99-01» попадала в справочник от студента - теперь не попадает;
+    * сис-админам уходило уведомление «Новая группа» - теперь не уходит, ведь
+      группа не появилась, а если появится - её завёл сотрудник.
+    """
     await say(STUDENT, "/start")
     await press(STUDENT, "who:student")
     await say(STUDENT, "Иванов Иван Иванович")
     await say(STUDENT, "99-01")
-    await press(STUDENT, "regyes")
-    await press(STUDENT, "consentyes")
 
     group = await db.one("SELECT * FROM groups WHERE group_code=?", ("99-01",))
-    assert group is not None
-    assert any("Новая группа" in text for _, text, _ in api.to("1"))
+    assert group is None, f"студент завел группу сам: {dict(group) if group else None}"
+
+    реплики_админу = [text for _to, text, _kb in api.to("1")]
+    assert not any("Новая группа" in text for text in реплики_админу), \
+        "сис-админ получил уведомление о группе, которой нет"
+
+    # и студенту сказано, куда обратиться, а не просто отказано
+    последний = api.last(STUDENT)[1]
+    assert "учебную часть" in последний, f"не сказано, куда обратиться: {последний!r}"
+
+    # в реестре не появилась и запись, и пользователь не зарегистрирован
+    assert await db.one("SELECT 1 FROM users WHERE user_id=?", (STUDENT,)) is None
 
 
 async def test_registration_group_pick_from_buttons(college_groups, api):

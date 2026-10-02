@@ -101,6 +101,10 @@ async def test_registration_suggests_name_from_profile(api):
 
 
 async def test_registration_accepts_suggested_name(api):
+    # Группа заранее в справочнике: с момента, как студент не может завести
+    # группу сам, неизвестный код её не создаёт. Так же поступает сис-админ на
+    # вкладке «Группы».
+    await repo.upsert_group("ИС-21", title="Информационные системы")
     await say(STUDENT, "/start")
     await repo.touch_contact(STUDENT, "ivanov", "Иванов Иван Иванович")
     await press(STUDENT, "who:student")
@@ -144,6 +148,10 @@ async def test_registration_group_pick_saves_after_confirm(api):
 
 
 async def test_registration_can_be_cancelled_and_edited(api):
+    # Группа заранее в справочнике: с момента, как студент не может завести
+    # группу сам, неизвестный код её не создаёт. Так же поступает сис-админ на
+    # вкладке «Группы».
+    await repo.upsert_group("ИС-21", title="Информационные системы")
     await say(STUDENT, "/start")
     await press(STUDENT, "who:student")
     await say(STUDENT, "Петрова Анна")
@@ -154,6 +162,10 @@ async def test_registration_can_be_cancelled_and_edited(api):
 
 
 async def test_registration_text_instead_of_button_works(api):
+    # Группа заранее в справочнике: с момента, как студент не может завести
+    # группу сам, неизвестный код её не создаёт. Так же поступает сис-админ на
+    # вкладке «Группы».
+    await repo.upsert_group("ИС-21", title="Информационные системы")
     await say(STUDENT, "/start")
     await press(STUDENT, "who:student")
     await say(STUDENT, "Петрова Анна")
@@ -165,7 +177,17 @@ async def test_registration_text_instead_of_button_works(api):
 
 
 async def test_registration_without_confirmation_keeps_nothing(api):
-    """Ключевое: без подтверждения пользователь не появляется в базе."""
+    """Ключевое: без подтверждения пользователь не появляется в базе.
+
+    Группа в справочнике заведена заранее, чтобы причина была ровно одна -
+    отсутствие подтверждения. Иначе код группы был заведомо недействительным, и
+    человек не сохранялся из-за несуществующей группы, а не из-за того, что не
+    нажал «всё верно».
+    """
+    # Группа заранее в справочнике: с момента, как студент не может завести
+    # группу сам, неизвестный код её не создаёт. Так же поступает сис-админ на
+    # вкладке «Группы».
+    await repo.upsert_group("ИС-21", title="Информационные системы")
     await say(STUDENT, "/start")
     await press(STUDENT, "who:student")
     await say(STUDENT, "Петрова Анна")
