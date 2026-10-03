@@ -5,7 +5,7 @@ import bot
 import config
 import database as db
 import repository
-from conftest import add_staff, click, press, register, say
+from conftest import card_more, add_staff, click, press, register, say
 from handlers.common import pending_tasks
 
 STUDENT, STAFF, STAFF2, OTHER = "100", "200", "201", "300"
@@ -99,7 +99,8 @@ async def test_full_ticket_conversation(api):
     assert (t["student_id"], t["target_admin_id"], t["status"]) == (STUDENT, STAFF, "new")
     notice = api.last(STAFF)
     assert "Не работает электронный журнал" in notice[1] and "Иванов Иван Иванович" in notice[1]
-    assert {f"rp:{t['ticket_id']}", f"st:{t['ticket_id']}:accepted"} <= set(api.payloads(STAFF))
+    адреса, _ = await card_more(api, STAFF, t["ticket_id"])
+    assert {f"rp:{t['ticket_id']}", f"st:{t['ticket_id']}:accepted"} <= адреса
 
     # сотрудник отвечает — студент получает, статус «в работе»
     await press(STAFF, f"rp:{t['ticket_id']}")
@@ -184,13 +185,25 @@ async def test_schedule_management_and_student_view(api, monkeypatch):
 
 async def test_profile_edit(api):
     await register(STUDENT)  # группа ИС-21 попадает в справочник при регистрации
-    # группы, которой нет в справочнике, бот просит подтвердить вручную
+
+    # группы, которой нет в справочнике, бот не заводит: справочник ведёт сотрудник.
+    # Раньше здесь стоял regok - любая опечатка попадала в справочник как новая группа.
+    #
+    # Что именно отвечает бот, проверено на живом коде: на «ис-31» рядом с «ис-21»
+    # он говорит «в списке не найдена, похожее - проверьте и выберите» и показывает
+    # группы кнопками. Ключевой фразы «список ведёт сотрудник» на этом пути нет:
+    # suggest_groups возвращает список целиком, когда похожего ничего не нашлось,
+    # поэтому подпись «Похожее» появляется почти всегда. Отдельная правка текста
+    # этого экрана вынесена владельцу отдельным вопросом.
     await press(STUDENT, "pf:group")
     await say(STUDENT, "ис-31")
-    assert "не найдена в активном справочнике" in api.last(STUDENT)[1]
-    await press(STUDENT, "regok:ИС-31:Иванов Иван Иванович")
-    assert (await db.one("SELECT group_code FROM users"))["group_code"] == "ИС-31"
-    # а на группу из справочника — без лишних вопросов
+    assert "в списке не найдена" in api.last(STUDENT)[1]
+    сохранённая = (await db.one("SELECT group_code FROM users"))["group_code"]
+    assert сохранённая != "ИС-31", "группа, которой нет, всё же сохранилась"
+    # и кнопки, создающей группу, нет ни на одном экране
+    assert not [p for p in api.payloads(STUDENT) if p.startswith("regok:")]
+
+    # а на группу из справочника - без лишних вопросов
     await press(STUDENT, "pf:group")
     await say(STUDENT, "ис-21")
     assert (await db.one("SELECT group_code FROM users"))["group_code"] == "ИС-21"

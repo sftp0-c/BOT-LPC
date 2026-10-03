@@ -213,9 +213,12 @@ def staff_list_kb(rows) -> list:
             # Ряд из двух кнопок, значит предел 16 символов, а не 22: длинное
             # ФИО укорачиваем до «Ковалевский К.», раздел берём короткий.
             # short() тут не годится - он ставит многоточие.
-            # ФИО через contact_full_name: поля full_name в реестре нет,
-            # вместо ФИО тут же показывался «ID <номер>».
-            label = person_label(contact_full_name(row), sid, max_api.row_limit(2) - 1)
+            # Именно full_name, а не contact_full_name: этот список приходит из
+            # repo.list_staff(), то есть из таблицы сотрудников, где поле так и
+            # называется. contact_full_name смотрит fio/staff_name/display_name
+            # и здесь возвращает пустую строку - список сотрудников показывал
+            # «ID <номер>» вместо ФИО.
+            label = person_label(_field(row, "full_name"), sid, max_api.row_limit(2) - 1)
             keyboard.append([btn(label, f"sf:{sid}"),
                              btn(STAFF_CATS_BTN.get(cat, "📄 Справки"), f"sf:{sid}")])
     return keyboard

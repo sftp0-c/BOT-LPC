@@ -157,34 +157,66 @@ async def staff_with_queue(env):
     return env
 
 
-async def test_queue_has_four_views(api, staff_with_queue):
+async def test_queue_shows_only_the_three_needed_buttons(api, staff_with_queue):
+    """В очереди три кнопки обслуживания: обновить, архив, по отделам.
+
+    Владелец: «фильтры не такая важная вещь, занимает очень много кнопок, которые
+    сбивают с толку, нужно что-то с этим сделать». Раньше тут было девять кнопок:
+    четыре представления, архив, по отделам, обновить, «только мои», «сбросить
+    фильтр» - плюс сами обращения.
+    """
     await press(STAFF, "staff")
-    payloads = api.payloads(STAFF)
-    for view in ("staffv:waiting", "staffv:in_progress", "staffv:ready", "staffv:"):
-        assert view in payloads
-    assert "staffcat" in payloads
+    payloads = set(api.payloads(STAFF))
+
+    assert not [p for p in payloads if p.startswith(("staffv:", "stafff:"))], \
+        "на экране остались фильтры"
+    assert "staff:mine" not in payloads, "переключателя «только мои» не осталось"
+    assert {"staff:", "staff:archive", "staffcat"} <= payloads
+
+    # сами обращения на месте - это рабочий список, а не пустое меню
+    assert len([p for p in payloads if p.startswith("t:")]) == 3
 
 
 async def test_queue_keyboard_is_short(api, staff_with_queue):
     await press(STAFF, "staff")
     rows = api.to(STAFF)[-1][2]
-    # четыре счётчика + переходы + сами обращения, без восьми фильтров
+    # обращения плюс три перехода; ни фильтров, ни счётчиков с цифрами
     filter_rows = [row for row in rows if any(p.startswith("stafff:") for p in
                                              [b["payload"] for b in row])]
     assert not filter_rows
     assert len(rows) <= 12
 
 
-async def test_waiting_view_shows_new_tickets(api, staff_with_queue):
+async def test_waiting_view_filters(api, staff_with_queue):
+    """Представление «ждут ответа» работает, хоть кнопки на экране больше нет.
+
+    Фильтры убраны с главного экрана решением владельца, но сами представления
+    остались: на них остались закладки в старых сообщениях.
+    """
     await press(STAFF, "staffv:waiting")
-    text = " ".join(labels(api, STAFF))
-    assert "Ждут ответа" in text
-    assert any(p.startswith("t:") for p in api.payloads(STAFF))
+    payloads = set(api.payloads(STAFF))
+    ждут = {p for p in payloads if p.startswith("t:")}
+    assert len(ждут) == 3, f"все три обращения ждут ответа, показано {len(ждут)}"
+    assert not [p for p in payloads if p.startswith("staffv:")], "фильтров на экране нет"
 
 
 async def test_in_progress_view_filters(api, staff_with_queue):
+    """Фильтр «В работе» действительно отбирает, а не показывает всё подряд.
+
+    Раньше эта проверка искала слово «В работе» в подписях последнего сообщения и
+    проходила, ни разу не заглянув в фильтр: последним сообщением было уведомление о
+    новом обращении, и слова там нет. При этом in_progress не входил в ключи фильтра и
+    попадал в «показать все» с подписью «отфильтровано» - то есть проверка была зелёной
+    на сломанном коде.
+    """
+    # ни одного обращения в работе - очередь под этим фильтром пуста
     await press(STAFF, "staffv:in_progress")
-    assert "В работе" in " ".join(labels(api, STAFF))
+    assert not [p for p in api.payloads(STAFF) if p.startswith("t:")]
+
+    # перевели одно в работу - показалось только оно
+    await db.run("UPDATE tickets SET status='in_progress' WHERE ticket_id=1")
+    await press(STAFF, "staffv:in_progress")
+    assert [p for p in api.payloads(STAFF) if p.startswith("t:")] == ["t:1"]
 
 
 async def test_departments_moved_to_submenu(api, staff_with_queue):
@@ -195,6 +227,18 @@ async def test_departments_moved_to_submenu(api, staff_with_queue):
     assert "stafff:open" in payloads
 
 
-async def test_old_filter_still_works(api, staff_with_queue):
+async def test_category_filter_selects_right_tickets(api, staff_with_queue):
+    """Фильтр по разделу из подменю отбирает нужные обращения.
+
+    Раньше проверка требовала ещё и подписи «Обратная связь» в тексте: её давала
+    строка «Фильтр: … — N», а её убрали вместе с остальным текстом очереди.
+    Проверяем то, ради чего фильтр нужен, - что отбор верный.
+    """
+    await press(STAFF, "staffcat")
+    assert "stafff:feedback" in api.payloads(STAFF)
+
     await press(STAFF, "stafff:feedback")
-    assert "Обратная связь" in api.to(STAFF)[-1][1]
+    показанные = [p for p in api.payloads(STAFF) if p.startswith("t:")]
+    assert показанные == ["t:3", "t:2", "t:1"], f"показано {показанные}"
+
+

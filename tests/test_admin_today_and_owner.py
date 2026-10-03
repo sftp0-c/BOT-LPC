@@ -1,10 +1,10 @@
-"""Сводка дня сис-админа, удаление обращений и максимальные права владельца."""
+﻿"""Сводка дня сис-админа, удаление обращений и максимальные права владельца."""
 import pytest
 
 import config
 import database as db
 import repository as repo
-from conftest import add_staff, press, register, say
+from conftest import card_more, add_staff, press, register, say
 
 SYS, STUDENT, STAFF = "1", "100", "200"
 OWNER = "46010397"
@@ -78,8 +78,8 @@ async def test_clean_dialogs_removes_stuck_states(api):
 # ── удаление обращения ────────────────────────────────────────────────────────
 async def test_sysadmin_deletes_ticket_from_bot(api):
     tid = await make_ticket()
-    await press(SYS, f"t:{tid}")
-    assert f"tdel:{tid}" in api.payloads(SYS)
+    адреса, _ = await card_more(api, SYS, tid)
+    assert f"tdel:{tid}" in адреса
 
     await press(SYS, f"tdel:{tid}")
     assert "Удалить обращение" in api.last(SYS)[1]

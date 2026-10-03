@@ -2,7 +2,7 @@
 
 import database as db
 import repository as repo
-from conftest import add_staff, login_panel, press, register, say
+from conftest import card_more, add_staff, login_panel, press, register, say
 from utils import as_str
 
 SYS, STAFF, OTHER, STUDENT = "1", "200", "201", "100"
@@ -104,8 +104,8 @@ async def test_internal_note_is_saved_and_not_shown_to_student(api):
 
 async def test_note_button_in_staff_card(api):
     ticket = await make_ticket()
-    await press(STAFF, f"t:{ticket}")
-    assert f"note:{ticket}" in api.payloads(STAFF)
+    адреса, _ = await card_more(api, STAFF, ticket)
+    assert f"note:{ticket}" in адреса
 
 
 async def test_student_never_sees_internal_notes(api):

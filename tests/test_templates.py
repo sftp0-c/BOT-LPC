@@ -1,4 +1,4 @@
-"""Шаблоны ответов: хранение, выбор в боте, управление в панели."""
+﻿"""Шаблоны ответов: хранение, выбор в боте, управление в панели."""
 import pytest
 import database as db
 
@@ -6,7 +6,7 @@ import database as db
 pytestmark = pytest.mark.panel
 
 import repository as repo
-from conftest import add_staff, login_panel, post_form, press, register, say
+from conftest import card_more, add_staff, login_panel, post_form, press, register, say
 
 SYS, STAFF, STUDENT = "1", "200", "100"
 
@@ -59,8 +59,8 @@ async def test_delete_template(clear_templates):
 # ── бот: выбор шаблона в карточке обращения ───────────────────────────────────
 async def test_templates_button_in_ticket_card(api, clear_templates):
     await make_ticket()
-    await press(STAFF, "t:1")
-    assert "tpl:1" in api.payloads(STAFF)
+    адреса, _ = await card_more(api, STAFF, 1)
+    assert "tpl:1" in адреса
 
 
 async def test_staff_picks_template_and_sends_it(api, clear_templates):

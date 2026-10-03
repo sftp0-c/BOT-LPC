@@ -1,4 +1,4 @@
-"""Архив обращений: сотрудник сам убирает закрытые дела и возвращает их в работу.
+﻿"""Архив обращений: сотрудник сам убирает закрытые дела и возвращает их в работу.
 
 Раньше архивировать мог только сис-админ (и то из веб-панели), поэтому закрытые
 дела годами висели в общей очереди. Теперь кнопка есть у ответственного за
@@ -9,7 +9,7 @@ import pytest
 import database as db
 import max_api
 import repository as repo
-from conftest import add_staff, press, register, say
+from conftest import card_more, add_staff, press, register, say
 from utils import as_str
 
 SYS = "1"
@@ -61,9 +61,9 @@ def not_cut(labels_: list[str], where: str = "") -> None:
 # ── сотрудник архивирует ─────────────────────────────────────────────────────
 async def test_staff_sees_archive_button_on_own_ticket(api):
     tid = await make_ticket()
-    await press(STAFF, f"t:{tid}")
-    assert f"tarch:{tid}" in api.payloads(STAFF)
-    assert "🗄 В архив" in " ".join(labels(api, STAFF))
+    адреса, подписи = await card_more(api, STAFF, tid)
+    assert f"tarch:{tid}" in адреса
+    assert "🗄 В архив" in подписи
 
 
 async def test_staff_archives_own_ticket(api):

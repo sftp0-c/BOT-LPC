@@ -1,4 +1,4 @@
-"""Очередь сотрудника: фильтры, счётчики и «ждёт ответа»."""
+﻿"""Очередь сотрудника: фильтры, счётчики и «ждёт ответа»."""
 import pytest
 
 import database as db
@@ -34,27 +34,27 @@ async def set_status(ticket_id: int, status: str) -> None:
 
 
 # ── бот ───────────────────────────────────────────────────────────────────────
-async def test_queue_shows_counters_and_filters(api):
-    """Очередь открывается четырьмя счётчиками, а фильтры - из подменю «По отделам»."""
+async def test_queue_is_bare_and_filters_live_in_submenu(api):
+    """На очереди нет ни счётчиков, ни фильтров; фильтры живут в «По отделам».
+
+    Владелец: «фильтры не такая важная вещь, занимает очень много кнопок, которые
+    сбивают с толку». С главного экрана они убраны. Из подменю «По отделам»
+    убирать не стали: там кнопки не мешают, и фильтр по разделу нужен.
+    """
     first = await ticket()
     second = await ticket("certificates")
     await press(STAFF, "staff")
 
     assert "Очередь обращений" in api.last(STAFF)[1]
     payloads = set(api.payloads(STAFF))
-    assert {"staffv:waiting", "staffv:in_progress", "staffv:ready", "staffv:",
-            "staffcat", "staff:"} <= payloads
-    # восьми фильтров на главном экране больше нет - они в подменю
-    assert not [p for p in payloads if p.startswith("stafff:")]
     assert {f"t:{first}", f"t:{second}"} <= payloads
+    # ни фильтров, ни счётчиков с цифрами на главном экране
+    assert not [p for p in payloads if p.startswith(("staffv:", "stafff:"))]
+    assert not [b["text"] for row in api.last(STAFF)[2] for b in row if " — " in b["text"]]
+    # осталось только то, без чего нельзя работать
+    assert {"staffcat", "staff:"} <= payloads
 
-    counters = {b["payload"]: b["text"] for row in api.last(STAFF)[2] for b in row}
-    assert counters["staffv:waiting"].endswith("2")          # оба ждут ответа
-    assert counters["staffv:in_progress"].endswith("0")
-    assert counters["staffv:ready"].endswith("0")
-    assert counters["staffv:"].endswith("2")                # все обращения
-
-    # счётчик работает как фильтр: ответили на один - он из «ждут ответа» ушёл
+    # «ждут ответа» работает и дальше: на представление остались закладки
     await press(STAFF, f"rp:{first}")
     await say(STAFF, "Ответили")
     await press(STAFF, "staffv:waiting")
@@ -67,17 +67,20 @@ async def test_queue_shows_counters_and_filters(api):
     departments = set(api.payloads(STAFF))
     assert "stafff:certificates" in departments and "stafff:open" in departments
     await press(STAFF, "stafff:certificates")
-    assert "Фильтр: 📄 Справка — 1" in api.last(STAFF)[1]
-    assert f"t:{second}" in api.payloads(STAFF)
+    только_справки = set(api.payloads(STAFF))
+    assert f"t:{second}" in только_справки and f"t:{first}" not in только_справки
 
 
 async def test_filter_by_status(api):
+    """Фильтр по статусу отбирает нужные обращения.
+
+    Подписи «Фильтр: … — N» на экране больше нет: владелец просил мало информации.
+    Проверяем то, ради чего фильтр и нужен, - что отбор верный.
+    """
     first = await ticket()
     second = await ticket()
     await set_status(second, "completed")
     await press(STAFF, "stafff:completed")
-    text = api.last(STAFF)[1]
-    assert "Фильтр: ✅ Завершённые — 1" in text
     payloads = api.payloads(STAFF)
     assert f"t:{second}" in payloads and f"t:{first}" not in payloads
 
@@ -87,7 +90,6 @@ async def test_filter_open_shows_only_open(api):
     second = await ticket()
     await set_status(second, "completed")
     await press(STAFF, "stafff:open")
-    assert "Фильтр: 🔓 Открытые — 1" in api.last(STAFF)[1]
     payloads = api.payloads(STAFF)
     assert f"t:{first}" in payloads and f"t:{second}" not in payloads
 
@@ -96,7 +98,6 @@ async def test_filter_by_category(api):
     await ticket("feedback")
     await ticket("certificates")
     await press(STAFF, "stafff:certificates")
-    assert "Фильтр: 📄 Справка — 1" in api.last(STAFF)[1]
 
 
 async def test_filter_survives_refresh(api):
@@ -108,15 +109,27 @@ async def test_filter_survives_refresh(api):
     assert "staff:completed" in api.payloads(STAFF)
     api.sent.clear()
     await press(STAFF, "staff:completed")
-    assert "Фильтр: ✅ Завершённые — 1" in api.last(STAFF)[1]
     assert f"t:{first}" not in api.payloads(STAFF)
 
 
-async def test_filter_can_be_reset(api):
-    await ticket()
-    await press(STAFF, "stafff:open")
-    await press(STAFF, "staff:")
-    assert "Фильтр не выбран" in api.last(STAFF)[1]
+async def test_queue_without_filter_shows_all_open(api):
+    """Без фильтра очередь снова вся - отдельная кнопка сброса больше не нужна.
+
+    Раньше были фильтр и отдельная кнопка «Сбросить фильтр». Обе убраны с экрана.
+    Сброс получается сам: из фильтра ушли в меню и открыли очередь заново.
+    """
+    first = await ticket()
+    second = await ticket()
+    await set_status(second, "completed")
+    await press(STAFF, "stafff:completed")
+    assert f"t:{second}" in api.payloads(STAFF)
+
+    await press(STAFF, "home")
+    await press(STAFF, "staff")
+    payloads = set(api.payloads(STAFF))
+    assert f"t:{first}" in payloads, "после сброса очередь не показала открытые дела"
+    # закрытое в очередь не возвращается: оно в архиве
+    assert f"t:{second}" not in payloads
 
 
 async def test_queue_of_empty_staff(api):
@@ -200,10 +213,13 @@ async def test_panel_filters_never_crash(panel_client, params):
 
 
 async def test_status_counts_unchanged_by_filters(api):
-    """Счётчики в шапке показывают всю картину, а не результат фильтра."""
+    """Счётчики считают по базе, а не по тому, что показано на экране.
+
+    Самих счётчиков на экране больше нет - они были на кнопках фильтров, а
+    фильтры с главного экрана убраны по решению владельца. Считает их панель, и
+    считать должна вся картина, а не результат фильтра.
+    """
     await ticket()
     await ticket()
     await press(STAFF, "stafff:open")
-    text = api.last(STAFF)[1]
-    assert "🆕 Новое — 2" in text and "Фильтр: 🔓 Открытые — 2" in text
     assert await repo.status_counts(STAFF) == {"new": 2}

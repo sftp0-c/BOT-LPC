@@ -1,8 +1,8 @@
-"""Кнопка «Справка готова» в боте: кабинет 115 и уведомление студенту."""
+﻿"""Кнопка «Справка готова» в боте: кабинет 115 и уведомление студенту."""
 import pytest
 
 import repository as repo
-from conftest import add_staff, press, register
+from conftest import card_more, add_staff, press, register
 
 STUDENT, STAFF = "300", "200"
 
@@ -15,8 +15,8 @@ async def ticket_id(env):          # env из conftest даёт FakeAPI, его 
 
 
 async def test_ready_button_present_in_staff_card(ticket_id, api):
-    await press(STAFF, f"t:{ticket_id}")
-    assert f"tdready:{ticket_id}" in api.payloads(STAFF)
+    адреса, _ = await card_more(api, STAFF, ticket_id)
+    assert f"tdready:{ticket_id}" in адреса
 
 
 async def test_ready_button_sets_cabinet_115(ticket_id, api):

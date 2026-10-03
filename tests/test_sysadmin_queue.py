@@ -1,4 +1,4 @@
-"""Очередь бота: сис-админ видит и берёт в работу все обращения.
+﻿"""Очередь бота: сис-админ видит и берёт в работу все обращения.
 
 Раньше сис-админ видел в очереди в основном назначенные ему дела, а право
 «видит все обращения» открывало очередь, но не карточку - кнопка вела в
@@ -11,7 +11,7 @@ import pytest
 
 import database as db
 import repository as repo
-from conftest import add_staff, press, register, say
+from conftest import card_more, add_staff, press, register, say
 
 SYS = "1"                 # сис-админ из SYSADMIN_IDS (см. conftest)
 STAFF = "500"             # сотрудник, которому назначили обращение
@@ -58,7 +58,10 @@ async def test_sysadmin_queue_shows_foreign_tickets(api):
     theirs = await make_ticket(FOREIGN, STAFF, "Нужна справка")
     await press(SYS, "staff")
     assert f"t:{mine}" in api.payloads(SYS) and f"t:{theirs}" in api.payloads(SYS)
-    assert "Все обращения: у вас системные права" in api.last(SYS)[1]
+    # строки про права на экране нет: владелец просил мало информации, а право
+    # сотрудник и так знает - оно проверяется самим фактом, что чужие дела видны
+    assert "системные права" not in api.last(SYS)[1]
+    assert api.last(SYS)[1].startswith("📬 Очередь обращений")
     assert_fits(api, SYS, "очередь сис-админа")
 
 
@@ -67,10 +70,13 @@ async def test_sysadmin_opens_foreign_ticket(api):
     await press(SYS, f"t:{tid}")
     card = api.last(SYS)
     assert "Не работает электронный журнал" in card[1]
-    assert f"rp:{tid}" in api.payloads(SYS)          # отвечать можно
-    assert f"st:{tid}:accepted" in api.payloads(SYS)  # и статус менять
-    assert f"ttake:{tid}" in api.payloads(SYS)        # и взять в работу
-    assert f"tdel:{tid}" in api.payloads(SYS)         # и удалить
+    адреса, _ = await card_more(api, SYS, tid)
+    assert f"rp:{tid}" in адреса          # отвечать можно
+    assert f"st:{tid}:accepted" in адреса  # и статус менять
+    assert f"ttake:{tid}" in адреса        # и взять в работу
+    assert f"tdel:{tid}" in адреса         # и удалить
+    # подписи меряем на самой карточке, а не на подменю
+    await press(SYS, f"t:{tid}")
     assert_fits(api, SYS, "карточка чужого дела")
 
 
@@ -98,10 +104,12 @@ async def test_sysadmin_switches_between_all_and_mine(api):
     tid = await make_ticket()
     await press(SYS, "staff:mine")
     assert f"t:{tid}" not in api.payloads(SYS)     # чужих дел в «моих» нет
-    assert "Только мои" in api.last(SYS)[1]
+    # кнопки переключения на экране нет: возвращаться к своим делам не нужно,
+    # очередь и так своя. Само представление работает - на него остались закладки.
+    assert f"t:{tid}" not in api.payloads(SYS)     # чужих дел в «моих» нет
     await press(SYS, "staff:")
     assert f"t:{tid}" in api.payloads(SYS)         # а во всех - есть
-    assert "staff:mine" in api.payloads(SYS)       # и кнопка «только мои» на месте
+    assert "staff:mine" not in api.payloads(SYS)    # и кнопки переключения нет
 
 
 async def test_take_button_is_not_shown_for_own_ticket(api):
@@ -125,7 +133,8 @@ async def test_plain_staff_sees_only_own_tickets(api):
     await press(OTHER, "staff")
     payloads = api.payloads(OTHER)
     assert f"t:{mine}" not in payloads and f"t:{theirs}" not in payloads
-    assert "Только обращения, назначенные вам" in api.last(OTHER)[1]
+    # строки про права на экране нет - по решению владельца
+    assert "назначенные вам" not in api.last(OTHER)[1]
     assert "staff:mine" not in payloads              # переключателя нет: нечего переключать
 
 
@@ -168,7 +177,9 @@ async def test_granted_staff_sees_and_opens_foreign_ticket(api):
     await repo.set_staff_see_all(OTHER, True)
     await press(OTHER, "staff")
     assert f"t:{tid}" in api.payloads(OTHER)
-    assert "право выдано сис-админом" in api.last(OTHER)[1]
+    # строки про права на экране нет - по решению владельца
+    # право выдано видно по делу: чужое обращение в очереди есть
+    assert "право выдано" not in api.last(OTHER)[1]
     await press(OTHER, f"t:{tid}")
     assert "Не работает электронный журнал" in api.last(OTHER)[1]
 

@@ -1,4 +1,4 @@
-"""Обращения студентов: создание, переписка, статусы, списки."""
+﻿"""Обращения студентов: создание, переписка, статусы, списки."""
 from datetime import datetime, timedelta
 import re
 
@@ -58,7 +58,13 @@ LEGACY_COMPLETED_FROM = ("new", "accepted", "in_progress")
 CLOSED_STATUSES = ("completed", "rejected")   # дела закрыты: отвечать и закрывать уже нечего
 # 16 ячеек, чтобы влезало и в ряд из двух кнопок: «✅ Ответить и закрыть»
 # (21 ячейка) обрезалось до «✅ Ответить и…»
-CLOSE_BTN = "✅ Ответ и закрыть"             # ответ шаблоном и статус «завершено» сразу
+CLOSE_BTN = "✅ Ответ и закрыть"
+# Подписи статусов на карточке. Отличаются от подписей в кнопках-фильтрах и в
+# списке: там «📄 Готовы» означает раздел очереди, тут - «📋 К выдаче» означает
+# действие сотрудника. Одно и то же слово на одном экране в двух смыслах и есть
+# причина, по которой закрытие обращения не находилось.
+STAGE_SHORT = {"ready": "📋 К выдаче"}
+MORE_BTN = "⚡ Ещё"             # ответ шаблоном и статус «завершено» сразу
 ARCHIVE_VIEW = "archive"        # значение фильтра очереди: архив обращений
 MINE_VIEW = "mine"              # значение фильтра очереди: только свои обращения
 ARCHIVE_LIMIT = 200             # сколько архивных обращений держим в одном экране
@@ -288,31 +294,23 @@ def ticket_kb(t, staff_side: bool, can_delete: bool = False, can_archive: bool =
         if can_archive:
             rows.append([btn(RESTORE_BTN, f"tarch:{tid}")])   # подпись длинная - одна в ряду
         return rows
-    rows = [[btn("💬 Ответить", f"rp:{tid}")]]
+    # Три действия видны сразу, четвёртая кнопка прячет всё редкое.
+    # Главное - «Ответ и закрыть» - первое и во всю ширину: владелец просил,
+    # чтобы обращение можно было взять, обработать и закрыть, и чтобы оно ушло
+    # из списка. Та самая подпись в 20 символов в паре обрезалась бы многоточием,
+    # поэтому своя строка.
+    rows = []
     if as_str(status) not in CLOSED_STATUSES:
-        # «Ответить и закрыть» - отдельным рядом: подпись в 20 символов, а в
-        # паре с «Ответить» MAX показывает 16 и обрезал бы её многоточием.
-        # На закрытом обращении кнопки нет: закрывать уже нечего.
         rows.append([btn(CLOSE_BTN, f"tplclose:{tid}")])
-    # статус в кнопке короткий: в ряду из двух кнопок помещается 16 символов,
-    # а «📄 Готово к выдаче» обрезалось бы многоточием (полный - в тексте карточки)
-    changes = [btn(STATUS_SHORT[code], f"st:{tid}:{code}") for code in NEXT_STATUSES.get(status, ())]
-    rows += [changes[i : i + 2] for i in range(0, len(changes), 2)]
-    # по две кнопки в ряду: в ряду из четырёх подписи режутся на телефоне,
-    # поэтому дальше этот список нарезается парами
-    tail = [btn("↩️ К списку", "staff"), btn("⚡ Шаблоны", f"tpl:{tid}"),
-            btn("📝 Заметка", f"note:{tid}"), btn("↪️ Переслать", f"fwd:{tid}")]
-    if can_take:
-        tail.append(btn(TAKE_BTN, f"ttake:{tid}"))
-    # кабинет в кнопке виден сразу: для справки это 115, для остального - тот,
-    # что в обращении, а если его нет, сотрудника спросят на следующем экране
-    if ready_needed(t):
-        tail.append(btn(ready_label(t), f"tdready:{tid}"))
-    if can_archive:
-        tail.append(btn(ARCHIVE_BTN, f"tarch:{tid}"))
-    if can_delete:
-        tail.append(btn("🗑 Удалить", f"tdel:{tid}"))
-    return [*rows, *_chunk(tail, 2)]
+    rows.append([btn("💬 Ответить", f"rp:{tid}")])
+    rows.append([btn(MORE_BTN, f"tmore:{tid}")])
+    # Всё остальное живёт в «Ещё»: смена статуса, заметка, пересылка,
+    # готовность к выдаче, архив, удаление и взятие чужого дела. Здесь остаются
+    # три действия и выход - иначе главное теряется в списке. Кнопки удалены
+    # не выборочно, а все: пока тут стояли «Принято», «Отклонено», «Готово ·
+    # 115» и остальные, карточка показывала двенадцать кнопок, и «Ответ и
+    # закрыть» среди них не читалось.
+    return [*rows, [btn("↩️ К списку", "staff")]]
 
 
 @callback("tdready")
@@ -484,6 +482,44 @@ async def may_take(x: str, t) -> bool:
     if is_archived(t) or as_str(_get(t, "target_admin_id")) == str(x):
         return False
     return is_super(await admin_of(x)) or await repo.staff_sees_all(x)
+
+
+@callback("tmore")
+async def cb_ticket_more(x, arg):
+    """Второй ряд карточки: то, что нужно редко.
+
+    Решение владельца: на карточке было одиннадцать кнопок, и «ответить и закрыть»
+    среди них не читалось. Всё редкое убрано сюда, на главном экране остались
+    три действия и выход.
+    """
+    tid = to_int(arg)
+    t, staff_side = await load_ticket(x, tid)
+    if not t or not staff_side:
+        return await api.send(x, "Обращение не найдено.", [[btn("↩️ К списку", "staff")]])
+    if is_archived(t):
+        return await send_ticket(x, t, staff_side=True)
+
+    a = await admin_of(x)
+    can_delete = bool(a) and is_super(a)
+    can_archive = await may_archive(x, t)
+    can_take = await may_take(x, t)
+
+    rows = [[btn("📝 Заметка", f"note:{tid}"), btn("↪️ Переслать", f"fwd:{tid}")],
+            [btn("⚡ Шаблоны", f"tpl:{tid}")]]
+    if can_take:
+        rows.append([btn(TAKE_BTN, f"ttake:{tid}")])
+    if ready_needed(t):
+        rows.append([btn(ready_label(t), f"tdready:{tid}")])
+    # смена статуса отдельными кнопками в ряд: подписи короткие, помещаются по две
+    status = as_str(t["status"])
+    changes = [btn(STAGE_SHORT.get(code, STATUS_SHORT[code]), f"st:{tid}:{code}")
+               for code in NEXT_STATUSES.get(status, ())]
+    rows += [changes[i: i + 2] for i in range(0, len(changes), 2)]
+    if can_archive:
+        rows.append([btn(ARCHIVE_BTN, f"tarch:{tid}")])
+    if can_delete:
+        rows.append([btn("🗑 Удалить", f"tdel:{tid}")])
+    await api.send(x, f"🔧 Ещё для обращения №{tid}", [*rows, [btn("↩️ К обращению", f"t:{tid}")], *BACK])
 
 
 @callback("ttake")
@@ -705,63 +741,60 @@ async def send_staff_queue(x: str, view: str = "") -> None:
     mine = view == MINE_VIEW
     arch_n = len(await archive_rows(x, a))
     all_rows = await repo.admin_tickets(scope)
-    counts = await repo.status_counts(scope)
-    if view == "__waiting__":
-        latest = await repo.latest_message_roles([row["ticket_id"] for row in all_rows])
-        rows = [row for row in all_rows if latest.get(int(row["ticket_id"])) == "student"]
-        view = "waiting"
-    elif mine:
+    # «Ждут ответа» - это не статус, а признак: последнее слово написал студент.
+    # Поэтому его считают отдельно, по сообщениям, а не по полю status. Раньше
+    # кнопка слала view=waiting, а код ждал "__waiting__", - условие не
+    # сходилось никогда, и фильтр молча показывал все обращения.
+    latest_roles = await repo.latest_message_roles(
+        [row["ticket_id"] for row in all_rows]) if all_rows else {}
+
+    def ждёт_ответа(row) -> bool:
+        return latest_roles.get(int(row["ticket_id"])) == "student"
+
+    # Что считается незакрытым. «Готово к выдаче» тоже: документ сделан, но
+    # ещё не отдан студенту, и про него надо помнить. Закрытые живут в архиве.
+    незакрытые = {"new", "accepted", "in_progress", "ready"}
+
+    if mine:
         # «Только мои»: право видеть все обращения не значит права отвечать за всех
-        rows = [row for row in all_rows if as_str(row["target_admin_id"]) == str(x)]
+        rows = [row for row in all_rows
+                if as_str(row["target_admin_id"]) == str(x)
+                and as_str(row["status"]) in незакрытые]
+    elif view in ("waiting", "__waiting__"):
+        rows = [row for row in all_rows if ждёт_ответа(row)
+                and as_str(row["status"]) in незакрытые]
+    elif view == "in_progress":
+        # Отдельная ветка: in_progress не входит в STAFF_QUEUE_FILTERS, и раньше
+        # из-за этого попадал в «показать все» с подписью «Фильтр: В работе».
+        rows = [row for row in all_rows if as_str(row["status"]) == "in_progress"]
     elif view == "open":
-        rows = [row for row in all_rows if row["status"] in OPEN_STATUSES]
+        rows = [row for row in all_rows if as_str(row["status"]) in незакрытые]
     elif view in dict(STAFF_QUEUE_FILTERS):
         rows = [row for row in all_rows if as_str(row["status"]) == view]
     elif view in CATS:
         rows = [row for row in all_rows if as_str(row["category"]) == view]
     else:
-        rows = all_rows
+        rows = [row for row in all_rows if as_str(row["status"]) in незакрытые]
+    # Текст - одна строка. Раньше здесь было четыре: пять счётчиков с эмодзи,
+    # строка про права и строка про фильтр. Человек читал это каждый раз и
+    # ничего не решал: цифры те же, что на кнопках фильтров, а права он и так
+    # знает.
     lines = ["📬 Очередь обращений"]
-    lines.append(" · ".join(f"{STATUS[code]} — {counts.get(code, 0)}"
-                            for code in ("new", "accepted", "in_progress", "ready", "completed")))
-    # кто что видит - говорим прямо: молчаливый чужой список пугает людей
-    lines.append("👁 Все обращения: у вас системные права" if super_view else
-                 "👁 Все обращения: право выдано сис-админом" if sees_all else
-                 "👁 Только обращения, назначенные вам")
-    if mine:
-        lines.append(f"\nФильтр: {STAFF_VIEW_LABEL[MINE_VIEW]} — {len(rows)}")
-    elif view:
-        title = STAFF_VIEW_LABEL.get(view) or CATS.get(view) or dict(STAFF_QUEUE_FILTERS).get(view)
-        lines.append(f"\nФильтр: {title or view} — {len(rows)}")
-    else:
-        lines.append("Фильтр не выбран — показаны все обращения")
-    latest_roles = await repo.latest_message_roles([row["ticket_id"] for row in all_rows])
-    views = []
-    for code, label in STAFF_QUEUE_VIEWS:
-        count = (sum(1 for row in all_rows
-                     if latest_roles.get(int(row["ticket_id"])) == "student")
-                 if code == "waiting"
-                 else sum(1 for row in all_rows
-                          if not code or as_str(row["status"]) == code))
-        views.append(btn(f"{'▸ ' if view == code else ''}{label} {count}", f"staffv:{code}"))
-    # счётчики - по одной кнопке в ряду: в паре помещается 16 символов, а
-    # «🔔 Ждут ответа 1234» в неё не влезает и обрезалось бы многоточием
-    keyboard = [[item] for item in views]
-    keyboard.append([btn(f"🗄 Архив: {arch_n}", f"staff:{ARCHIVE_VIEW}")])
-    keyboard.append([btn("👥 По отделам", "staffcat"), btn("🔄 Обновить", f"staff:{view}")])
-    if sees_all:
-        # право «видит все» без переключателя превращает чужую очередь в
-        # ежедневную: вернуться к своим делам можно одним нажатием
-        keyboard.append([btn("👁 Все обращения" if mine else "📥 Только мои",
-                             f"staff:{'' if mine else MINE_VIEW}")])
-    if view:
-        keyboard.append([btn("Сбросить фильтр", "staff:")])
+    if not rows:
+        lines.append("Пока пусто. Новые обращения появятся здесь сами.")
+
+    # Кнопки обслуживания: пять, а не девять. Фильтры убраны решением владельца -
+    # они занимали пол-экрана и мешали видеть сами обращения. Обновить,
+    # архив и раздел по отделам остались: без них нельзя ни обновить список,
+    # ни найти закрытое, ни посмотреть дела по подразделениям.
+    keyboard = []
     if rows:
         keyboard += await ticket_rows_kb(rows[:15], True)
-    else:
-        keyboard.append([btn("🔍 Ничего не найдено", "noop")])
+    keyboard.append([btn("🔄 Обновить", f"staff:{view}"),
+                     btn(f"🗄 Архив{'' if not arch_n else f': {arch_n}'}",
+                         f"staff:{ARCHIVE_VIEW}")])
+    keyboard.append([btn("👥 По отделам", "staffcat")])
     await api.send(x, "\n".join(lines), [*keyboard, *BACK])
-
 
 # ── свой раздел сотрудника ───────────────────────────────────────────────────
 SECTION_TEMPLATES = 4        # шаблонов на экране раздела: остальные - из карточки
@@ -1535,10 +1568,79 @@ async def staff_templates(x: str, t, limit: int = TPL_PAGE) -> list:
     return sorted(paired, key=rank)[:limit]
 
 
+def template_preview(text: str, limit: int = 90) -> str:
+    """Начало текста шаблона одной строкой: обрезаем по границе слова.
+
+    Раньше в списке было только название, и выбирать приходилось вслепую -
+    нажал, шаблон подставился в ответ, и только там стало видно, что он не
+    тот. А шаблон применяется к обращению и закрывает его, так что ошибка
+    выбора дорогая.
+
+    Многоточия не ставим: обрезанное слово путает. Плейсхолдеры вида {ФИО} не
+    трогаем - по ним видно, что шаблон подставит имя, это часть сути.
+    """
+    начало = " ".join(as_str(text).split())
+    начало = без_приветствия(начало)
+    if len(начало) <= limit:
+        return начало
+    обрезан = начало[:limit]
+    if " " in обрезан:
+        обрезан = обрезан[:обрезан.rindex(" ")]
+    return обрезан
+
+
+def без_приветствия(текст: str) -> str:
+    """Отрезает приветствие с начала: у всех шаблонов оно одинаковое.
+
+    Шаблоны начинаются с «{ФИО}, добрый день!», и без этого предпросмотр
+    девяноста символов почти целиком уходил на приветствие - а различить
+    шаблоны нужно по тому, что после него. В самом ответе приветствие остаётся,
+    убирается только из предпросмотра.
+
+    Распознаём форму вида «{ФИО}, добрый день!» и «Здравствуйте!»: имя в
+    плейсхолдерах или любой текст до запятой, затем приветствие до точки или
+    запятой. Если приветствия нет - текст не трогаем.
+    """
+    начало = as_str(текст).lstrip()
+    приветствия = ("добрый день", "здравству", "доброго времени", "добрый вечер")
+    lowered = начало.lower()
+    точка_приветствия = -1
+    for слово in приветствия:
+        нашли = lowered.find(слово)
+        if нашли < 0:
+            continue
+        # приветствие должно быть в начале, а не упоминаться в середине
+        if нашли > 40:
+            continue
+        конец = начало.find("!", нашли)
+        если_запятая = начало.find(",", нашли)
+        если_точка = начало.find(".", нашли)
+        кандидаты = [c for c in (конец, если_запятая, если_точка) if c >= 0]
+        if кандидаты:
+            точка_приветствия = max(точка_приветствия, min(кандидаты))
+    if точка_приветствия < 0:
+        return начало
+    остаток = начало[точка_приветствия + 1:].lstrip(" ,.!-—")
+    # отрезать стоит только если осталось что показать
+    return остаток if len(остаток) >= 20 else начало
+
+
 def templates_text(rows: list) -> str:
-    """Названия шаблонов текстом: в кнопке длинное название обрезается."""
-    return "\n".join(f"· {short(row['title'], 40)}{'  — мои' if own else ''}"
-                     for row, own in rows)
+    """Шаблоны текстом: название и начало текста под ним.
+
+    Название обрезано, как раньше: в кнопке MAX режет по длине, а полное и так
+    видно в строке ниже.
+    """
+    строки = []
+    for row, own in rows:
+        начало = short(row["title"], 40)
+        if own:
+            начало += "  — мои"
+        строки.append(f"· {начало}")
+        предпросмотр = template_preview(row["text"])
+        if предпросмотр:
+            строки.append(f"    {предпросмотр}")
+    return "\n".join(строки)
 
 
 @callback("tpl")

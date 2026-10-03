@@ -1,11 +1,11 @@
-"""Сценарии заявок: выбор темы, статусы, готовность и выдача."""
+﻿"""Сценарии заявок: выбор темы, статусы, готовность и выдача."""
 from datetime import datetime
 
 import pytest
 
 import database as db
 import repository
-from conftest import add_staff, press, register, say
+from conftest import card_more, add_staff, press, register, say
 from handlers import tickets
 
 STUDENT, STAFF, STAFF2, OTHER = "100", "200", "201", "300"
@@ -168,16 +168,18 @@ async def test_feedback_ticket_has_no_topic(api, fake_repo):
 
 async def test_staff_reply_accepts_new_ticket(api, fake_repo):
     tid = await make_ticket(api)
-    assert f"st:{tid}:accepted" in api.payloads(STAFF)
-    assert f"st:{tid}:in_progress" not in api.payloads(STAFF)
+    адреса, _ = await card_more(api, STAFF, tid)
+    assert f"st:{tid}:accepted" in адреса
+    assert f"st:{tid}:in_progress" not in адреса
 
     await press(STAFF, f"rp:{tid}")
     await say(STAFF, "Проверим, ответим сегодня")
     assert (await db.one("SELECT status FROM tickets WHERE ticket_id=?", (tid,)))["status"] == "accepted"
     assert "Проверим, ответим сегодня" in api.last(STUDENT)[1]
 
-    await press(STAFF, f"t:{tid}")
-    assert f"st:{tid}:ready" in api.payloads(STAFF)  # принятую можно сделать готовой
+    # принятую можно сделать готовой: кнопка уехала в «Ещё», но действие осталось
+    адреса, _ = await card_more(api, STAFF, tid)
+    assert f"st:{tid}:ready" in адреса
 
 
 async def test_legacy_in_progress_reply_becomes_accepted(api, fake_repo):
@@ -337,8 +339,9 @@ async def test_ready_twice_does_not_notify_again(api, fake_repo):
 async def test_ready_is_not_offered_for_closed_ticket(api, fake_repo):
     tid = await make_ticket(api)
     await press(STAFF, f"st:{tid}:rejected")
-    assert f"st:{tid}:ready" not in api.payloads(STAFF)
-    assert f"st:{tid}:accepted" in api.payloads(STAFF)
+    адреса, _ = await card_more(api, STAFF, tid)
+    assert f"st:{tid}:ready" not in адреса
+    assert f"st:{tid}:accepted" in адреса
 
     await press(STAFF, f"st:{tid}:ready")
     assert "закрыта" in api.last(STAFF)[1]
@@ -350,7 +353,9 @@ async def test_closed_ticket_can_be_returned_to_accepted(api, fake_repo):
     await press(STAFF, f"st:{tid}:rejected")
     await press(STAFF, f"st:{tid}:accepted")
     assert (await db.one("SELECT status FROM tickets WHERE ticket_id=?", (tid,)))["status"] == "accepted"
-    assert f"st:{tid}:ready" in api.payloads(STAFF)
+    # принятую можно сделать готовой, и кнопка осталась доступной - в «Ещё»
+    адреса, _ = await card_more(api, STAFF, tid)
+    assert f"st:{tid}:ready" in адреса
 
 
 async def test_foreign_staff_cannot_manage_ticket(api, fake_repo):
