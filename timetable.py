@@ -1,4 +1,4 @@
-"""Расписание: разбор PDF в занятия по дням недели и выдача текстом.
+﻿"""Расписание: разбор PDF в занятия по дням недели и выдача текстом.
 
 Почему так. Раньше бот только хранил ссылку на PDF и отдавал её студенту. PDF
 колледжа — это таблицы «пара № | группа | предмет | вид | преподаватель | ауд.»,
@@ -26,7 +26,7 @@ import clock
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 
-from utils import as_str, short
+from utils import as_str
 
 # Звонки колледжа — по урокам, в порядке следования за номером урока в PDF.
 # Номер в PDF — это урок, а не пара: в паре уроков два, поэтому список плоский.
@@ -44,6 +44,38 @@ LESSON_TIMES: tuple[tuple[str, str], ...] = (
     ("19:00", "20:30"),  # 11 урок (7 пара — один урок)
 )
 MAX_LESSONS_PER_DAY = len(LESSON_TIMES)
+
+# Официальный график звонков: 7 пар, 11 уроков (скрин владельца, сверили с
+# таблицей выше построчно - совпало всё). Первые четыре пары - по два урока,
+# последние три - по одному длинному. Порядок уроков в паре: (первый, последний).
+PAIR_SPANS: tuple[tuple[int, int], ...] = (
+    (1, 2), (3, 4), (5, 6), (7, 8), (9, 9), (10, 10), (11, 11),
+)
+PAIR_COUNT = len(PAIR_SPANS)
+
+
+def pair_of_lesson(number: int) -> int:
+    """Номер пары по номеру урока: 1,2 -> 1; 3,4 -> 2; 9 -> 5."""
+    for index, (first, last) in enumerate(PAIR_SPANS, start=1):
+        if first <= number <= last:
+            return index
+    return 0
+
+
+def pair_time(number: int) -> str:
+    """Время пары одной строкой по номеру ПАРЫ: «08:00–09:35».
+
+    Номер пары - это индекс в PAIR_SPANS, а не номер урока: если искать
+    интервал по номеру урока, пара (1, 2) подходила и первому, и второму
+    уроку, и обе пары выходили с одинаковым временем.
+    """
+    if not 1 <= number <= len(PAIR_SPANS):
+        return ""
+    first, last = PAIR_SPANS[number - 1]
+    начало = LESSON_TIMES[first - 1][0] if first <= len(LESSON_TIMES) else ""
+    конец = LESSON_TIMES[last - 1][1] if last <= len(LESSON_TIMES) else ""
+    return f"{начало}–{конец}" if начало and конец else ""
+
 
 WEEKDAYS_FULL = (
     "понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье",
@@ -80,25 +112,85 @@ def clean(value) -> str:
 
 
 @dataclass
+class LessonPart:
+    """Часть урока. Обычно одна; при подгруппах - по одной на подгруппу.
+
+    В PDF в ячейке предмета подгруппы идут как «1.Предмет», «2.Предмет», и в
+    ячейке аудитории напротив - столько же строк, по одной на подгруппу. Раньше
+    разбор склеивал всё в одну строку и брал первый кабинет, поэтому кабинет
+    второй подгруппы пропадал. Владелец отдельно просил их видеть.
+    """
+
+    subject: str
+    teacher: str = ""
+    room: str = ""
+
+
+@dataclass
 class Lesson:
-    number: int                    # номер пары в дне
-    subject: str                   # предмет и вид занятия
-    teacher: str = ""              # преподаватель
-    room: str = ""                 # аудитория
+    number: int                    # номер урока в дне
+    subject: str                   # все части через « | » (так хранится)
+    teacher: str = ""              # все преподаватели через «; »
+    room: str = ""                 # все аудитории через « / »
     start: str = ""                # «09:00» из звонков
     end: str = ""                  # «09:45»
+    parts: list[LessonPart] = field(default_factory=list)
 
     def time_str(self) -> str:
         return f"{self.start}–{self.end}" if self.start and self.end else ""
 
+    def split_parts(self) -> list[LessonPart]:
+        """Части урока; если parts нет - собираем одну из склеенных строк.
+
+        Храним части и списком, и склейкой в subject/teacher/room: списком -
+        для показа, склейкой - для базы и для всех прежних проверок.
+        """
+        if self.parts:
+            return self.parts
+        предметы = [x.strip() for x in str(self.subject or "").split("|") if x.strip()]
+        преподаватели = [x.strip() for x in str(self.teacher or "").split(";") if x.strip()]
+        аудитории = [x.strip() for x in str(self.room or "").split(" / ") if x.strip()]
+        if not предметы:
+            return []
+        части = []
+        for index, предмет in enumerate(предметы):
+            части.append(LessonPart(
+                subject=предмет,
+                teacher=преподаватели[index] if index < len(преподаватели) else "",
+                room=аудитории[index] if index < len(аудитории) else "",
+            ))
+        return части
+
     def line(self) -> str:
-        """Строка урока: «2 урок · 08:50–09:35 · Математика (лекция)», ниже — аудитория и преподаватель."""
-        head = f"{self.number} урок"
+        """Урок текстом: номер, время, предмет; ниже кабинет и преподаватель.
+
+        Подгруппы идут отдельными строками, у каждой свой кабинет и свой
+        преподаватель - так просил владелец. Раньше они склеивались в одну
+        строку через «|», и кабинет второй подгруппы не показывался вовсе.
+        """
+        части = self.split_parts()
+        if not части:
+            return f"  {self.number}. урок"
+        заголовок = f"  {self.number}."
         if self.time_str():
-            head += f" · 🕐 {self.time_str()}"
-        head += f" · {self.subject}"
-        tail = " · ".join(part for part in (f"ауд. {self.room}" if self.room else "", self.teacher) if part)
-        return f"  {head}\n     {tail}" if tail else f"  {head}"
+            заголовок += f" {self.time_str()}"
+        строки = [f"{заголовок}  {части[0].subject}"]
+        хвост = " · ".join(p for p in (аудитория(части[0].room), части[0].teacher) if p)
+        if хвост:
+            строки.append(f"     {хвост}")
+        for часть in части[1:]:
+            строка = f"     {часть.subject}"
+            добавка = " · ".join(p for p in (аудитория(часть.room), часть.teacher) if p)
+            if добавка:
+                строка += f" · {добавка}"
+            строки.append(строка)
+        return "\n".join(строки)
+
+
+def аудитория(значение: str) -> str:
+    """«305-1» -> «ауд. 305-1». Без пометки число неотличимо от времени."""
+    значение = str(значение or "").strip()
+    return f"ауд. {значение}" if значение else ""
 
 
 @dataclass
@@ -252,21 +344,29 @@ def _is_teacher(value: str) -> bool:
     return bool(words) and all(word[:1].isupper() for word in words)
 
 
-def parse_cell(text: str) -> tuple[str, str]:
-    """Ячейка предмета -> (предмет вместе с видом занятия, преподаватели).
+def parse_cell_parts(text: str) -> list[tuple[str, str]]:
+    """Ячейка предмета -> список (предмет, преподаватель) по подгруппам.
 
-    Обычная ячейка: «МДК.03.01 ОПНиГ\\n(лекция)\\nКрылова В. И.».
-    Подгрупповая: «1.УстрЭкспСосудов (лаб)\\nНуриева С. Р.\\n2.…(лаб)\\nКрылова В. И.» —
-    подпары склеиваются через «|», в тем�� идёт пометка про подгруппы.
+    Обычная ячейка: «МДК.03.01 ОПНиГ\n(лекция)\nКрылова В. И.» -> одна часть.
+    Подгрупповая: «1.УстрЭкспСосудов (лаб)\nНуриева С. Р.\n2.…(лаб)\nКрылова В. И.»
+    -> две части, у каждой свой преподаватель. Их склеивать нельзя: кабинеты
+    приходят из соседней колонки отдельными строками и должны попасть в свою
+    часть, иначе вторая подгруппа теряет и кабинет, и преподавателя.
     """
     lines = [clean(line) for line in str(text or "").splitlines() if clean(line)]
     if not lines:
-        return "", ""
+        return []
 
     merged: list[str] = []
     for line in lines:
         previous_is_teacher = bool(merged and _is_teacher(merged[-1]))
-        starts_block = bool(_SUBGROUP_RE.match(line)) or line.startswith("(") or _is_teacher(line) or previous_is_teacher
+        # Новый блок начинают только префикс подгруппы, строка преподавателя и
+        # всё, что идёт после преподавателя. Строка вида занятия «(лекция)»
+        # продолжает текущий блок: это часть того же предмета. Раньше «(»
+        # тоже начинала блок, и подгрупповая ячейка рвалась на четыре части
+        # («1.Предмет | (лаб) | 2.Предмет | (лаб)»), из-за чего кабинеты и
+        # преподаватели попадали не к своей подгруппе.
+        starts_block = bool(_SUBGROUP_RE.match(line)) or _is_teacher(line) or previous_is_teacher
         if merged and not starts_block:
             merged[-1] = f"{merged[-1]} {line}"
         else:
@@ -281,31 +381,59 @@ def parse_cell(text: str) -> tuple[str, str]:
         else:
             blocks.append([line])
 
-    subjects: list[str] = []
-    teachers: list[str] = []
+    части: list[tuple[str, str]] = []
     for block in blocks:
         body = list(block)
+        преподаватель = ""
         if body and _is_teacher(body[-1]):
-            teachers.append(body.pop())
-        subject = clean(" ".join(body))
-        if subject:
-            subjects.append(subject)
-    has_subgroups = any(_SUBGROUP_RE.match(block[0]) for block in blocks if block)
-    prefix = "(подгруппы) " if has_subgroups else ""
-    return prefix + " | ".join(subjects), "; ".join(teachers)
+            преподаватель = clean(" ".join(body.pop().split()))
+        предмет = clean(" ".join(body))
+        if предмет:
+            части.append((предмет, преподаватель))
+    return части
+
+
+def parse_cell(text: str) -> tuple[str, str]:
+    """Ячейка -> склеенные предмет и преподаватели. Прежняя форма, для проверок."""
+    части = parse_cell_parts(text)
+    if not части:
+        return "", ""
+    пометка = "(подгруппы) " if len(части) > 1 else ""
+    предметы = [номер_подгруппы(предмет) for предмет, _ in части]
+    преподаватели = [преподаватель for _, преподаватель in части if преподаватель]
+    return пометка + " | ".join(предметы), "; ".join(преподаватели)
+
+
+def номер_подгруппы(предмет: str) -> str:
+    """«1.МДК.03.01 ТРТОУ» -> «1. МДК.03.01 ТРТОУ»: после номера ставим пробел."""
+    match = re.match(r"^\s*([12])\s*[.)]\s*(\S.*)$", str(предмет or ""))
+    return f"{match.group(1)}. {clean(match.group(2))}" if match else предмет
+
+def parse_rooms(value: str) -> list[str]:
+    """Аудитории из соседней ячейки: по одной на подгруппу.
+
+    Обычная пара - одна строка: «204». Подгрупповая - по строке на подгруппу:
+    «РММ» и «313-1» в одной ячейке. Раньше брался только первый кусок, и
+    кабинет второй подгруппы пропадал.
+    """
+    text = clean(value).replace("\n", " ")
+    if not text:
+        return []
+    куски = [кусок.strip() for кусок in str(value or "").split("\n")]
+    аудитории: list[str] = []
+    for кусок in куски:
+        кусок = кусок.strip()
+        if not кусок:
+            continue
+        если = _ROOM_RE.fullmatch(кусок) or re.match(r"^\d+[\w/\-.]*$", кусок)
+        аудитории.append(кусок if если else (кусок.split()[0] if len(кусок.split()[0]) <= 12 else ""))
+    return [аудитория for аудитория in аудитории if аудитория]
 
 
 def parse_room(value: str) -> str:
-    """Аудитория из соседней ячейки: «204», «214/215», «спортзал»."""
-    text = clean(value).replace("\n", " ")
-    if not text:
-        return ""
-    if _ROOM_RE.fullmatch(text) or re.match(r"^\d+[\w/\-.]*$", text):
-        return text
-    first = text.split()[0]
-    return first if len(first) <= 12 else ""
-
-
+    """Первая аудитория ячейки. Прежняя форма, от неё зависят проверки."""
+    аудитории = parse_rooms(value)
+    return аудитории[0] if аудитории else ""
 def weekday_of_page(header_text: str) -> int | None:
     """День недели по заголовку страницы «День - Понедельник, 28.09.2026»."""
     first_line = clean(str(header_text or "").splitlines()[0] if header_text else "").lower()
@@ -374,13 +502,31 @@ def build_schedule(pages: list[dict], group: str, times: dict | None = None) -> 
             number = _lesson_number(row[0])
             if number is None:
                 continue
-            subject, teacher = parse_cell(row[column])
-            if not subject:
+            части = parse_cell_parts(row[column])
+            if not части:
                 continue
-            room = parse_room(row[room_column]) if 0 <= room_column < len(row) else ""
-            day.lessons.append(Lesson(number=number, subject=subject, teacher=teacher, room=room))
-        day.lessons.sort(key=lambda lesson: lesson.number)
-        if day.lessons and not day.is_empty:
+            if 0 <= room_column < len(row):
+                аудитории = parse_rooms(row[room_column])
+            else:
+                аудитории = []
+            # Кабинетов столько же, сколько подгрупп: ставим один к одному.
+            # Один кабинет - он у всех. Кабинетов больше, чем подгрупп, - лишние
+            # не наши (колонка соседней группы), их не показываем.
+            if len(аудитории) == len(части):
+                свои = аудитории
+            elif len(аудитории) == 1:
+                свои = аудитории * len(части)
+            else:
+                свои = list(аудитории)[:len(части)]
+            собранные = [LessonPart(subject=предмет, teacher=преподаватель,
+                                    room=свои[index] if index < len(свои) else "")
+                        for index, (предмет, преподаватель) in enumerate(части)]
+            day.lessons.append(Lesson(
+                number=number,
+                subject=" | ".join(p.subject for p in собранные),
+                teacher="; ".join(p.teacher for p in собранные if p.teacher),
+                room=" / ".join(p.room for p in собранные if p.room),
+                parts=собранные))
             result.days[weekday] = day
     apply_lesson_times(result, times)
     return result
@@ -461,7 +607,10 @@ def format_day(day: DaySchedule, day_date: date | None = None, today: bool = Fal
     Сборка дня живёт здесь одной функцией, её зовёт бот (handlers/menus.py —
     «расписание на сегодня» и «на день», handlers/admin.py — день в карточке).
     """
-    lines = [f"📅 {day_title(day.weekday, day_date)}" + ("  \N{BULLET} сегодня" if today else "")]
+    # Пометка «сегодня» приходит из day_title («Понедельник, сегодня»).
+    # Раньше сюда же добавляли «• сегодня» - на экране выходило «Среда, сегодня
+    # • сегодня», дважды. Одной пометки достаточно.
+    lines = [f"📅 {day_title(day.weekday, day_date)}"]
     for lesson in day.lessons:
         if lesson.number > 1 and lesson.number % 2:
             lines.append("")
@@ -497,18 +646,22 @@ def format_schedule(schedule: GroupSchedule, week: date | None = None, only: lis
         lines.append("")
         lines.append(format_day(day, day_date, today=day_date == clock.today()))
     lines.append("")
-    lines.append(f"Пары: {short(', '.join(_bells_line(number, start, end) for number, (start, end) in enumerate(LESSON_TIMES, start=1)), 150)}")
+    звонки = ", ".join(f"{номер} — {pair_time(номер)}"
+                      for номер in range(1, PAIR_COUNT + 1) if pair_time(номер))
+    lines.append("")
+    lines.append(f"Пары по звонкам: {звонки}")
     return "\n".join(lines)
 
 
-def _bells_line(number: int, start: str, end: str) -> str:
-    """Строка звонков: пара и её уроки. Уроки нумеруются подряд, пара — через каждые два."""
-    second = 2 * number
-    times = f"{start}–{end}"
-    if second <= len(LESSON_TIMES):
-        times += f" / {LESSON_TIMES[second - 1][0]}–{LESSON_TIMES[second - 1][1]}"
-    return f"{number} — {times}"
+def _bells_line(number: int, start: str = "", end: str = "") -> str:
+    """Строка звонков одной пары: «1 — 08:00–09:35».
 
+    Раньше сюда передавался номер УРОКА, а внутри считалось 2 * number - то есть
+    уроки путались с парами, и строка выходила мусорной. Теперь номер пары
+    приходит от звонков PAIR_SPANS, а время берётся из таблицы.
+    """
+    время = pair_time(number)
+    return f"{number} — {время}" if время else ""
 
 def format_upcoming(schedule: GroupSchedule, limit: int = 3) -> str:
     """Ближайшие занятия — отвечает на вопрос «а когда у меня следующая пара?»."""

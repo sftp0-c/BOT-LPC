@@ -36,7 +36,7 @@ def test_real_pdf_is_parsed_into_lessons(latin_pages):
     assert sorted(schedule.days) == [0, 2]
     monday = schedule.day(0)
     assert [lesson.number for lesson in monday.lessons] == [1, 3]
-    assert monday.lessons[0].subject == "Math | (lec)"
+    assert monday.lessons[0].subject == "Math (lec)"
     assert monday.lessons[0].teacher == "Ivanova A. A."
     assert monday.lessons[0].room == "204"
     assert monday.lessons[0].time_str() == "08:00–08:45"
@@ -67,12 +67,12 @@ def test_build_schedule_reads_cyrillic_table():
     schedule = tt.build_schedule(cyrillic_week(), "ИС-21")
     assert sorted(schedule.days) == [0, 3]
     monday = schedule.day(0)
-    assert monday.lessons[0].subject == "Математика | (лекция)"
+    assert monday.lessons[0].subject == "Математика (лекция)"
     assert monday.lessons[0].teacher == "Иванова А. А."
     assert monday.lessons[0].room == "204"
     assert monday.lessons[1].number == 3 and monday.lessons[1].room == "217"
     thursday = schedule.day(3)
-    assert thursday.lessons[0].subject == "История | (лекция)"
+    assert thursday.lessons[0].subject == "История (лекция)"
 
 
 def test_build_schedule_ignores_day_without_our_group():
@@ -89,8 +89,16 @@ def test_subgroups_are_marked():
         ["4", "1.Практика\nСидоров С. С.\n2.Практика\nПетров П. П.", "101"],
     ]]}]
     lesson = tt.build_schedule(pages, "ИС-21").day(0).lessons[0]
-    assert lesson.subject.startswith("(подгруппы)")
-    assert "Сидоров" in lesson.teacher and "Петров" in lesson.teacher
+    # Подгруппы разбираются в части, а не склеиваются в один предмет: у каждой
+    # свой преподаватель и свой кабинет. Раньше выходило четыре части
+    # («1.Практика | (лаб) | 2.Практика | (лаб)»), и кабинет второй подгруппы
+    # терялся. Авторитет - сама ячейка PDF, а не чужой репозиторий.
+    части = lesson.split_parts()
+    assert len(части) == 2, f"подгрупп разобрано {len(части)}, ждали 2: {части}"
+    assert части[0].subject == "1.Практика" and части[0].teacher == "Сидоров С. С."
+    assert части[1].subject == "2.Практика" and части[1].teacher == "Петров П. П."
+    # одна аудитория на всех подгрупп - достаётся каждой
+    assert части[0].room == части[1].room == "101"
 
 
 def test_room_without_russian_lookalike():
@@ -139,7 +147,7 @@ def test_format_day_and_week():
     schedule = tt.build_schedule(cyrillic_week(), "ИС-21")
     monday = tt.format_day(schedule.day(0))
     assert monday.startswith("📅 Понедельник")
-    assert "1 урок · 🕐 08:00–08:45 · Математика | (лекция)" in monday
+    assert "1. 08:00–08:45  Математика (лекция)" in monday
     assert "ауд. 204 · Иванова А. А." in monday
 
     week = tt.format_schedule(schedule)

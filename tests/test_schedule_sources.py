@@ -1,4 +1,4 @@
-"""Тесты: отбор файлов расписания и защита от отката недели.
+﻿"""Тесты: отбор файлов расписания и защита от отката недели.
 
 Имена файлов и подписи — настоящие, со страницы
 https://collegelan.ru/studentam/raspisanie-zanyatiy.php (18 ссылок, снято запросом).
@@ -199,7 +199,7 @@ async def test_new_week_is_saved_with_its_date(env, monkeypatch):
     result = await imp.import_pdf(NEW_URL)
     assert result["groups"] == [GROUP] and result["skipped"] == []
     assert await imp.saved_week(GROUP) == MONDAY_NEW
-    assert await subjects_in_db() == ["Новая математика | (лекция)", "Новая физика | (лекция)"]
+    assert await subjects_in_db() == ["Новая математика (лекция)", "Новая физика (лекция)"]
 
 
 async def test_old_week_does_not_roll_back_fresh_one(env, monkeypatch, caplog):
@@ -213,7 +213,7 @@ async def test_old_week_does_not_roll_back_fresh_one(env, monkeypatch, caplog):
     assert result["groups"] == [] and result["lessons"] == 0
     assert result["skipped"] == [GROUP]
     assert await imp.saved_week(GROUP) == MONDAY_NEW           # база не тронута
-    assert await subjects_in_db() == ["Новая математика | (лекция)", "Новая физика | (лекция)"]
+    assert await subjects_in_db() == ["Новая математика (лекция)", "Новая физика (лекция)"]
     # ссылка и отпечаток файла прежние: бот не будет перечитывать файл по кругу
     schedule = await repo.get_schedule(GROUP)
     assert schedule["pdf_url"] == NEW_URL
@@ -229,8 +229,8 @@ async def test_equal_week_is_written_again(env, monkeypatch):
     result = await imp.import_pdf(SAME_WEEK_URL)
     assert result["groups"] == [GROUP] and result["skipped"] == []
     assert await imp.saved_week(GROUP) == MONDAY_NEW
-    assert await subjects_in_db() == ["Исправленная математика | (лекция)",
-                                      "Новая физика | (лекция)"]
+    assert await subjects_in_db() == ["Исправленная математика (лекция)",
+                                      "Новая физика (лекция)"]
 
 
 async def test_newer_week_replaces_older(env, monkeypatch):

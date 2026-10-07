@@ -77,10 +77,14 @@ def test_today_is_marked_in_the_day_header(frozen_college_clock):
     today = frozen_college_clock.date()
     monday = today - timedelta(days=today.weekday())
     text = tt.format_schedule(make_week(monday, weekday=today.weekday()))
-    assert "• сегодня" in text, text
+    # Пометка одна: раньше заголовок давал «Среда, сегодня», а сверху ещё
+    # приклеивалось «• сегодня», и на экране выходило «Среда, сегодня • сегодня».
+    assert "сегодня" in text, text
+    assert text.count("сегодня") == 1, f"пометка «сегодня» повторяется: {text!r}"
+    assert "• сегодня" not in text, f"старая двойная пометка вернулась: {text!r}"
     # а чужой день недели в той же неделе помечен не как сегодня
     other = make_week(monday, weekday=(today.weekday() + 1) % 7)
-    assert "• сегодня" not in tt.format_schedule(other)
+    assert "сегодня" not in tt.format_schedule(other)
 
 
 def test_explicit_week_argument_still_wins():
