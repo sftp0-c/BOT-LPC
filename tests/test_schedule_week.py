@@ -218,7 +218,7 @@ async def test_schedule_from_db_keeps_saved_week(api, env):
     цифрах: с 19 октября подписи кнопок уехали бы вперёд, а занятия остались бы
     за старой неделей.
     """
-    from datetime import date as _date, timedelta as _delta
+    from datetime import timedelta as _delta
 
     прошлая = tt.today_monday() - _delta(days=7)
     await db.run("INSERT INTO lessons(group_code, weekday, lesson_num, subject, start, end) "
