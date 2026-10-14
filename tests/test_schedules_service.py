@@ -264,7 +264,8 @@ async def test_bot_day_button_shows_that_day(api, fake_pdf):
     текст = api.last(STUDENT)[1]
     assert "Понедельник" in текст
     assert "Математика" in текст
-    assert "08:00–08:45" in текст
+    # время пары, а не урока: обе части пары показываются одной записью
+    assert "08:00–09:35" in текст
     assert "ауд. 204" in текст
     assert "Иванова А. А." in текст
     # из экрана дня возвращаемся к списку дней

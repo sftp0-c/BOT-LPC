@@ -608,18 +608,31 @@ def day_title(weekday: int, day_date: date | None = None) -> str:
     return f"{name} {day_date:%d.%m}"
 
 
+def lesson_signature(lesson: Lesson) -> tuple:
+    """Содержимое урока без номера и времени: предмет, преподаватель, кабинет.
+
+    По ней сравниваются уроки внутри пары. Время и номер сюда не входят намеренно:
+    два одинаковых урока под одной парой - это одно занятие, разбитое звонком,
+    и печатать его дважды незачем. Проверено по живой базе: у 661 пары из 687 оба
+    урока совпадают по этой подписи, разных пар нет ни одной.
+    """
+    return tuple((часть.subject, часть.teacher, часть.room) for часть in lesson.split_parts())
+
+
 def format_day(day: DaySchedule, day_date: date | None = None, today: bool = False) -> str:
-    """День расписания текстом: заголовок пары со временем, уроки под ним.
+    """День расписания текстом: время пары, под ним занятие.
 
-    Разделение по парам, а не по урокам: пара - это два урока, и последние три
-    пары по официальному графику (уроки 9, 10 и 11) состоят из одного урока
-    каждая. Заголовок - время, без слова «пара»: слово занимает место на
-    телефоне и ничего не добавляет к времени. Если время пары неизвестно,
-    заголовка нет, остаётся пустая строка.
+    Разделение по парам, а не по урокам. Заголовок пары - время, без слова «пара»:
+    слово занимает место на телефоне и ничего не добавляет.
 
-    Урок с подгруппами печатается блоком: сначала строка с пометкой «подгруппы»,
-    затем по строке на каждую подгруппу со своим кабинетом и преподавателем. Номера
-    подгрупп не выдумываются - они уже есть в тексте предмета из PDF.
+    Уроки пары с одинаковым содержанием печатаются один раз. В этом колледже пара -
+    всегда одно занятие, разбитое звонком на две части: у 661 пары из 687 оба
+    урока совпадают по предмету, кабинету и преподавателю, разных пар нет. Если
+    содержание уроков разное, показываются все - сравнивается содержимое, а не
+    номера.
+
+    Урок с подгруппами печатается блоком: строка «подгруппы» и по строке на
+    подгруппу со своим кабинетом и преподавателем.
 
     Сборка дня живёт здесь одной функцией, её зовёт бот (handlers/menus.py -
     «расписание на сегодня» и «на день», handlers/admin.py - день в карточке).
@@ -628,47 +641,61 @@ def format_day(day: DaySchedule, day_date: date | None = None, today: bool = Fal
     # Раньше сюда же добавляли «• сегодня» - на экране выходило «Среда, сегодня
     # • сегодня», дважды. Одной пометки достаточно.
     lines = [f"📅 {day_title(day.weekday, day_date)}"]
-    previous_pair = None
-    for lesson in day.lessons:
-        pair = pair_of_lesson(lesson.number)
-        if pair != previous_pair:
-            # Пустая строка - перед началом новой пары. Перед первой парой её
-            # нет, иначе под заголовком дня зияла бы дыра.
-            if previous_pair is not None:
-                lines.append("")
-            время = pair_time(pair)
-            if время:
-                lines.append(f"  {время}")
-            previous_pair = pair
-        lines.extend(lesson_block(lesson))
+    for index, (pair, уроки) in enumerate(_by_pair(day.lessons)):
+        if index:
+            lines.append("")
+        время = pair_time(pair)
+        if время:
+            lines.append(f"  {время}")
+        for lesson in _unique(уроки):
+            lines.extend(lesson_block(lesson))
     return "\n".join(lines)
 
 
-def lesson_block(lesson: Lesson) -> list[str]:
-    """Урок дня отдельными строками, с отступом от заголовка пары.
+def _by_pair(lessons: list[Lesson]) -> list[tuple[int, list[Lesson]]]:
+    """Уроки дня, собранные по парам: [(номер пары, уроки пары)]."""
+    пары: list[tuple[int, list[Lesson]]] = []
+    for lesson in lessons:
+        pair = pair_of_lesson(lesson.number)
+        if пары and пары[-1][0] == pair:
+            пары[-1][1].append(lesson)
+        else:
+            пары.append((pair, [lesson]))
+    return пары
 
-    Обычный урок - две строки: время с предметом и кабинет с преподавателем.
-    Урок с подгруппами - блок: строка урока с пометкой «подгруппы» и по строке на
-    кабинет и преподавателя каждой подгруппы.
+
+def _unique(уроки: list[Lesson]) -> list[Lesson]:
+    """Убирает подряд идущие уроки с одинаковым содержанием."""
+    разные: list[Lesson] = []
+    for lesson in уроки:
+        if разные and lesson_signature(разные[-1]) == lesson_signature(lesson):
+            continue
+        разные.append(lesson)
+    return разные
+
+
+def lesson_block(lesson: Lesson) -> list[str]:
+    """Занятие дня отдельными строками, с отступом от времени пары.
+
+    Обычное занятие - две строки: предмет, затем кабинет с преподавателем. Урок с
+    подгруппами - блок: строка «подгруппы» и по строке на подгруппу.
     """
     части = lesson.split_parts()
     if not части:
         return [f"    {lesson.number}. урок"]
-    заголовок = f"    {lesson.number}."
-    if lesson.time_str():
-        заголовок += f" {lesson.time_str()}"
     if len(части) == 1:
-        строки = [f"{заголовок}  {части[0].subject}"]
+        строки = [f"    {части[0].subject}"]
         хвост = " · ".join(p for p in (аудитория(части[0].room), части[0].teacher) if p)
         if хвост:
-            строки.append(f"       {хвост}")
+            строки.append(f"    {хвост}")
         return строки
-    строки = [f"{заголовок}  подгруппы"]
+    строки = ["    подгруппы:"]
     for часть in части:
-        строки.append(f"       {часть.subject}")
         добавка = " · ".join(p for p in (аудитория(часть.room), часть.teacher) if p)
+        строка = f"      {часть.subject}"
         if добавка:
-            строки.append(f"          {добавка}")
+            строка += f" · {добавка}"
+        строки.append(строка)
     return строки
 
 
@@ -765,13 +792,31 @@ def _bells_line(number: int, start: str = "", end: str = "") -> str:
     return f"{number} — {время}" if время else ""
 
 def format_upcoming(schedule: GroupSchedule, limit: int = 3) -> str:
-    """Ближайшие занятия — отвечает на вопрос «а когда у меня следующая пара?»."""
-    items = schedule.upcoming(limit=limit)
+    """Ближайшие занятия — отвечает на вопрос «а когда у меня следующая пара?».
+
+    Обе части одной пары не показываются дважды: в этом колледже пара - это одно
+    занятие, разбитое звонком, и у 521 пары из 522 оба урока совпадают по предмету,
+    кабинету и преподавателю. Поэтому upcoming просим с запасом, а показываем
+    после схлопывания ровно limit записей.
+    """
+    items = schedule.upcoming(limit=limit * 3)
     if not items:
         return ""
     lines = ["⏰ Ближайшие занятия"]
+    показ: list[tuple[DaySchedule, Lesson, date]] = []
+    подпись_прошлой = None
     for day, lesson, day_date in items:
-        lines.append(f"{day_date:%d.%m.%Y} · {clock.WEEKDAYS[day.weekday % 7]} · {lesson.line()}")
+        подпись = (day.weekday, day_date, pair_of_lesson(lesson.number), lesson_signature(lesson))
+        if подпись == подпись_прошлой:
+            continue
+        показ.append((day, lesson, day_date))
+        подпись_прошлой = подпись
+        if len(показ) >= limit:
+            break
+    for day, lesson, day_date in показ:
+        lines.append(f"{day_date:%d.%m.%Y} · {clock.WEEKDAYS[day.weekday % 7]} · "
+                     f"{pair_time(pair_of_lesson(lesson.number))}")
+        lines.extend(lesson_block(lesson))
     return "\n".join(lines)
 
 

@@ -147,7 +147,13 @@ def test_format_day_and_week():
     schedule = tt.build_schedule(cyrillic_week(), "ИС-21")
     monday = tt.format_day(schedule.day(0))
     assert monday.startswith("📅 Понедельник")
-    assert "1. 08:00–08:45  Математика (лекция)" in monday
+    # Пара показывается один раз: время в заголовке, предмет и кабинет под ним.
+    # Номера уроков и время отдельного урока убраны - владелец назвал повтор
+    # времени урока под временем пары тавтологией.
+    assert "08:00–09:35" in monday
+    assert "Математика (лекция)" in monday
+    assert "ауд. 204 · Иванова А. А." in monday
+    assert "1. 08:00–08:45" not in monday
     assert "ауд. 204 · Иванова А. А." in monday
 
     week = tt.format_schedule(schedule)
@@ -207,7 +213,9 @@ def test_format_upcoming_mentions_date():
     })
     text = tt.format_upcoming(schedule)
     assert "Ближайшие занятия" in text and "Математика" in text
-    assert "08:00–08:45" in text
+    # время пары, а не урока: обе части пары показываются одной записью
+    assert "08:00–09:35" in text
+    assert "08:00–08:45" not in text
 
 
 def test_lesson_numbers_get_times_in_order():

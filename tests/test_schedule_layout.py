@@ -78,13 +78,19 @@ def numbers_in(chunk: str) -> list[int]:
 
 
 # ── вид строки ─────────────────────────────────────────────────────────────
-def test_day_title_is_first_line():
-    assert tt.format_day(make_day(1)).startswith("📅 Понедельник")
+def test_lesson_block_shows_subject_and_room():
+    """Блок занятия: предмет, ниже кабинет с преподавателем.
 
-
-def test_lesson_line_starts_with_number_dot_and_time():
-    text = tt.format_day(make_day(1))
-    assert "1. 08:00–08:45  Предмет" in text, text
+    Номера уроков и времени урока в виде больше нет: пара опознаётся по времени
+    в заголовке, а время урока повторяло его мельче - это владелец и назвал
+    тавтологией.
+    """
+    text = tt.format_day(make_day(1, subject="Математика", room="204",
+                                  teacher="Иванов И. И."))
+    assert "    Математика" in text, text
+    assert "ауд. 204 · Иванов И. И." in text, text
+    assert "08:00–09:35" in text, "время пары должно быть в заголовке"
+    assert "08:00–08:45" not in text, "время урока не должно дублировать заголовок"
 
 
 def test_room_is_marked_as_room():
@@ -99,53 +105,57 @@ def test_teacher_surname_and_initials_are_shown():
     assert "Иванова А. А." in text, text
 
 
-# ── разделение по парам: заголовок со временем ────────────────────────────
+# ── разделение по парам и схлопывание ───────────────────────────────────────
 def заголовки_пар(текст: str) -> list[str]:
     """Строки-заголовки пар: отступ 2 и время вида «08:00–09:35»."""
     return [s.strip() for s in текст.splitlines()
-            if s.startswith("  ") and not s.startswith("    ")
+            if s.startswith("  ") and not s.startswith("   ")
             and "–" in s and ":" in s and s.strip()[0].isdigit()]
 
 
-def номера_уроков(текст: str) -> list[int]:
-    """Номера уроков по строкам вида «    3. 09:50–10:35 ...»."""
-    номера = []
-    for s in текст.splitlines():
-        stripped = s.strip()
-        if stripped[:1].isdigit() and ". " in stripped[:6]:
-            номера.append(int(stripped.split(".")[0]))
-    return номера
+def предметы_дня(текст: str) -> list[str]:
+    """Строки с предметами: отступ 4."""
+    return [s.strip() for s in текст.splitlines()
+            if s.startswith("    ") and not s.startswith("      ")]
+
+
+def test_day_title_is_first_line():
+    assert tt.format_day(make_day(1)).startswith("📅 Понедельник")
+
+
+def test_pair_header_is_time():
+    """У пары заголовок со временем - по нему видно границы."""
+    текст = tt.format_day(make_day(1, 2, 3, 4))
+    заголовки = заголовки_пар(текст)
+    assert len(заголовки) == 2, заголовки
+    for строка in заголовки:
+        assert "–" in строка, строка
 
 
 def test_no_gap_between_first_and_second_lesson():
-    """Внутри пары пустой строки нет: два урока идут подряд."""
-    куски = chunks(tt.format_day(make_day(1, 2)))
-    assert len(куски) == 1
-    assert номера_уроков(куски[0]) == [1, 2]
+    """Внутри пары отдельных строк нет: пара показывается одним блоком."""
+    текст = tt.format_day(make_day(1, 2, subject="Математика", room="204",
+                                   teacher="Иванов И. И."))
+    куски = chunks(текст)
+    assert len(куски) == 1, куски
+    assert предметы_дня(текст) == ["Математика", "ауд. 204 · Иванов И. И."], предметы_дня(текст)
 
 
-def test_gap_before_third_lesson():
+def test_third_lesson_starts_new_pair():
     """Три урока - это две пары, значит два блока."""
     куски = chunks(tt.format_day(make_day(1, 2, 3)))
     assert len(куски) == 2
-    assert номера_уроков(куски[0]) == [1, 2]
-    assert номера_уроков(куски[1]) == [3]
+    assert предметы_дня(куски[0]) and предметы_дня(куски[1])
 
 
 def test_six_lessons_split_in_three_pairs():
     куски = chunks(tt.format_day(make_day(1, 2, 3, 4, 5, 6)))
-    assert [номера_уроков(кусок) for кусок in куски] == [[1, 2], [3, 4], [5, 6]]
+    assert len(куски) == 3, [len(k) for k in куски]
 
 
 def test_gap_before_fifth_lesson():
     куски = chunks(tt.format_day(make_day(1, 2, 3, 4, 5)))
-    assert [номера_уроков(кусок) for кусок in куски] == [[1, 2], [3, 4], [5]]
-
-
-def test_odd_tail_stays_alone():
-    text = tt.format_day(make_day(1, 2, 3, 4, 5))
-    assert not text.endswith("\n")
-    assert chunks(text)[-1].splitlines()[-1].strip().endswith("Предмет")
+    assert len(куски) == 3, [len(k) for k in куски]
 
 
 def test_no_gap_at_the_start_and_at_the_end_of_the_day():
@@ -153,41 +163,112 @@ def test_no_gap_at_the_start_and_at_the_end_of_the_day():
     assert not text.startswith("\n")
     assert text.splitlines()[0].startswith("📅 Понедельник")
     assert not text.endswith("\n")
-    # сразу под заголовком дня идёт заголовок пары, а не пустая строка
-    assert not text.splitlines()[1].strip() == ""
-    assert text.splitlines()[1].startswith("  ")
+    assert text.splitlines()[1].strip(), "под заголовком дня зияет пустая строка"
 
 
-def test_each_pair_has_a_time_header():
-    """У каждой пары заголовок со временем - по нему видно границы.
+def test_identical_lessons_of_a_pair_collapse():
+    """Обе части одной пары не печатаются дважды.
 
-    Владелец попросил больше разделения именно поэтому: время пары на её заголовке
-    читается сразу, а не собирается по двум урокам.
+    Пара в этом колледже - одно занятие, разбитое звонком: у 661 пары из 687 оба
+    урока совпадают по предмету, кабинету и преподавателю. Повтор занимал четыре
+    строки и читался как второе занятие.
+    """
+    текст = tt.format_day(make_day(1, 2, subject="Математика", room="204",
+                                   teacher="Иванов И. И."))
+    assert текст.count("Математика") == 1, текст
+    assert текст.count("Иванов И. И.") == 1, текст
+    assert текст.count("204") == 1, текст
+
+
+def test_different_lessons_are_not_collapsed():
+    """Разные уроки внутри пары остаются оба - иначе пропадёт половина расписания.
+
+    Таких пар сейчас нет ни одной, но колледж может их напечатать.
+    """
+    день = tt.DaySchedule(weekday=1, lessons=[
+        tt.Lesson(1, "Физика", "Крылова В. И.", "222-1", "08:00", "08:45"),
+        tt.Lesson(2, "Химия", "Иванова А. А.", "222-1", "08:50", "09:35"),
+    ])
+    текст = tt.format_day(день)
+    assert "Физика" in текст and "Химия" in текст, текст
+    assert текст.count("08:00–09:35") == 1, "пара показана дважды"
+
+
+def test_same_subject_different_room_is_not_collapsed():
+    """Предмет тот же, кабинет разный - это два разных занятия.
+
+    Так выглядят подгруппы: «ИнЯзык в ПрофД» в первую пару идёт в 310-1, во
+    вторую - в 311-1, и ведёт его другой преподаватель. Если схлопнуть такую пару
+    по одному предмету, студент увидит один кабинет вместо двух и придёт не туда.
+    """
+    день = tt.DaySchedule(weekday=1, lessons=[
+        tt.Lesson(1, "ИнЯзык в ПрофД", "Аврамова Л. А.", "310-1", "08:00", "08:45"),
+        tt.Lesson(2, "ИнЯзык в ПрофД", "Аврамова Л. А.", "311-1", "08:50", "09:35"),
+    ])
+    текст = tt.format_day(день)
+    assert "310-1" in текст and "311-1" in текст, текст
+
+
+def test_same_subject_different_teacher_is_not_collapsed():
+    """Тот же предмет и кабинет, но разные преподаватели - тоже два занятия."""
+    день = tt.DaySchedule(weekday=1, lessons=[
+        tt.Lesson(1, "ИнЯзык в ПрофД", "Аврамова Л. А.", "310-1", "08:00", "08:45"),
+        tt.Lesson(2, "ИнЯзык в ПрофД", "Мухамадеева Л. Р.", "310-1", "08:50", "09:35"),
+    ])
+    текст = tt.format_day(день)
+    assert "Аврамова Л. А." in текст and "Мухамадеева Л. Р." in текст, текст
+
+
+def test_pair_same_by_all_three_fields_is_collapsed():
+    """Контроль к двум проверкам выше: одинаковая пара схлопывается."""
+    день = tt.DaySchedule(weekday=1, lessons=[
+        tt.Lesson(1, "ИнЯзык в ПрофД", "Аврамова Л. А.", "310-1", "08:00", "08:45"),
+        tt.Lesson(2, "ИнЯзык в ПрофД", "Аврамова Л. А.", "310-1", "08:50", "09:35"),
+    ])
+    текст = tt.format_day(день)
+    assert текст.count("ИнЯзык в ПрофД") == 1, текст
+    assert текст.count("Аврамова Л. А.") == 1, текст
+
+
+def test_lesson_time_is_not_repeated_under_the_pair_time():
+    """Время урока не печатается: его покрывает время пары над блоком.
+
+    Владелец назвал это тавтологией: «08:00–08:45» прямо под заголовком
+    «08:00–09:35» повторяет то же самое числами мельче.
     """
     текст = tt.format_day(make_day(1, 2, 3, 4))
-    заголовки = заголовки_пар(текст)
-    assert len(заголовки) == 2, заголовки
-    for строка in заголовки:
-        assert "–" in строка, строка
-        assert строка.split("–")[0].count(":") == 1, строка
+    for интервал in ("08:00–08:45", "08:50–09:35"):
+        assert интервал not in текст, текст
+    assert "08:00–09:35" in текст
+
+
+def test_lesson_numbers_are_gone():
+    """Номеров уроков нет: пара опознаётся по времени."""
+    текст = tt.format_day(make_day(1, 2, 3))
+    for номер in ("1.", "2.", "3."):
+        assert номер not in текст, текст
 
 
 def test_pair_header_has_no_word_pair():
     """В заголовке нет слова «пара»: владелец просил убрать его из номеров."""
     текст = tt.format_day(make_day(1, 2, 3))
-    assert "Пара" not in текст
-    assert "пара" not in текст.replace("пара", "", 0) or True   # слово только в тексте пары, не в заголовке
-    for строка in текст.splitlines():
-        if строка.startswith("  ") and not строка.startswith("    "):
-            assert "Пара" not in строка and "пара" not in строка, строка
+    for строка in заголовки_пар(текст):
+        assert "Пара" not in строка and "пара" not in строка, строка
+
+
+def test_indent_is_shallow():
+    """Отступ не глубже шести пробелов.
+
+    До переделки строки подгруппы уходили на десять пробелов, и на телефоне это
+    съедало ширину: владелец указал на «слишком много пробелов».
+    """
+    текст = tt.format_day(make_day(1, 2, 3))
+    глубина = max((len(s) - len(s.lstrip())) for s in текст.splitlines())
+    assert глубина <= 6, f"отступ {глубина}"
 
 
 def test_gap_sits_between_pairs_only():
-    """Пустая строка - только между парами, внутри пары её нет.
-
-    Правило «перед нечётным уроком» было следствием деления на пары по номеру и
-    новому виду не отвечает: заголовок пары может стоять перед любым номером.
-    """
+    """Пустая строка - только между парами, внутри пары её нет."""
     text = tt.format_day(make_day(1, 2, 3, 4, 5, 6, 7))
     lines = text.splitlines()
     for index, line in enumerate(lines):
@@ -196,25 +277,17 @@ def test_gap_sits_between_pairs_only():
         previous = lines[index - 1] if index else ""
         gap = bool(index and not previous.strip())
         if gap:
-            # после пустой строки обязан идти заголовок пары
-            assert line.startswith("  ") and not line.startswith("    "), (
+            assert line.startswith("  ") and not line.startswith("   "), (
                 f"после пустой строки идёт не заголовок пары: {line!r}")
-        else:
-            if line.startswith("  ") and not line.startswith("    "):
-                assert index == 1, f"лишний заголовок пары: {line!r}"
 
 
 def test_day_without_pair_times_has_no_headers():
-    """Время пары неизвестно - заголовка нет, но разделение остаётся.
-
-    Проверки гоняются с таблицей звонков из conftest, где времена есть. Без
-    заголовков экран не поплыл бы, но студент не видел бы, где кончается пара.
-    """
+    """Время пары неизвестно - заголовка нет, но разделение остаётся."""
     настоящая = tt.LESSON_TIMES
     try:
         tt.LESSON_TIMES = ()
         текст = tt.format_day(make_day(1, 2, 3))
-        assert заголовки_пар(текст) == [], "заголовок без времени не нужен"
+        assert заголовки_пар(текст) == []
         assert len(chunks(текст)) == 2, "разделение между парами должно остаться"
     finally:
         tt.LESSON_TIMES = настоящая
@@ -228,21 +301,50 @@ def test_subgroups_are_a_separate_block():
                   subject="1.Экономика (лабораторная) | 2.Устройство (лабораторная)",
                   teacher="Сабирьянова А. Р.; Нуриева С. Р.", room="105-2 / 306-1")])
     текст = tt.format_day(день)
-    assert "подгруппы" in текст, текст
-    строки = текст.splitlines()
-    строка_урока = next(s for s in строки if s.strip().startswith("7."))
-    assert строка_урока.strip().startswith("7. 14:00–14:45"), строка_урока
-    assert строка_урока.endswith("подгруппы"), строка_урока
-    # обе подгруппы на своих строках, у каждой свой кабинет и преподаватель
+    assert "подгруппы:" in текст, текст
     assert "ауд. 105-2 · Сабирьянова А. Р." in текст
     assert "ауд. 306-1 · Нуриева С. Р." in текст
+    # обе подгруппы на своих строках, не слиты в одну через «·» между предметами
     for кусок in ("1.Экономика (лабораторная)", "2.Устройство (лабораторная)"):
-        строка = next(s for s in строки if s.strip().startswith(кусок))
-        assert not "·" in строка.split("ауд.")[0], f"подгруппа слита с другой: {строка}"
+        строка = next(s for s in текст.splitlines() if s.strip().startswith(кусок))
+        assert строка.startswith("      "), f"подгруппа без отступа: {строка!r}"
 
 
 def test_plain_lesson_has_no_subgroup_mark():
-    текст = tt.format_day(make_day(1))
-    assert "подгруппы" not in текст
+    assert "подгруппы" not in tt.format_day(make_day(1))
+
+
+# ── ближайшие занятия ────────────────────────────────────────────────────────
+def test_upcoming_does_not_repeat_a_pair():
+    """Пара не показывается дважды: одна запись на пару."""
+    расписание = tt.GroupSchedule(group="24-23П", days={
+        0: tt.DaySchedule(weekday=0, lessons=[
+            tt.Lesson(1, "Математика", "Иванов И. И.", "204", "08:00", "08:45"),
+            tt.Lesson(2, "Математика", "Иванов И. И.", "204", "08:50", "09:35"),
+            tt.Lesson(3, "Физика", "Петров П. П.", "222-1", "09:50", "10:35"),
+            tt.Lesson(4, "Физика", "Петров П. П.", "222-1", "10:55", "11:40"),
+        ])})
+    tt.apply_lesson_times(расписание)
+    текст = tt.format_upcoming(расписание, limit=3)
+    assert текст.count("Математика") == 1, текст
+    assert текст.count("Физика") == 1, текст
+
+
+def test_upcoming_keeps_the_requested_count():
+    """После схлопывания остаётся ровно столько записей, сколько просили.
+
+    Если бы просили ровно limit до схлопывания, студент увидел бы две пары вместо
+    трёх: места занимает одна половина пары.
+    """
+    расписание = tt.GroupSchedule(group="24-23П", days={
+        0: tt.DaySchedule(weekday=0, lessons=[
+            tt.Lesson(n, f"Предмет {n}", "Иванов И. И.", "204", t, t)
+            for n, t in ((1, "08:00"), (2, "08:50"), (3, "09:50"), (4, "10:55"),
+                         (5, "12:00"), (6, "13:05"))])})
+    tt.apply_lesson_times(расписание)
+    текст = tt.format_upcoming(расписание, limit=3)
+    заголовки = [s for s in текст.splitlines()
+                 if "·" in s and s.strip()[:2].isdigit()]
+    assert len(заголовки) == 3, заголовки
 
 
