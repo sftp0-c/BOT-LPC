@@ -641,6 +641,56 @@ def today_monday() -> date:
     return moment - timedelta(days=moment.weekday())
 
 
+def пары_текстом(число: int) -> str:
+    """«1 пара», «2 пары», «5 пар» - по-русски, без ошибки в окончании."""
+    if число % 10 == 1 and число % 100 != 11:
+        return f"{число} пара"
+    if 2 <= число % 10 <= 4 and not 12 <= число % 100 <= 14:
+        return f"{число} пары"
+    return f"{число} пар"
+
+
+def week_header(schedule: GroupSchedule, week: date | None = None) -> str:
+    """Шапка недели без занятий: группа, дата, предупреждение о несвежем файле.
+
+    Отдельно от format_schedule, потому что бот показывает неделю кнопками дней:
+    шапка нужна сама по себе, а 110 строк занятий - нет.
+    """
+    monday = week or schedule.week or today_monday()
+    lines = [f"📚 Расписание группы {schedule.group}", f"Неделя с {monday:%d.%m.%Y}"]
+    stale = today_monday() - monday
+    if stale.days >= 7:
+        lines.append(f"⚠️ Файл от {monday:%d.%m.%Y} — свежее расписание колледж "
+                     f"ещё не выложил ({stale.days} дн. назад).")
+    return "\n".join(lines)
+
+
+def day_date(schedule: GroupSchedule, weekday: int) -> date:
+    """Дата учебного дня по номеру. Понедельник берётся из файла, а не из сегодняшнего дня.
+
+    Так заголовок дня и подпись кнопки дня показывают одно и то же число.
+    """
+    monday = schedule.week or today_monday()
+    return monday + timedelta(days=weekday)
+
+
+def day_captions(schedule: GroupSchedule, week: date | None = None) -> list[tuple[int, str]]:
+    """Подписи кнопок дней: [(номер дня, «Пн 12.10 · 3 пары»)].
+
+    Возвращает только дни с занятиями: кнопка «Суббота» в расписании без субботы
+    была бы враньём. Порядок - учебный, с понедельника.
+    """
+    подписи = []
+    for номер in sorted(schedule.days):
+        день = schedule.days[номер]
+        if день.is_empty:
+            continue
+        пар = len({pair_of_lesson(урок.number) for урок in день.lessons})
+        дата = day_date(schedule, номер)
+        подписи.append((номер, f"{WEEKDAYS_FULL[номер][:2]} {дата:%d.%m} · {пары_текстом(пар)}"))
+    return подписи
+
+
 def format_schedule(schedule: GroupSchedule, week: date | None = None, only: list[int] | None = None) -> str:
     """Расписание на неделю (или по дням only) в виде текста для MAX."""
     if not schedule.days:
@@ -649,13 +699,10 @@ def format_schedule(schedule: GroupSchedule, week: date | None = None, only: lis
     # неделю, и шапка обязана совпадать с ним, а не с текущим днём.
     monday = week or schedule.week or today_monday()
     days = [schedule.days[key] for key in sorted(schedule.days) if only is None or key in only]
-    lines = [f"📚 Расписание группы {schedule.group}"]
-    if only is None:
-        lines.append(f"Неделя с {monday:%d.%m.%Y}")
-        stale = today_monday() - monday
-        if stale.days >= 7:
-            lines.append(f"⚠️ Файл от {monday:%d.%m.%Y} — свежее расписание колледж "
-                         f"ещё не выложил ({stale.days} дн. назад).")
+    lines = week_header(schedule, monday).splitlines()
+    if only is not None:
+        # По дням шапка не нужна: чем меньше текста, тем легче читать.
+        lines = []
     for day in days:
         if day.is_empty:
             continue

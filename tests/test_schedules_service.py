@@ -227,18 +227,45 @@ async def test_refresh_all_reports_broken_groups(api, fake_pdf):
 
 
 # ── расписание в боте ─────────────────────────────────────────────────────────
-async def test_bot_shows_parsed_schedule_instead_of_link(api, fake_pdf, frozen_college_clock):
+async def test_bot_shows_days_buttons_not_the_whole_week(api, fake_pdf, frozen_college_clock):
+    """Неделя открывается списком дней, а не стеной текста.
+
+    Владелец выбрал именно кнопки: неделя живой группы 23-29 - это 110 строк,
+    телефон их всё равно не покажет. Прежняя проверка ждала «Математику» прямо
+    в ответе на «Расписание» и тем самым закрепляла стену текста.
+    """
     await register(STUDENT)
     await repo.upsert_schedule("ИС-21", PDF_URL)
     await press(STUDENT, "sched")
-    text = api.last(STUDENT)[1]
-    assert "Расписание группы ИС-21" in text
-    assert "Математика" in text and "08:00–08:45" in text and "ауд. 204" in text
-    assert "Иванова А. А." in text
-    # день недели - из часов колледжа, а не из datetime.now(): в контейнере
-    # машинные часы это UTC, и кнопка «сегодня» вела бы на другой день
-    assert f"schedday:ИС-21:{frozen_college_clock.weekday()}" in api.payloads(STUDENT)
+    текст = api.last(STUDENT)[1]
+    assert "Расписание группы ИС-21" in текст
+    assert "Неделя с" in текст
+    assert "Выбери день" in текст
+    payloads = api.payloads(STUDENT)
+    # в подделке пары по понедельникам и четвергам
+    assert "schedday:ИС-21:0" in payloads
+    assert "schedday:ИС-21:3" in payloads
+    # пустых дней кнопками не делаем: у ИС-21 нет ни вторника, ни субботы
+    assert "schedday:ИС-21:1" not in payloads
+    assert "schedday:ИС-21:5" not in payloads
+    # вся неделя в текст не попала
+    assert "Математика" not in текст
 
+
+async def test_bot_day_button_shows_that_day(api, fake_pdf):
+    """По кнопке дня открывается этот день: время, аудитория и преподаватель."""
+    await register(STUDENT)
+    await repo.upsert_schedule("ИС-21", PDF_URL)
+    await press(STUDENT, "sched")
+    await press(STUDENT, "schedday:ИС-21:0")
+    текст = api.last(STUDENT)[1]
+    assert "Понедельник" in текст
+    assert "Математика" in текст
+    assert "08:00–08:45" in текст
+    assert "ауд. 204" in текст
+    assert "Иванова А. А." in текст
+    # из экрана дня возвращаемся к списку дней
+    assert "sched:ИС-21" in api.payloads(STUDENT)
 
 async def test_bot_schedule_buttons_work(api, fake_pdf):
     await register(STUDENT)
@@ -276,8 +303,11 @@ async def test_bot_falls_back_to_link_when_parse_fails(api, fake_pdf, monkeypatc
 
 
 async def test_bot_guest_can_read_schedule(api, fake_pdf):
+    """Гость смотрит чужое расписание: кнопки дней есть, и день открывается."""
     await repo.upsert_schedule("ИС-21", PDF_URL)
     await say("555", "/start")
     await press("555", "who:guest")
     await press("555", "sched:ИС-21")
+    assert "schedday:ИС-21:0" in api.payloads("555")
+    await press("555", "schedday:ИС-21:0")
     assert "Математика" in api.last("555")[1]

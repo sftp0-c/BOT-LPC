@@ -1497,6 +1497,23 @@ async def cb_schedule(x, arg):
     return await send_schedule(x, group, back_to_list=bool(arg))
 
 
+def _day_buttons(schedule, group: str) -> list:
+    """Кнопки дней недели, по две в ряд: «пн 12.10 · 4 пары».
+
+    Пустых дней не делаем: кнопка «Суббота» в расписании без субботы - враньё.
+    """
+    ряд: list = []
+    кнопки: list = []
+    for номер, подпись in tt.day_captions(schedule):
+        ряд.append(btn(f"📅 {подпись}", f"schedday:{group}:{номер}"))
+        if len(ряд) == 2:
+            кнопки.append(ряд)
+            ряд = []
+    if ряд:
+        кнопки.append(ряд)
+    return кнопки
+
+
 async def send_schedule(x: str, group: str, back_to_list: bool = False, view: str = "week") -> None:
     """Показывает расписание группы: разобранные занятия, иначе ссылку на PDF.
 
@@ -1525,19 +1542,27 @@ async def send_schedule(x: str, group: str, back_to_list: bool = False, view: st
         )
 
     schedule = result.schedule
+    today_weekday = clock.now().weekday()
     if view == "day":
-        today = schedule.day(clock.now().weekday())
-        text = tt.format_day(today) if today and not today.is_empty else f"📅 На {WEEKDAYS_FULL[clock.now().weekday()]} пар нет"
+        today = schedule.day(today_weekday)
+        text = (tt.format_day(today, tt.day_date(schedule, today_weekday))
+                if today and not today.is_empty
+                else f"📅 На {WEEKDAYS_FULL[today_weekday]} пар нет")
+        keyboard = [[btn("📅 Все дни", f"sched:{group}"),
+                     btn("⏰ Ближайшие", f"schednext:{group}")]]
     elif view == "next":
         text = tt.format_upcoming(schedule) or "⏰ Ближайших занятий не найдено"
+        keyboard = [[btn("📆 Сегодня", f"schedday:{group}:{today_weekday}"),
+                     btn("📅 Все дни", f"sched:{group}")]]
     else:
-        text = tt.format_schedule(schedule)
-    today_weekday = clock.now().weekday()
-    keyboard = [
-        [btn("📆 Сегодня", f"schedday:{group}:{today_weekday}"),
-         btn("⏰ Ближайшие", f"schednext:{group}")],
-        [btn("📚 Вся неделя", f"sched:{group}")],
-    ]
+        # Неделя списком дней, а не текстом: неделя группы 23-29 - это 110 строк
+        # и 3554 знака, телефон такое не показывает. Владелец выбрал именно
+        # кнопки дней. Текст недели format_schedule остаётся - он нужен панели.
+        кнопки = _day_buttons(schedule, group)
+        if not кнопки:
+            return await api.send(x, f"{tt.week_header(schedule)}\n\nПар на неделе нет", tail)
+        text = f"{tt.week_header(schedule)}\n\nВыбери день:"
+        keyboard = [*кнопки, [btn("⏰ Ближайшие", f"schednext:{group}")]]
     await api.send(x, f"{text}\n{sub_hint(label)}", [*keyboard, tail])
 
 
@@ -1550,11 +1575,13 @@ async def cb_schedule_day(x, arg):
     result = await schedules.parse_group(_group_code(group))
     if not result.has_lessons:
         return await send_schedule(x, group)
-    day = result.schedule.day(to_int(weekday, clock.now().weekday()))
-    text = tt.format_day(day) if day and not day.is_empty else "📅 На этот день пар нет"
+    число = to_int(weekday, clock.now().weekday())
+    day = result.schedule.day(число)
+    text = (tt.format_day(day, tt.day_date(result.schedule, число))
+            if day and not day.is_empty else "📅 На этот день пар нет")
     label = await _schedule_subscription_label(x, group)
     return await api.send(x, f"{text}\n{sub_hint(label)}", [
-        [btn("📚 Вся неделя", f"sched:{group}"), btn("⏰ Ближайшие", f"schednext:{group}")],
+        [btn("📅 Все дни", f"sched:{group}"), btn("⏰ Ближайшие", f"schednext:{group}")],
         [btn(label, f"schedsub:{group}"), btn("⬅️ К списку", "view_schedules")],
     ])
 
@@ -1577,8 +1604,13 @@ async def cb_schedule_reload(x, arg):
     if not await repo.get_schedule(group):
         return await api.send(x, f"Расписание группы {group} пока не добавлено.", BACK)
     result = await schedules.parse_group(group, force=True)
-    text = tt.format_schedule(result.schedule) if result.has_lessons else f"Обновить не вышло: {result.reason}"
-    return await api.send(x, text, [[btn("📚 Вся неделя", f"sched:{group}"), *BACK[0]]])
+    if not result.has_lessons:
+        return await api.send(x, f"Обновить не вышло: {result.reason}", [[*BACK[0]]])
+    # Неделя открывается кнопками дней, поэтому и после перечитывания файла
+    # шлём список дней, а не 110 строк текста.
+    кнопки = _day_buttons(result.schedule, group)
+    текст = f"{tt.week_header(result.schedule)}\n\nФайл перечитан, выбери день:"
+    return await api.send(x, текст, [*кнопки, [*BACK[0]]])
 
 
 @callback("schedsub")

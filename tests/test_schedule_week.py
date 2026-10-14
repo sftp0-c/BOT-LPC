@@ -1,6 +1,7 @@
 ﻿"""Тесты недели расписания: неделя из PDF, устаревание, подсветка сегодня."""
 from datetime import date, timedelta
 
+import pytest
 
 import timetable as tt
 
@@ -91,3 +92,115 @@ def test_explicit_week_argument_still_wins():
     other = tt.today_monday() - timedelta(days=21)
     text = tt.format_schedule(make_week(tt.today_monday()), week=other)
     assert f"Неделя с {other:%d.%m.%Y}" in text
+
+
+# ── неделя кнопками днями ────────────────────────────────────────────────────
+def make_days(по_дням: dict) -> tt.GroupSchedule:
+    """Неделя из номеров уроков: make_days({0: [1, 2], 3: [5]}) - понедельник и четверг."""
+    return tt.GroupSchedule(group="24-23П", week=tt.today_monday(), days={
+        номер: tt.DaySchedule(weekday=номер,
+                              lessons=[tt.Lesson(number=n, subject=f"Предмет {n}") for n in уроки])
+        for номер, уроки in по_дням.items()})
+
+
+def test_pairs_are_counted_as_pairs_not_lessons():
+    """День с семью уроками - это четыре пары, а не семь.
+
+    Пара - это два урока. Ошибиться тут легко: посчитать уроки и написать
+    «7 пар», и студент потом ищет несуществующую пару.
+    """
+    расписание = make_days({0: [1, 2, 3, 4, 5, 6, 7]})
+    подписи = tt.day_captions(расписание)
+    assert подписи[0][1].endswith("4 пары"), подписи[0][1]
+
+
+def test_last_three_pairs_are_one_lesson_each():
+    """Уроки 9, 10 и 11 - это пары 5, 6 и 7, по одному уроку каждая."""
+    расписание = make_days({0: [9, 10, 11]})
+    подпись = tt.day_captions(расписание)[0][1]
+    assert подпись.endswith("3 пары"), подпись
+
+
+@pytest.mark.parametrize("число, ждём", [
+    (1, "1 пара"), (2, "2 пары"), (4, "4 пары"), (5, "5 пар"),
+    (11, "11 пар"), (21, "21 пара"), (22, "22 пары"), (25, "25 пар"),
+    (101, "101 пара"), (111, "111 пар"),
+])
+def test_russian_plural(число, ждём):
+    assert tt.пары_текстом(число) == ждём
+
+
+def test_empty_days_get_no_button():
+    """День без пар не должен получать кнопку.
+
+    Проверка на два разных случая, и оба нужны:
+    * дня нет в расписании вовсе - нечего и показывать;
+    * день есть, а пар в нём нет: строка дня из PDF осталась в расписании, но
+      разбирать в ней нечего. Кнопка «Сб 17.10 · 0 пар» - прямое враньё.
+
+    Первый случай проверка раньше покрывала, второй нет: без него удаление
+    проверки «день пуст» из day_captions не гасило ни одной проверки, и это
+    показала мутация.
+    """
+    расписание = make_days({0: [1], 4: [1]})
+    assert [номер for номер, _ in tt.day_captions(расписание)] == [0, 4]
+
+    # суббота в расписании есть, а пар в ней нет
+    расписание.days[5] = tt.DaySchedule(weekday=5)
+    assert расписание.days[5].is_empty
+    assert [номер for номер, _ in tt.day_captions(расписание)] == [0, 4]
+
+
+def test_day_with_empty_lessons_is_skipped():
+    """День, чьи уроки все пустые, кнопки не получает - is_empty проверяет уроки."""
+    расписание = make_days({0: [1]})
+    расписание.days[3] = tt.DaySchedule(weekday=3, lessons=[])
+    подписи = tt.day_captions(расписание)
+    assert [номер for номер, _ in подписи] == [0]
+
+
+def test_empty_week_gives_no_buttons():
+    assert tt.day_captions(make_days({})) == []
+    assert tt.day_captions(tt.GroupSchedule(group="24-23П", week=tt.today_monday())) == []
+
+
+def test_day_caption_date_matches_day_header():
+    """Кнопка и заголовок дня показывают одно и то же число.
+
+    Раньше подпись появилась с датой, а заголовок шёл просто «Понедельник»: рядом
+    с кнопкой «пн 12.10» это выглядело неприлично.
+    """
+    расписание = make_days({0: [1]})
+    номер, подпись = tt.day_captions(расписание)[0]
+    дата = tt.day_date(расписание, номер)
+    assert f"{дата:%d.%m}" in подпись
+    assert f"{дата:%d.%m}" in tt.format_day(расписание.days[номер], дата)
+
+
+def test_day_date_follows_the_file_not_today():
+    """Дата дня считается от понедельника файла, а не от текущего понедельника."""
+    прошлая = tt.today_monday() - (timedelta(days=21))
+    расписание = tt.GroupSchedule(group="24-23П", week=прошлая, days={
+        0: tt.DaySchedule(weekday=0, lessons=[tt.Lesson(1, "Математика")])})
+    assert tt.day_date(расписание, 0) == прошлая
+
+
+def test_week_header_keeps_the_stale_warning():
+    """Предупреждение о несвежем файле переехало в шапку и не потерялось."""
+    старый = tt.today_monday() - timedelta(days=14)
+    шапка = tt.week_header(make_days({0: [1]}), старый)
+    assert "свежее расписание колледж ещё не выложил" in шапка
+    assert "14 дн. назад" in шапка
+    # и полный текст недели по-прежнему её показывает
+    assert "свежее расписание колледж ещё не выложил" in tt.format_schedule(make_days({0: [1]}), старый)
+
+
+def test_week_header_is_short():
+    """Шапка - это шапка: без занятий, иначе толку от неё нет."""
+    шапка = tt.week_header(make_days({0: [1, 2, 3, 4]}))
+    assert "Предмет" not in шапка
+    assert len(шапка.splitlines()) <= 3
+
+
+def test_week_header_without_days_still_says_something():
+    assert "Расписание группы" in tt.week_header(tt.GroupSchedule(group="24-23П"))
