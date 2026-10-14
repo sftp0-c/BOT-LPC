@@ -167,6 +167,14 @@ async def process(u: dict):
 
 _error_alerts: dict[str, float] = {}          # что уже сообщали
 ALERT_COOLDOWN = 900                            # не чаще раза в 15 минут на текст ошибки
+ALERT_AFTER = 900                               # столько секунд непрерывного отказа, прежде чем тревожить
+
+
+def _тик() -> float:
+    """Секунды для замеров в poll. Отдельная функция, чтобы её можно было подменить
+    в проверках: подменять time.monotonic у всего процесса нельзя, оттуда же берёт
+    время asyncio."""
+    return time.monotonic()
 
 
 def exc_summary(limit: int = 160) -> str:
@@ -191,6 +199,8 @@ async def _alert_sysadmins(text: str, short: str = "") -> None:
 
 async def poll():
     marker = None
+    отказ_с = None          # с какого момента опрос не удаётся; None — связь жива
+    тревожили = False       # про эту аварию уже сообщили сис-админам
     while True:
         try:
             data = await api.updates(marker)
@@ -199,12 +209,28 @@ async def poll():
                 marker = new_marker
             for u in data.get("updates", []):
                 spawn(process(u))
+            if отказ_с is not None and тревожили:
+                log.info("long polling: связь с MAX восстановилась через %.0f с", _тик() - отказ_с)
+            отказ_с = None
+            тревожили = False
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # long polling не должен падать из-за одного ответа
-            log.error("long polling: %s", exc)
-            await _alert_sysadmins(f"⚠️ Не удалось получить события MAX: {exc_summary()}\n"
-                                   f"Бот продолжает пробовать. Подробности в журнале.", short=str(exc)[:60])
+            # Короткий обрыв - обычное дело: MAX закрывает простаивающее соединение,
+            # DNS у сервера периодически не резолвится. Через пять секунд запрос
+            # уйдёт заново, и владельцу в чат ничего не нужно: в теле такой тревоги
+            # самой писалось «бот продолжает пробовать». В журнале отказ остаётся
+            # всегда, тревога уходит только когда связь не поднялась за ALERT_AFTER.
+            now = _тик()
+            if отказ_с is None:
+                отказ_с = now
+            молчит = int(now - отказ_с)
+            log.error("long polling: %s (неудачных попыток подряд: %d)", exc, молчит // 5)
+            if молчит >= ALERT_AFTER:
+                тревожили = True
+                await _alert_sysadmins(
+                    f"⚠️ Не удалось получить события MAX уже {молчит // 60} мин: {exc_summary()}\n"
+                    f"Бот продолжает пробовать. Подробности в журнале.", short=str(exc)[:60])
             await asyncio.sleep(5)
 
 
