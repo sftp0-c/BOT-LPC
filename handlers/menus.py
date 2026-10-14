@@ -1563,7 +1563,11 @@ async def send_schedule(x: str, group: str, back_to_list: bool = False, view: st
             return await api.send(x, f"{tt.week_header(schedule)}\n\nПар на неделе нет", tail)
         text = f"{tt.week_header(schedule)}\n\nВыбери день:"
         keyboard = [*кнопки, [btn("⏰ Ближайшие", f"schednext:{group}")]]
-    await api.send(x, f"{text}\n{sub_hint(label)}", [*keyboard, tail])
+    # Предупреждение - когда показанное расписание не свежее: файл с сайта не
+    # отдался, а показано сохранённое. Молча показывать старое нельзя, студент
+    # решит, что это свежие пары.
+    note = f"\n{result.warning}" if result.warning else ""
+    await api.send(x, f"{text}{note}\n{sub_hint(label)}", [*keyboard, tail])
 
 
 @callback("schedday")

@@ -39,12 +39,16 @@ class ScheduleResult:
     """Что удалось узнать о расписании группы: текст, источник и что пошло не так."""
 
     def __init__(self, group: str, schedule: tt.GroupSchedule | None = None,
-                 url: str = "", error: str = "", from_cache: bool = False):
+                 url: str = "", error: str = "", from_cache: bool = False,
+                 warning: str = ""):
         self.group = group
         self.schedule = schedule
         self.url = url
         self.error = error
         self.from_cache = from_cache
+        # Что показать студенту рядом с расписанием: например, что файл с сайта
+        # не отдаётся и показано сохранённое. Пусто - показывать нечего.
+        self.warning = warning
 
     @property
     def has_lessons(self) -> bool:
@@ -117,6 +121,18 @@ async def parse_group(group: str, force: bool = False) -> ScheduleResult:
     except Exception as exc:  # noqa: BLE001 — сеть и формат файла: причина уходит в панель
         reason = f"не скачался PDF: {exc}"
         await _remember_failure(code, reason)
+        # Сайт колледжа живёт по своим правилам: файл переименовывают, и старая
+        # ссылка отдаёт пустую страницу с кодом 200 - это и есть «по ссылке не
+        # PDF». От этого разобранное расписание перестаёт быть верным, поэтому
+        # показываем то, что уже лежит в базе, и говорим об этом студенту. Раньше
+        # бот молчал про базу и отдавал ссылку: 5-7 октября так и было трижды в
+        # сутки на живом файле, и пять групп показывали PDF вместо расписания.
+        stored = await schedule_from_db(code)
+        if stored.days:
+            log.warning("PDF группы %s не скачался (%s), показываю сохранённое расписание",
+                        code, exc)
+            return ScheduleResult(group=code, schedule=stored, url=url, from_cache=True,
+                                  warning="файл с сайта сейчас не отдаётся, показано сохранённое")
         return ScheduleResult(group=code, url=url, error=reason)
 
     digest = file_hash(data)

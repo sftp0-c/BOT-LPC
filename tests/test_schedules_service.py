@@ -6,11 +6,14 @@
 """
 import pytest
 
+import config
 import database as db
 import repository as repo
+import timetable as tt
 from conftest import press, register, say
 from handlers import schedules
 from test_timetable import cyrillic_week
+from utils import as_str
 
 STUDENT, STAFF = "100", "200"
 PDF_URL = "https://college.example/raspisanie.pdf"
@@ -311,3 +314,90 @@ async def test_bot_guest_can_read_schedule(api, fake_pdf):
     assert "schedday:ИС-21:0" in api.payloads("555")
     await press("555", "schedday:ИС-21:0")
     assert "Математика" in api.last("555")[1]
+
+
+# ── сайт не отдал файл: показываем то, что уже разобрано ────────────────────
+@pytest.fixture
+def сайт_лежит(monkeypatch):
+    """Закачка падает так, как это делает сайт колледжа, когда файл переименован.
+
+    Колледж переименовал 25-27-25-31.pdf в 25-27-25-31 1.pdf, и старая ссылка
+    отдаёт пустую страницу с кодом 200. Бот называет это «по ссылке не PDF».
+    """
+    async def download(url):
+        raise ValueError("по ссылке не PDF (возможно, страница с ошибкой)")
+
+    monkeypatch.setattr(schedules, "download", download)
+
+
+@pytest.fixture
+def отпечаток_протух(monkeypatch):
+    """Разбор считается протухшим, иначе бот отдаёт базу, не качая файл.
+
+    Со свежим отпечатком нужный путь не выполняется вовсе: проверка прошла бы мимо
+    падения закачки, а это ровно тот случай, который видел владелец.
+    """
+    monkeypatch.setattr(config, "SCHEDULE_CACHE_HOURS", 0)
+
+
+async def положить_занятия(code: str = "ИС-21") -> None:
+    """Кладёт разобранное расписание группы прямо в базу."""
+    расписание = tt.GroupSchedule(group=code, week=tt.today_monday(), days={
+        0: tt.DaySchedule(weekday=0, lessons=[
+            tt.Lesson(number=1, subject="Математика", teacher="Иванов И. И.", room="204",
+                      start="08:00", end="08:45")]),
+    })
+    await repo.save_lessons(code, расписание, "hash-1", [code])
+
+
+async def test_download_failure_shows_stored_schedule_not_link(api, сайт_лежит, отпечаток_протух):
+    """Файл не скачался, но расписание уже разобрано - студент видит расписание.
+
+    Так было 5-7 октября с файлом 26-28-26-31.pdf: он был живой, а сайт отдавал
+    пустую страницу, и пять групп показывали PDF вместо своего расписания.
+    """
+    await register(STUDENT)
+    await repo.upsert_schedule("ИС-21", PDF_URL)
+    await положить_занятия()
+    await press(STUDENT, "sched:ИС-21")
+    текст = api.last(STUDENT)[1]
+    # Признак того, что показано расписание, - кнопки дней, а не ссылка на PDF.
+    assert "Расписание группы ИС-21" in текст
+    assert "schedday:ИС-21:0" in api.payloads(STUDENT), f"кнопок дня нет:\n{текст}"
+    assert "разобрать не удалось" not in текст
+    # и предмет виден, когда открыт день
+    await press(STUDENT, "schedday:ИС-21:0")
+    assert "Математика" in api.last(STUDENT)[1], "в дне нет предмета"
+
+
+async def test_download_failure_tells_student_why(api, сайт_лежит, отпечаток_протух):
+    """Без объяснения это враньё: студент решит, что показанные пары свежие."""
+    await register(STUDENT)
+    await repo.upsert_schedule("ИС-21", PDF_URL)
+    await положить_занятия()
+    await press(STUDENT, "sched:ИС-21")
+    текст = api.last(STUDENT)[1]
+    assert "файл с сайта сейчас не отдаётся" in текст
+    assert "сохранённое" in текст
+    # вид должен быть спокойным: слово «ошибка» студенту лишнее
+    assert "разобрать не удалось" not in текст
+
+
+async def test_download_failure_without_stored_data_reports(api, сайт_лежит, отпечаток_протух):
+    """Если в базе пусто, врать не о чем: показываем ссылку с причиной."""
+    await register(STUDENT)
+    await repo.upsert_schedule("ИС-21", PDF_URL)
+    await press(STUDENT, "sched:ИС-21")
+    текст = api.last(STUDENT)[1]
+    assert "разобрать не удалось" in текст
+    assert "не PDF" in текст
+
+
+async def test_download_failure_reason_stays_in_panel(api, сайт_лежит, отпечаток_протух):
+    """Причина неудачи остаётся в панели: сис-админ должен видеть, что не так."""
+    await register(STUDENT)
+    await repo.upsert_schedule("ИС-21", PDF_URL)
+    await положить_занятия()
+    await press(STUDENT, "sched:ИС-21")
+    строка = await repo.get_schedule("ИС-21")
+    assert "не скачался PDF" in as_str(строка["parse_error"])
