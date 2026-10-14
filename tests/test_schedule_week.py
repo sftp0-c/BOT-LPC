@@ -3,7 +3,10 @@ from datetime import date, timedelta
 
 import pytest
 
+import database as db
 import timetable as tt
+from handlers.schedules import schedule_from_db
+from schedule_import import remember_week
 
 PAGES = [{"text": "День - Понедельник, 28.09.2026\nколледж"},
          {"text": "День - Вторник, 29.09.2026\nколледж"}]
@@ -204,3 +207,49 @@ def test_week_header_is_short():
 
 def test_week_header_without_days_still_says_something():
     assert "Расписание группы" in tt.week_header(tt.GroupSchedule(group="24-23П"))
+
+
+# ── неделя из базы: даты не должны уезжать вперёд ───────────────────────────
+async def test_schedule_from_db_keeps_saved_week(api, env):
+    """Неделя берётся из настройки, а не из текущего понедельника.
+
+    Сегодня разницу не видно: понедельник текущей недели совпадает с сохранённой.
+    Проверка берёт прошлую неделю заведомо, чтобы отличать можно было на живых
+    цифрах: с 19 октября подписи кнопок уехали бы вперёд, а занятия остались бы
+    за старой неделей.
+    """
+    from datetime import date as _date, timedelta as _delta
+
+    прошлая = tt.today_monday() - _delta(days=7)
+    await db.run("INSERT INTO lessons(group_code, weekday, lesson_num, subject, start, end) "
+                 "VALUES(?,?,?,?,?,?)", ("24-23П", 0, 1, "Математика", "08:00", "08:45"))
+    await remember_week("24-23П", прошлая)
+
+    расписание = await schedule_from_db("24-23П")
+    assert расписание.week == прошлая, (
+        f"неделя потерялась: {расписание.week} вместо {прошлая}")
+    шапка = tt.week_header(расписание)
+    assert f"Неделя с {прошлая:%d.%m.%Y}" in шапка, шапка
+    подписи = tt.day_captions(расписание)
+    assert подписи, "у расписания из базы нет подписей дней"
+    assert f"{прошлая:%d.%m}" in подписи[0][1], подписи[0][1]
+    # а сегодняшнего понедельника в подписи быть не должно
+    if прошлая != tt.today_monday():
+        assert f"{tt.today_monday():%d.%m}" not in шапка.splitlines()[1], шапка
+
+
+async def test_schedule_from_db_without_saved_week(env):
+    """Без настройки недели поведение прежнее: понедельник текущей недели.
+
+    Пустая неделя в шапке выглядела бы как «Неделя с », поэтому запасной путь тоже
+    сторожим.
+    """
+    from datetime import timedelta as _delta
+
+    await db.run("INSERT INTO lessons(group_code, weekday, lesson_num, subject, start, end) "
+                 "VALUES(?,?,?,?,?,?)", ("24-25", 0, 1, "Физика", "08:00", "08:45"))
+    расписание = await schedule_from_db("24-25")
+    assert расписание.week is None, "неделя не должна выдумываться"
+    шапка = tt.week_header(расписание)
+    assert f"Неделя с {tt.today_monday():%d.%m.%Y}" in шапка, шапка
+    assert f"{tt.today_monday() + _delta(days=0):%d.%m}" in tt.day_captions(расписание)[0][1]

@@ -265,6 +265,11 @@ async def schedule_from_db(group: str) -> tt.GroupSchedule:
     """Собирает GroupSchedule из строк lessons — то, что уже разобрано."""
     code = repo._code(group)  # noqa: SLF001
     schedule = tt.GroupSchedule(group=code)
+    # Неделя из строк lessons не восстанавливается: своей колонки там нет, она
+    # лежит в настройках. Без неё экраны показывают понедельник текущей недели,
+    # и с 19 октября подписи кнопок дней уедут на неделю вперёд: занятия в базе
+    # останутся за 12-м числом, а подписано будет «пн 19.10».
+    schedule.week = await saved_week(code)
     for row in await repo.lessons_for_group(code):
         weekday = int(row["weekday"])
         day = schedule.days.setdefault(weekday, tt.DaySchedule(weekday=weekday))
