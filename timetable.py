@@ -687,7 +687,7 @@ def day_captions(schedule: GroupSchedule, week: date | None = None) -> list[tupl
             continue
         пар = len({pair_of_lesson(урок.number) for урок in день.lessons})
         дата = day_date(schedule, номер)
-        подписи.append((номер, f"{WEEKDAYS_FULL[номер][:2]} {дата:%d.%m} · {пары_текстом(пар)}"))
+        подписи.append((номер, f"{clock.WEEKDAYS[номер % 7]} {дата:%d.%m} · {пары_текстом(пар)}"))
     return подписи
 
 
@@ -734,7 +734,7 @@ def format_upcoming(schedule: GroupSchedule, limit: int = 3) -> str:
         return ""
     lines = ["⏰ Ближайшие занятия"]
     for day, lesson, day_date in items:
-        lines.append(f"{day_date:%d.%m.%Y} · {WEEKDAYS_FULL[day.weekday][:2]} · {lesson.line()}")
+        lines.append(f"{day_date:%d.%m.%Y} · {clock.WEEKDAYS[day.weekday % 7]} · {lesson.line()}")
     return "\n".join(lines)
 
 
