@@ -1,4 +1,4 @@
-"""Расписания групп: ссылка на PDF, разбор файла, звонки и импорт с сайта колледжа."""
+﻿"""Расписания групп: ссылка на PDF, разбор файла, звонки и импорт с сайта колледжа."""
 import re
 from urllib.parse import quote
 
@@ -141,13 +141,32 @@ async def schedule_card(request: Request, group_code: str):
     by_day: dict[int, list] = {}
     for row in rows:
         by_day.setdefault(int(row["weekday"]), []).append(row)
+    def ячейки(lesson) -> tuple:
+        """Предмет, преподаватель и аудитория по подгруппам, а не одной склейкой.
+
+        Склейка через « | », «; » и « / » - внутреннее хранение. Панелью
+        пользуется сис-админ, и он должен видеть то же, что студент в чате:
+        каждая подгруппа со своим кабинетом и своим преподавателем.
+
+        Части выравниваются по строкам, поэтому у колонок одинаковая высота и
+        таблица не разъезжается - раньше расходилась, если в предмете было две
+        подгруппы, а в аудитории одно значение.
+        """
+        части = tt.stored_parts(lesson["subject"], lesson["teacher"], lesson["room"])
+        if not части:
+            return (esc(lesson["subject"] or "—"), esc(lesson["teacher"] or "—"),
+                    esc(lesson["room"] or "—"))
+        return ("<br>".join(esc(ч.subject) for ч in части),
+                "<br>".join(esc(ч.teacher or "—") for ч in части),
+                "<br>".join(esc(ч.room or "—") for ч in части))
+
     days = ""
     for weekday in sorted(by_day):
         # Форма правки времени - ряд с зазором темы (.wb-tools): два поля и
         # кнопка не липнут, а кнопка остаётся по размеру своей подписи.
         lessons = "".join(
-            f"<tr><td>{esc(lesson['lesson_num'])}</td><td>{esc(lesson['subject'])}</td>"
-            f"<td>{esc(lesson['teacher'] or '—')}</td><td>{esc(lesson['room'] or '—')}</td>"
+            f"<tr><td>{esc(lesson['lesson_num'])}</td>"
+            f"<td>{предметы}</td><td>{преподаватели}</td><td>{аудитории}</td>"
             f"<td><form method='post' action='/panel/schedules/lesson-time' class='wb-tools'>{csrf(request)}"
             f"<input type='hidden' name='group_code' value='{esc(code)}'>"
             f"<input type='hidden' name='weekday' value='{weekday}'>"
@@ -156,6 +175,7 @@ async def schedule_card(request: Request, group_code: str):
             f"<input name='end' value='{esc(lesson['end'])}' size='5'>"
             f"<button class='btn-grey' title='Сохранить время' aria-label='Сохранить время'>{icon("check", 16)}</button></form></td></tr>"
             for lesson in by_day[weekday]
+            for предметы, преподаватели, аудитории in (ячейки(lesson),)
         )
         days += (f"<h3>{esc(WEEKDAYS_FULL[weekday].capitalize())}</h3>"
                  f"<table><tr><th>Пара</th><th>Предмет</th><th>Преподаватель</th><th>Ауд.</th><th>Время</th></tr>"

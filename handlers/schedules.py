@@ -402,15 +402,24 @@ WEEKDAYS = ("Понедельник", "Вторник", "Среда", "Четв�
 
 
 def format_teacher_week(days: dict) -> str:
-    """Неделя преподавателя текстом: день, урок, предмет, группа, аудитория."""
+    """Неделя преподавателя текстом: день, пара, предмет, группа, аудитория.
+
+    Репозиторий уже отдаёт преподавателю только его часть подгруппы со своим
+    кабинетом, но разбор повторяем здесь: этот текст читает сотрудник, и
+    показать ему сырой столбец базы нельзя ни при каком сбое. Студент такую
+    склейку в чате не видит - там каждая подгруппа отдельной строкой.
+    """
     if not days:
         return "📅 Занятий не найдено"
     lines = []
     for weekday in sorted(days):
         lines.append(f"\n📅 {WEEKDAYS[weekday % 7]}")
         for number, subject, group, room in days[weekday]:
-            where = f" · {room}" if room else ""
-            lines.append(f"   {number} урок · {subject} · {group}{where}")
+            части = tt.stored_parts(subject, "", room) or [tt.LessonPart(subject=subject, room=room)]
+            for часть in части:
+                где = tt.аудитория(часть.room)
+                хвост = f" · {где}" if где else ""
+                lines.append(f"   пара {number} · {часть.subject} · {group}{хвост}")
     return "\n".join(lines)
 
 

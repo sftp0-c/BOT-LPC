@@ -1,4 +1,4 @@
-"""Расписания: ссылка на PDF, разобранные занятия и подписки на них.
+﻿"""Расписания: ссылка на PDF, разобранные занятия и подписки на них.
 
 Разбор PDF живёт в timetable.py, здесь - только хранение результата и всё,
 что с ним делают: правка времени вручную, пересчёт под новые звонки, подписки."""
@@ -7,7 +7,7 @@ from datetime import timedelta
 
 import clock
 import database as db
-from utils import as_str
+from utils import TEACHER_SEP, as_str, split_glued
 
 from .common import _code
 from .groups import upsert_group
@@ -116,39 +116,87 @@ async def lessons_for_group(group_code: str) -> list:
     )
 
 
+def split_teacher(значение) -> list[str]:
+    """Отдельные фамилии из склейки «Сабирьянова А. Р.; Нуриева С. Р.»."""
+    return [x.strip() for x in str(значение or "").split(TEACHER_SEP) if x.strip()]
+
+
+def _teacher_match(teacher: str) -> str:
+    """Условие SQL для «преподаватель ведёт этот урок».
+
+    Обёртка «; » с двух сторон ищет фамилию как отдельного человека: и в начале,
+    и в конце, и в середине склейки. Фамилия внутри другой фамилии не найдётся -
+    это отличает «Иванов» от «Иванова», чего LIKE «%Иванов%» не умеет.
+
+    Разделитель склеен в строку, а не передан параметром, иначе имя с «%» или
+    «_» истолковалось бы как шаблон. У фамилий таких знаков нет.
+    """
+    return "('; ' || teacher || '; ') LIKE ('%; ' || ? || '; %')"
+
+
 async def search_teachers(needle: str, limit: int = 10) -> list[str]:
-    """Преподаватели, чьё имя похоже на запрос. Пустой запрос - самые ходовые."""
+    """Преподаватели, чьё имя похоже на запрос. Пустой запрос - самые ходовые.
+
+    Отдельные люди, а не склейки: «Сабирьянова А. Р.; Нуриева С. Р.» - это двое,
+    и кнопка «кто ведёт» должна предлагать обоих. Счётчик у каждого - число
+    уроков, в которых он участвует, поэтому ведущий вдвоём виден как
+    ведущий половины уроков, а не как никто.
+    """
     text = f"%{as_str(needle).strip()}%"
     rows = await db.many(
         "SELECT teacher, COUNT(*) n FROM lessons "
-        "WHERE teacher<>'' AND teacher LIKE ? "
-        "GROUP BY teacher ORDER BY n DESC, teacher LIMIT ?",
-        (text, int(limit)),
+        "WHERE teacher<>'' AND teacher LIKE ? GROUP BY teacher",
+        (text,),
     )
-    return [as_str(row["teacher"]) for row in rows]
+    счётчик: dict[str, int] = {}
+    for row in rows:
+        сколько = int(row["n"] or 0)
+        for имя in split_teacher(row["teacher"]):
+            счётчик[имя] = счётчик.get(имя, 0) + сколько
+    лучшие = sorted(счётчик.items(), key=lambda пара: (-пара[1], пара[0]))
+    return [имя for имя, _ in лучшие[: int(limit)]]
 
 
 async def teacher_groups(teacher: str, limit: int = 20) -> list[str]:
     """Группы, где у преподавателя есть занятия."""
     rows = await db.many(
-        "SELECT DISTINCT group_code FROM lessons WHERE teacher=? ORDER BY group_code LIMIT ?",
+        f"SELECT DISTINCT group_code FROM lessons WHERE {_teacher_match(teacher)} "
+        "ORDER BY group_code LIMIT ?",
         (as_str(teacher), int(limit)),
     )
     return [as_str(row["group_code"]) for row in rows]
 
 
 async def lessons_for_teacher(teacher: str) -> dict:
-    """Занятия преподавателя по дням: {weekday: [(номер, предмет, группа, аудитория)]}."""
+    """Занятия преподавателя по дням: {weekday: [(номер, предмет, группа, аудитория)]}.
+
+    Урок с подгруппами отдаётся по одной строке на подгруппу преподавателя: он
+    ведёт свою часть, и в ней свой предмет и свой кабинет. Отдавать склейку
+    «1.Предмет | 2.Предмет · 105-2 / 306-1» бессмысленно - половина текста не
+    его.
+
+    Совместная лекция, где в склейке нет его части, отдаётся целиком: лекция
+    читается как один предмет, делить её не на чем.
+    """
+    имя = as_str(teacher)
     rows = await db.many(
-        "SELECT weekday, lesson_num, subject, group_code, room FROM lessons "
-        "WHERE teacher=? ORDER BY weekday, lesson_num, group_code",
-        (as_str(teacher),),
+        "SELECT weekday, lesson_num, subject, group_code, room, teacher FROM lessons "
+        f"WHERE {_teacher_match(имя)} ORDER BY weekday, lesson_num, group_code",
+        (имя,),
     )
     days: dict[int, list] = {}
     for row in rows:
-        days.setdefault(int(row["weekday"]), []).append(
-            (int(row["lesson_num"]), as_str(row["subject"]), as_str(row["group_code"]),
-             as_str(row["room"])))
+        номер = int(row["lesson_num"])
+        группа = as_str(row["group_code"])
+        части = split_glued(row["subject"], row["teacher"], row["room"])
+        свои = [часть for часть in части if часть[1] == имя]
+        if свои:
+            for предмет, _преподаватель, кабинет in свои:
+                days.setdefault(int(row["weekday"]), []).append(
+                    (номер, предмет, группа, кабинет))
+        else:
+            days.setdefault(int(row["weekday"]), []).append(
+                (номер, as_str(row["subject"]), группа, as_str(row["room"])))
     return days
 
 
