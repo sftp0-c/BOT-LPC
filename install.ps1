@@ -65,8 +65,11 @@ if ($Start) {
     if (-not (Test-Path $example)) { Die "Нет файла .env.example рядом со скриптом." }
     Copy-Item $example $envFile
     $password = -join ((1..20) | ForEach-Object { "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"[(Get-Random -Maximum 57)] })
-    (Get-Content $envFile -Raw) -replace "(?m)^WEB_PANEL_PASSWORD=.*$", "WEB_PANEL_PASSWORD=$password" |
-        Set-Content $envFile -Encoding UTF8
+    $sessionSecret = -join ((1..48) | ForEach-Object { "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"[(Get-Random -Maximum 57)] })
+    $createdEnv = (Get-Content $envFile -Raw) `
+        -replace "(?m)^WEB_PANEL_PASSWORD=.*$", "WEB_PANEL_PASSWORD=$password" `
+        -replace "(?m)^WEB_SESSION_SECRET=.*$", "WEB_SESSION_SECRET=$sessionSecret"
+    Set-Content $envFile -Value $createdEnv -Encoding UTF8
     Ok "Создан .env, пароль панели сгенерирован: $password"
     Warn "Пароль панели сохраните сами - в .env он, а в панели только в момент входа."
     $token = Read-Host "Токен бота MAX (оставьте пустым, чтобы дописать позже)"
@@ -89,6 +92,17 @@ if ($Start) {
 
 # ── 3. проверка .env ────────────────────────────────────────────────────────
 $content = Get-Content $envFile -Raw
+if ($content -notmatch "(?m)^WEB_SESSION_SECRET=.{32,}$" -or
+    $content -match "(?m)^WEB_SESSION_SECRET=change_me") {
+    $sessionSecret = -join ((1..48) | ForEach-Object { "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"[(Get-Random -Maximum 57)] })
+    if ($content -match "(?m)^WEB_SESSION_SECRET=.*$") {
+        $content = $content -replace "(?m)^WEB_SESSION_SECRET=.*$", "WEB_SESSION_SECRET=$sessionSecret"
+    } else {
+        $content = $content.TrimEnd() + "`r`nWEB_SESSION_SECRET=$sessionSecret`r`n"
+    }
+    Set-Content $envFile -Value $content -Encoding UTF8
+    Ok "Создан отдельный секрет подписи сессий панели"
+}
 if ($content -match "(?m)^MAX_BOT_TOKEN=PASTE") {
     Warn "MAX_BOT_TOKEN в .env не заменён - бот не подключится к MAX."
 }

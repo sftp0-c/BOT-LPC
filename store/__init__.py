@@ -59,8 +59,9 @@ from .staff import (  # noqa: F401 - публичный интерфейс па�
     update_admin, vacation_note, vacation_replacement, vacations_bulk,
 )
 from .sysadmin import (  # noqa: F401 - публичный интерфейс пакета
-    _save_revoked, add_sysadmin, admin_log, admin_log_counts, grant_sysadmin, is_owner,
-    is_sysadmin, list_sysadmins, log_action, revoke_sysadmin, revoked_sysadmins, sysadmin_count,
+    _save_revoked, add_sysadmin, admin_log, admin_log_counts, audit_actions, audit_count,
+    audit_entries, grant_sysadmin, is_owner, is_sysadmin, list_sysadmins, log_action, log_audit,
+    prune_audit, revoke_sysadmin, revoked_sysadmins, sysadmin_count,
 )
 from .templates import (  # noqa: F401 - публичный интерфейс пакета
     add_template, count_template_use, delete_template, get_template, list_templates,
@@ -68,7 +69,7 @@ from .templates import (  # noqa: F401 - публичный интерфейс �
 )
 from .tickets import (  # noqa: F401 - публичный интерфейс пакета
     add_internal_note, add_ticket_message, admin_tickets, archive_count, archive_ticket,
-    bulk_update, create_ticket, delete_ticket, forward_ticket, get_ticket, latest_message_roles,
+    bulk_update, create_ticket, delete_ticket, forward_ticket, get_ticket, latest_message_roles, latest_message_states,
     log_ticket_event, open_tickets_count, recent_student_tickets, restore_ticket,
     set_ticket_ready, set_ticket_status, status_counts, ticket_events, ticket_thread,
     transition_ticket_status, update_ticket,

@@ -190,10 +190,12 @@ async def test_init_db_adds_only_missing_objects(legacy):
     # «сама» - init_db создаёт недостающее, и тест это фиксирует.
     new_tables = {("table", name) for name in ("groups", "contacts", "ticket_events", "staff_invites",
                                               "staff_requests", "login_attempts", "lessons", "admin_log", "group_aliases",
-                                              "reply_templates", "faq")}
+                                              "reply_templates", "faq", "audit_log")}
     new_indexes = {("index", name) for name in ("idx_contacts_last_seen", "idx_ticket_events",
                                                "idx_login_attempts", "idx_lessons_group", "idx_admin_log",
-                                               "idx_group_aliases_group", "idx_faq_active")}
+                                               "idx_group_aliases_group", "idx_faq_active",
+                                               "idx_audit_log_created", "idx_audit_log_user",
+                                               "idx_audit_log_action")}
     added = {item for item in set(after) - set(before) if not item[1].startswith("sqlite_autoindex_")}
     assert added == new_tables | new_indexes
     assert set(before) <= set(after)
@@ -217,9 +219,11 @@ async def test_init_db_creates_new_tables_and_indexes(legacy):
     await db.init_db()
     created = schema_snapshot(legacy)
     names = {name for kind, name in created if kind == "table"}
-    assert {"groups", "contacts", "ticket_events", "staff_invites", "staff_requests", "login_attempts"} <= names
+    assert {"groups", "contacts", "ticket_events", "staff_invites", "staff_requests",
+            "login_attempts", "audit_log"} <= names
     indexes = {name for kind, name in created if kind == "index"}
-    assert {"idx_contacts_last_seen", "idx_ticket_events", "idx_login_attempts"} <= indexes
+    assert {"idx_contacts_last_seen", "idx_ticket_events", "idx_login_attempts",
+            "idx_audit_log_created", "idx_audit_log_user", "idx_audit_log_action"} <= indexes
     assert {"username", "messages", "last_seen", "first_seen"} <= set(columns(legacy, "contacts"))
     assert {"event", "detail"} <= set(columns(legacy, "ticket_events"))
     assert {"code", "expires_at", "used_by"} <= set(columns(legacy, "staff_invites"))

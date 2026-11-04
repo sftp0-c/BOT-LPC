@@ -22,6 +22,7 @@ _PLACEHOLDERS = {
     "PASTE_YOUR_TOKEN_HERE",
     "YOUR_MAX_USER_ID",
     "change_me_to_random_secret",
+    "change_me_to_random_session_secret",
 }
 
 
@@ -58,6 +59,9 @@ SCHEDULE_CACHE_HOURS = max(1, to_int(_get("SCHEDULE_CACHE_HOURS", "12"), 12))
 SCHEDULE_CACHE_FILES = max(1, to_int(_get("SCHEDULE_CACHE_FILES", "20"), 20))
 # Пароль веб-панели сис-админа (http://host:8090/panel). Пусто — панель выключена.
 WEB_PANEL_PASSWORD = _get("WEB_PANEL_PASSWORD")
+# Отдельный секрет подписывает cookie панели. Пароль для этого не подходит:
+# сотрудники знают его, но не должны уметь выпустить cookie владельца.
+WEB_SESSION_SECRET = _get("WEB_SESSION_SECRET")
 WEB_PANEL_HOURS = to_int(_get("WEB_PANEL_HOURS", "12"), 12)  # время жизни сессии панели
 # Файл журнала: нужен веб-панели (вкладка «Логи») и команде /logs.
 LOG_FILE = _get("LOG_FILE", "logs/bot.log")
@@ -94,6 +98,8 @@ def validate() -> list[str]:
         )
     if not WEB_PANEL_PASSWORD:
         warnings.append("WEB_PANEL_PASSWORD не задан: веб-панель сис-админа /panel выключена")
+    elif len(WEB_SESSION_SECRET) < 32:
+        errors.append("WEB_SESSION_SECRET должен быть отдельной случайной строкой не короче 32 символов")
     if errors:
         raise RuntimeError("Ошибка настройки: " + "; ".join(errors))
     return warnings

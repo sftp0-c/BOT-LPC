@@ -314,7 +314,7 @@ async def cb_staff_promote(x, arg):
     if not done:
         return await api.send(x, f"❌ {message}", [[btn("🔐 Сис-админы", "syslist")]])
     await notify(arg, "🔐 Вам выдали права сис-админа бота колледжа: в панели появится кнопка «🔐 Сис-админ».")
-    await repo.log_action(x, "права сис-админа выданы", f"{_field(a, 'full_name')} (ID {arg})")
+    await repo.log_action(x, "права сис-админа выданы", f"ID {arg}; поле: role_type")
     await audit(x, f"Сис-админ {x} повысил сотрудника {arg} до сис-админа.")
     await api.send(x, f"🔐 {message}.", [[btn("🔐 Сис-админы", "syslist")], *BACK])
 
@@ -383,7 +383,7 @@ async def cb_staff_position_hint(x, arg):
         return await api.send(x, "Должность не понята: выберите подсказку или впишите текстом.",
                               [*position_hint_rows(f"sfph:{staff_id}"), *BACK])
     await repo.update_admin(staff_id, position=position)
-    await repo.log_action(x, "должность изменена", f"{staff_id}: {position}")
+    await repo.log_action(x, "должность изменена", f"ID {staff_id}; поле: position")
     await api.send(x, f"✏️ {_field(a, 'full_name')}: должность «{position}».")
     await send_staff_card(x, staff_id)
 
@@ -958,7 +958,7 @@ async def cb_make_staff_category(x, arg):
     await db.clear_state(x)
     delivered = await notify(staff_id, "🏫 Вам назначили роль сотрудника в боте колледжа. Отправьте /start, "
                                        "чтобы открыть кабинет.")
-    await repo.log_action(x, "сотрудник добавлен", f"{staff_id} {payload.get('name') or ''} · {payload.get('position') or 'без должности'}")
+    await repo.log_action(x, "сотрудник добавлен", f"ID {staff_id}; поля: full_name, position, ticket_category")
     await audit(x, f"Сис-админ {x} добавил сотрудника {staff_id} из списка пользователей.")
     await api.send(x, f"✅ {payload.get('name') or staff_id} теперь сотрудник."
                       + ("" if delivered else "\n⚠️ Он пока не запускал бота — пусть нажмёт «Начать»."))
@@ -1067,7 +1067,7 @@ async def cb_code_ttl(x, arg):
     done, label = await repo.set_invite_ttl(code, to_int(raw_hours, 0))
     if not done:
         return await api.send(x, f"❌ {label}", [[btn("🗝 Все коды", "codes")]])
-    await repo.log_action(x, "срок кода изменён", f"{code}: {label}")
+    await repo.log_action(x, "срок кода изменён", "поле: срок действия")
     await api.send(x, f"⏳ Код {code}: срок теперь {label}.",
                    [[btn("🗝 Все коды", "codes")], *BACK])
 
@@ -1541,7 +1541,7 @@ async def probe_pdf_url(url: str) -> tuple[bool, str]:
                 async for _ in resp.aiter_bytes():
                     break
     except Exception as exc:
-        log.warning("не удалось проверить ссылку %s: %s", url, exc)
+        log.warning("не удалось проверить ссылку на PDF (%s)", type(exc).__name__)
         return False, "Ссылка не открывается: сервер недоступен или адрес неверный."
     if status not in (200, 206):
         return False, f"Сервер ответил кодом {status} — по ссылке нет файла."
@@ -1706,7 +1706,7 @@ async def _run_import(x: str) -> None:
     try:
         result = await schedule_import.import_sources(COLLEGE_SCHEDULE_PAGE)
     except Exception as exc:  # noqa: BLE001 - сис-админу нужна причина, а не трассировка
-        log.warning("импорт расписаний не удался: %s", exc)
+        log.warning("импорт расписаний не удался (%s)", type(exc).__name__)
         return await notify(x, f"❌ Импорт не удался: {exc}")
     if not result["urls"]:
         return await notify(x, "❌ На странице колледжа не нашлось ссылок на PDF.")
@@ -1882,7 +1882,7 @@ async def check_api(x: str) -> None:
     try:
         info = await api.me()
     except Exception as exc:
-        log.warning("проверка API не удалась: %s", exc)
+        log.warning("проверка API не удалась (%s)", type(exc).__name__)
         await notify(x, f"❌ MAX API не отвечает: {exc}")
         return
     await notify(x, f"✅ MAX API отвечает ({time.monotonic() - started:.1f} с): {info}")

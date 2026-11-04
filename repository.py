@@ -54,14 +54,15 @@ contact_kind, delete_user, get_user, give_consent, is_registered,
     staff_for_category, staff_on_vacation, staff_sees_all, staff_sees_all_bulk, staff_targets,
     update_admin, vacation_note, vacation_replacement, vacations_bulk,
     # store.sysadmin
-    _save_revoked, add_sysadmin, admin_log, admin_log_counts, grant_sysadmin, is_owner,
-    is_sysadmin, list_sysadmins, log_action, revoke_sysadmin, revoked_sysadmins, sysadmin_count,
+    _save_revoked, add_sysadmin, admin_log, admin_log_counts, audit_actions, audit_count,
+    audit_entries, grant_sysadmin, is_owner, is_sysadmin, list_sysadmins, log_action, log_audit,
+    prune_audit, revoke_sysadmin, revoked_sysadmins, sysadmin_count,
     # store.templates
     add_template, count_template_use, delete_template, get_template, list_templates,
     templates_count, update_template_text,
     # store.tickets
     add_internal_note, add_ticket_message, admin_tickets, archive_count, archive_ticket,
-    bulk_update, create_ticket, delete_ticket, forward_ticket, get_ticket, latest_message_roles,
+    bulk_update, create_ticket, delete_ticket, forward_ticket, get_ticket, latest_message_roles, latest_message_states,
     log_ticket_event, open_tickets_count, recent_student_tickets, restore_ticket,
     set_ticket_ready, set_ticket_status, status_counts, ticket_events, ticket_thread,
     transition_ticket_status, update_ticket,

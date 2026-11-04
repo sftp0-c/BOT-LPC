@@ -182,7 +182,7 @@ async def test_table_view_pages_over_real_rows(owner_client, env):
     # фильтр переживает переход на следующую страницу
     paged = owner_client.get("/panel/data/table/users",
                              params={"col": "group_code", "eq": "ИС-30", "page_no": 2}).text
-    assert "Страница 2 из 2" in paged and "eq=ИС-30" in paged
+    assert "Страница 2 из 2" in paged and "eq=%D0%98%D0%A1-30" in paged
     # узкий фильтр умещается в одну страницу - перехода нет вовсе
     narrow = owner_client.get("/panel/data/table/users",
                               params={"col": "user_id", "eq": "3000"}).text
@@ -230,22 +230,45 @@ async def test_table_view_shows_schema_and_column_types(owner_client, env):
 
 
 async def test_every_table_and_its_row_open(owner_client, env):
-    """Дым по всем таблицам сразу: раздел не должен падать ни на одной из них.
+    """Все таблицы открываются, но журналы нельзя менять через сырой редактор.
 
     Таблицы в базе заводятся и меняются руками (а ещё и миграциями), поэтому
-    проверка берёт список из sqlite_master, а не список из теста.
+    проверка берёт список из sqlite_master, а не список из теста. Для журналов
+    проверяются и страницы, и POST с настоящим CSRF: ответ 404 должен идти от
+    правила только для чтения, а не случайно от защиты формы.
     """
     await seed()
     names = [row["name"] for row in await db.many(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
         " ORDER BY name")]
     assert len(names) > 10
+    required_read_only = {"admin_log", "audit_log"}
+    read_only = set(data_section.READ_ONLY_TABLES)
+    assert required_read_only <= read_only
+    assert read_only <= set(names)
     for name in names:
-        assert owner_client.get(f"/panel/data/table/{name}").status_code == 200, name
+        table_page = owner_client.get(f"/panel/data/table/{name}")
+        assert table_page.status_code == 200, name
         assert owner_client.get("/panel/data/table.csv", params={"name": name}
                                 ).status_code == 200, name
-        assert owner_client.get(f"/panel/data/table/{name}/row/new").status_code == 200, name
+        new_path = f"/panel/data/table/{name}/row/new"
+        new_page = owner_client.get(new_path)
         row = await db.one(f'SELECT rowid rid FROM "{name}" LIMIT 1')
+        if name in read_only:
+            assert new_page.status_code == 404, name
+            assert new_path not in table_page.text, name
+            assert post_form(owner_client, f"/panel/data/table/{name}/row",
+                             {"action": "подмена"}).status_code == 404, name
+            if row:
+                row_path = f"/panel/data/table/{name}/row/{row['rid']}"
+                assert f'href="{row_path}"' not in table_page.text, name
+                assert owner_client.get(row_path).status_code == 404, name
+                assert post_form(owner_client, row_path,
+                                 {"action": "подмена"}).status_code == 404, name
+                assert post_form(owner_client, f"{row_path}/delete",
+                                 {"word": name}).status_code == 404, name
+            continue
+        assert new_page.status_code == 200, name
         if row:
             page = owner_client.get(f"/panel/data/table/{name}/row/{row['rid']}")
             assert page.status_code == 200, name
@@ -276,10 +299,13 @@ async def test_row_edit_saves_value_and_writes_the_log(owner_client, env):
     entry = next(item for item in await repo.admin_log(30)
                  if item["action"] == "правка строки данных")
     assert entry["actor_id"] == OWNER
-    assert "users" in entry["details"] and str(rowid) in entry["details"]
-    assert "full_name" in entry["details"]
-    assert "Иванов Иван Андреевич" in entry["details"]     # что стало
-    assert FIO in entry["details"]                         # и что было
+    details = entry["details"]
+    assert "users" in details and str(rowid) in details
+    fields = {part.strip() for part in details.split("поля:", 1)[1].split(",")}
+    assert fields == {"full_name", "group_code"}
+    # Журнал хранит имена изменённых полей, но не старые и новые значения.
+    for value in (FIO, "Иванов Иван Андреевич", "ИС-21", "ис-22"):
+        assert value not in details
 
 
 async def test_row_form_shows_value_types_and_the_time_hint(owner_client, env):

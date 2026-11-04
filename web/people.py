@@ -35,7 +35,7 @@ async def staff_vacation(request: Request, user_id: str):
     else:
         saved = await repo.set_vacation(user_id, "")
     await repo.log_action(actor, "отпуск сотрудника",
-                          f"{user_id}: {'до ' + saved if saved else 'вернулся'}")
+                          f"ID {user_id}; поле: vacation_until")
     flash(f"{user_id}: {'отпуск до ' + saved if saved else 'сотрудник на месте'}.")
     return redirect(f"/panel/staff/{user_id}")
 
@@ -145,7 +145,9 @@ async def students(request: Request, group: str = "", consent: str = "", page_no
     rows = found[(page_no - 1) * STUDENTS_PAGE: page_no * STUDENTS_PAGE]
     groups = await repo.top_groups(300)
     options = {"": "все группы"} | {row["group_code"]: row["group_code"] for row in groups}
-    head = ('<form method="get" action="/panel/students" class="grid" style="margin-bottom:14px">'
+    fresh = "" if (group or consent) else ' data-filters-saved="1"'
+    head = (f'<form method="get" action="/panel/students" class="grid" style="margin-bottom:14px" '
+            f'data-filters="group,consent" data-filter-key="students:{esc(user)}"{fresh}>'
             f'<div>{select("group", options, norm_group(group), label="Группа")}</div>'
             f'<div>{select("consent", {"": "все", "0": "только без согласия"}, consent, label="Согласие")}</div>'
             f"<div><button>{icon('search', 16)} Показать</button></div></form>")
@@ -310,8 +312,8 @@ async def staff_position_pick(request: Request, user_id: str):
         flash("!Должность не понята: выберите подсказку или впишите её в поле.")
         return redirect(f"/panel/staff/{user_id}")
     await repo.update_admin(user_id, position=position)
-    log.info("панель: должность %s - %s", user_id, position)
-    await repo.log_action(actor, "должность изменена", f"{user_id}: {position}")
+    log.info("панель: должность изменена у ID %s (сис-админ %s)", user_id, actor)
+    await repo.log_action(actor, "должность изменена", f"ID {user_id}; поле: position")
     flash(f"{user_id}: должность «{position}».")
     return redirect(f"/panel/staff/{user_id}")
 
@@ -651,8 +653,8 @@ async def staff_promote(request: Request, user_id: str):
         flash(f"!{message}.")
         return redirect("/panel/staff")
     await notify(user_id, "🔐 Вам выдали права сис-админа бота колледжа: в панели появится кнопка «🔐 Сис-админ».")
-    log.info("панель: %s (сис-админ %s)", message, user)
-    await repo.log_action(user, "права сис-админа выданы", message)
+    log.info("панель: права сис-админа выданы ID %s (сис-админ %s)", user_id, user)
+    await repo.log_action(user, "права сис-админа выданы", f"ID {user_id}; поле: role_type")
     flash(message + ".")
     return redirect("/panel/staff")
 
@@ -723,8 +725,8 @@ async def staff_revoke_sysadmin(request: Request, user_id: str):
         flash(f"!{message}.")
         return redirect("/panel/staff")
     await notify(user_id, "🔐 Права сис-админа бота колледжа сняты. Панель вам больше не доступна.")
-    await repo.log_action(user, "права сис-админа сняты", message)
-    log.warning("панель: %s (сис-админ %s)", message, user)
+    await repo.log_action(user, "права сис-админа сняты", f"ID {user_id}; поле: role_type")
+    log.warning("панель: права сис-админа сняты у ID %s (сис-админ %s)", user_id, user)
     flash(message + ". Если в .env остался этот ID, перезапуск его не вернёт — "
                    "вернуть можно кнопкой «Вернуть из .env».")
     return redirect("/panel/staff")
@@ -772,7 +774,7 @@ async def staff_update(request: Request, user_id: str):
         can_broadcast=1 if value(data, "can_broadcast") == "1" else 0,
     )
     log.info("панель: изменён сотрудник %s", user_id)
-    changed = [field for field in ("full_name", "role", "position", "department", "office", "ticket_category")
+    changed = [field for field in ("full_name", "role", "position", "department", "office", "ticket_category", "can_broadcast")
                if as_str(before[field]) != as_str((await repo.get_admin(user_id))[field])]
     await repo.log_action(actor, "карточка сотрудника изменена", f"{user_id}: {', '.join(changed) or 'без изменений'}")
     flash(f"Сотрудник {user_id} сохранён.")
@@ -792,7 +794,7 @@ async def staff_delete(request: Request, user_id: str):
         return redirect("/panel/staff")
     await repo.delete_staff(user_id)
     log.info("панель: удалён сотрудник %s (сис-админ %s)", user_id, user)
-    await repo.log_action(user, "сотрудник удалён", f"{user_id} {as_str(a['full_name'])}")
+    await repo.log_action(user, "сотрудник удалён", f"ID {user_id}")
     flash(f"Сотрудник {user_id} удалён.")
     return redirect("/panel/staff")
 
@@ -855,7 +857,8 @@ async def people_list(request: Request, kind: str = "", q: str = "", page_no: in
         for code, key in (("student", "students"), ("staff", "staff"), ("guest", "guests"))
     )
     filters = f"""
-<form method="get" action="/panel/people" class="grid" style="margin-bottom:14px">
+<form method="get" action="/panel/people" class="grid" style="margin-bottom:14px"
+ data-filters="kind,q" data-filter-key="people:{esc(user)}"{"" if (kind or q) else ' data-filters-saved="1"'}>
 <div>{select("kind", dict(repo.CONTACT_KIND_LABELS), kind, label="Кто это")}</div>
 <div><label>Поиск: ФИО, ID, @ник, группа, должность</label><input name="q" value="{esc(q)}"></div>
 <div><button>{icon("search", 16)} Найти</button></div>
@@ -989,13 +992,12 @@ async def people_delete(request: Request, user_id: str):
     card = await repo.user_card(user_id)
     if not card:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
-    name = card["fio"] or card["staff_name"] or card["display_name"] or user_id
     done, message = await repo.delete_user(user_id, with_tickets=with_tickets)
     if not done:
         flash(f"!Удаление не выполнено: {message}")
         return redirect(f"/panel/people/{user_id}")
-    log.warning("панель: удалён пользователь %s (%s), с обращениями: %s (сис-админ %s)",
-                user_id, name, with_tickets, user)
+    log.warning("панель: удалён пользователь %s, с обращениями: %s (сис-админ %s)",
+                user_id, with_tickets, user)
     flash(message + f". MAX ID {user_id}. Резервная копия базы — на вкладке «База данных».")
     return redirect("/panel/people")
 

@@ -201,6 +201,19 @@ CREATE TABLE IF NOT EXISTS login_attempts(
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_login_attempts ON login_attempts(user_id);
+CREATE TABLE IF NOT EXISTS audit_log(
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    user_id     TEXT NOT NULL DEFAULT '',               -- кто совершил действие
+    role        TEXT NOT NULL DEFAULT 'unknown',        -- owner/sysadmin/staff/student/bot/unknown
+    action      TEXT NOT NULL,                          -- короткий код события, без свободного текста
+    target_type TEXT NOT NULL DEFAULT '',               -- тип объекта: ticket/user/group/callback
+    target_id   TEXT NOT NULL DEFAULT '',               -- только ID или код объекта, не значение поля
+    result      TEXT NOT NULL DEFAULT 'ok'              -- ok/denied/failed
+);
+CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_log_user    ON audit_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_action  ON audit_log(action);
 """
 
 # Колонки, добавленные после первой публикации бота: таблицы, созданные старой
@@ -249,6 +262,14 @@ COLUMN_UPGRADES: dict[str, dict[str, str]] = {
         "parsed_hash": "TEXT NOT NULL DEFAULT ''",
         "found_groups": "TEXT NOT NULL DEFAULT ''",
         "parse_error": "TEXT NOT NULL DEFAULT ''",
+    },
+    # Ранний незавершённый вариант audit_log уже мог создать таблицу с
+    # target/details/ip/ua. Новые безопасные колонки добавляются без пересоздания:
+    # старые поля больше нигде не заполняются и в панели не показываются.
+    "audit_log": {
+        "target_type": "TEXT NOT NULL DEFAULT ''",
+        "target_id": "TEXT NOT NULL DEFAULT ''",
+        "result": "TEXT NOT NULL DEFAULT 'ok'",
     },
 }
 
@@ -383,6 +404,7 @@ TIME_COLUMNS: tuple[tuple[str, str], ...] = (
     ("reply_templates", "created_at"),
     ("broadcasts", "created_at"),
     ("admin_log", "created_at"),
+    ("audit_log", "created_at"),
     ("faq", "created_at"),
     ("faq", "updated_at"),
 )

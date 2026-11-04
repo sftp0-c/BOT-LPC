@@ -1,4 +1,4 @@
-"""Коды сотрудников, заявки на роль и приглашение по ссылке (без входа в панель)."""
+﻿"""Коды сотрудников, заявки на роль и приглашение по ссылке (без входа в панель)."""
 import config
 import database as db
 import repository as repo
@@ -175,9 +175,9 @@ async def access_code_create(request: Request):
         code = gen_code(6)
     await repo.create_invite(code, user_id=uid, full_name=value(data, "full_name"),
                              created_by=user, ttl_hours=ttl)
-    log.info("панель: выдан код сотрудника %s для %s, срок %s ч (сис-админ %s)", code, uid or "любого", ttl, user)
+    log.info("панель: выдан код сотрудника для %s (сис-админ %s)", uid or "любого", user)
     await repo.log_action(user, "код сотрудника выдан",
-                          f"{code} → {uid or 'любому, у кого есть код'} · срок {ttl_label(ttl)}")
+                          f"получатель: {uid or 'любой'}; поле: срок действия")
     flash(f"Код {code} выдан" + (f" для ID {uid}." if uid else " (для любого, кто его введёт)")
           + f" Срок: {ttl_label(ttl)}.")
     return redirect("/panel/access")
@@ -190,8 +190,8 @@ async def access_code_delete(request: Request):
     code = as_str(data.get("code", "")).strip()
     if code:
         await repo.delete_invite(code)
-        log.info("панель: отозван код %s (сис-админ %s)", code, user)
-        await repo.log_action(user, "код сотрудника отозван", code)
+        log.info("панель: отозван код сотрудника (сис-админ %s)", user)
+        await repo.log_action(user, "код сотрудника отозван", "код приглашения")
         flash(f"Код {code} отозван.")
     return redirect("/panel/access")
 
@@ -240,7 +240,8 @@ async def access_make_staff(request: Request, user_id: str):
     await repo.clear_attempts(user_id)
     await notify(user_id, f"🏫 Вы зарегистрированы как сотрудник: {name}. Отправьте /start, чтобы открыть кабинет.")
     log.info("панель: %s сделан сотрудником (сис-админ %s)", user_id, user)
-    await repo.log_action(user, "сделан сотрудником из реестра", f"{name} (ID {user_id}) · {position or 'без должности'}")
+    await repo.log_action(user, "сделан сотрудником из реестра",
+                          f"ID {user_id}; поля: full_name, position, department, office, ticket_category")
     flash(f"Сотрудник {name} создан.")
     return redirect(f"/panel/people/{user_id}")
 
@@ -255,7 +256,7 @@ async def access_make_sysadmin(request: Request, user_id: str):
         flash(f"!{message}.")
         return redirect(f"/panel/people/{user_id}")
     await notify(user_id, "🔐 Вам выдали права сис-админа бота колледжа: в панели появится кнопка «🔐 Сис-админ».")
-    log.info("панель: %s (сис-админ %s)", message, actor)
-    await repo.log_action(actor, "права сис-админа выданы", message)
+    log.info("панель: права сис-админа выданы ID %s (сис-админ %s)", user_id, actor)
+    await repo.log_action(actor, "права сис-админа выданы", f"ID {user_id}; поле: role_type")
     flash(message + ".")
     return redirect(f"/panel/people/{user_id}")

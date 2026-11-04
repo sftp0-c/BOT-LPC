@@ -210,9 +210,11 @@ def test_overview_has_six_clickable_counters(panel_client):
     assert len(counters) == 6, f"счётчиков на главной: {counters}"
     for link in COUNTER_LINKS:
         assert link in counters, f"счётчика со ссылкой {link} нет"
-    # числа докручивает CSS, значение лежит в --to
-    assert body.count('class="count"') == 5
+    # Пять больших счётчиков и четыре календарных показателя «Сегодня».
+    assert body.count('class="count"') == 9
     assert 'class="big-txt"' in body          # среднее время ответа - текстом
+    for label in ("Создано", "Взято", "Отвечено", "Закрыто"):
+        assert label in body
 
 
 def test_overview_links_to_the_feed(panel_client):
@@ -367,7 +369,8 @@ def test_workbench_saves_filters_in_local_storage(panel_client):
     assert login_panel(panel_client)
     body = panel_client.get("/panel/tickets").text
     tag = form_tag(body, "/panel/tickets")
-    assert 'data-filters="status,category,q"' in tag
+    assert 'data-filters="status,category,q,scope,view,mine,date_from,date_to"' in tag
+    assert 'data-filter-key="tickets:1"' in tag
     assert 'data-filters-saved="1"' in tag        # фильтров в адресе нет - восстановить
     assert "data-filters-reset" in body           # кнопка «Сбросить фильтры»
     assert 'href="/panel/tickets"' in body
@@ -381,7 +384,7 @@ def test_explicit_filters_are_not_overridden(panel_client):
     assert login_panel(panel_client)
     body = panel_client.get("/panel/tickets", params={"status": "open"}).text
     tag = form_tag(body, "/panel/tickets")
-    assert 'data-filters="status,category,q"' in tag
+    assert 'data-filters="status,category,q,scope,view,mine,date_from,date_to"' in tag
     assert "data-filters-saved" not in tag
 
 

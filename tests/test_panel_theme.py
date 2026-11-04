@@ -21,7 +21,7 @@ import panel_theme as theme                        # noqa: E402  (путь за�
 REQUIRED_SECTIONS = ("home", "activity", "tickets", "analytics", "people", "user-off",
                      "college", "students", "staff", "access", "link", "templates",
                      "groups", "schedules", "broadcasts", "database", "archive",
-                     "check", "settings", "logs")
+                     "check", "settings", "logs", "audit")
 # Иконки действий, которые бот и панель рисуют рядом с текстом.
 REQUIRED_ACTIONS = ("archive", "reply", "delete", "edit", "search", "chevron-down",
                     "chevron-right", "chevron-left", "close", "plus", "check",
@@ -539,7 +539,7 @@ def test_nav_paths_have_distinct_icons():
     assert len(set(used)) == len(used), "два раздела поделили одну иконку"
     for path in ("/", "/activity", "/tickets", "/analytics", "/people", "/nostaff", "/college",
                  "/students", "/staff", "/access", "/templates", "/groups",
-                 "/schedules", "/broadcasts", "/database", "/settings", "/logs"):
+                 "/schedules", "/broadcasts", "/database", "/settings", "/logs", "/audit"):
         assert path in theme.ICON_NAMES_BY_PATH, f"раздел {path} без иконки"
 
 

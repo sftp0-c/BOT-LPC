@@ -1,4 +1,4 @@
-"""Досье человека на одной странице и правка сотрудника прямо в строке.
+﻿"""Досье человека на одной странице и правка сотрудника прямо в строке.
 
 Проверки поведенческие: не «в разметке есть такая строка», а что страница
 показывает, что она делает с базой и кому отказывает. Каждая проверка валится,
@@ -74,7 +74,7 @@ async def test_dossier_shows_the_whole_person_at_once(panel_client):
     assert f"<code>{STUDENT}</code>" in body
     assert "https://max.ru/ivanov_i" in body
     assert "ИС-21" in body
-    assert "в боте" in body
+    assert "пришёл сегодня" in body or "в боте" in body
     # согласие: когда дал и на какой редакции текста
     assert "согласия нет" not in body and "согласие есть" in body
     assert "Редакция текста" in body and "1.0" in body

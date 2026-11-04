@@ -122,10 +122,13 @@ def test_buttons_keep_their_own_spacing():
     assert "min-height:var(--field-min)" in rule, f"у кнопки нет своей высоты: {rule}"
     assert "padding:9px 15px" in rule
     assert "gap:6px" in rule, "иконка в кнопке липла к подписи"
-    # квадратные кнопки (поиск, тема, копирование) сбрасывают общую высоту поля
-    for name in (".copy-btn", ".gsearch button", ".theme-toggle"):
+    # Квадратные кнопки темы и копирования сбрасывают общую высоту поля.
+    for name in (".copy-btn", ".theme-toggle"):
         assert any("min-height:0" in text for text in bodies(name)), (
             f"{name} растянулся под общую высоту поля")
+    # Поиск теперь сам является широкой кнопкой Ctrl+K, а не формой с кружком внутри.
+    search = body(".gsearch")
+    assert "min-height:38px" in search and "padding:8px 13px" in search
 
 
 # ── 2. поля не заезжают друг на друга ──────────────────────────────────────

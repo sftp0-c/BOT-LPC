@@ -1,6 +1,7 @@
-"""Данные для «Пульта»: лента событий и массовые проверки вместо N+1."""
-from datetime import date, timedelta
+﻿"""Данные для «Пульта»: лента событий и массовые проверки вместо N+1."""
+from datetime import timedelta
 
+import clock
 import repository as repo
 from conftest import add_staff, press, register, say
 
@@ -58,7 +59,7 @@ async def test_feed_label_is_human():
 async def test_feed_label_falls_back_to_actor_id():
     label = repo.event_feed_label({"ticket_id": 7, "actor_name": "", "actor_id": "500",
                                    "event": "created"})
-    assert "500" in label and "создал" in label
+    assert "500" in label and "обращение создано" in label
 
 
 async def test_feed_label_survives_empty_row():
@@ -81,7 +82,7 @@ async def test_sees_all_bulk_ignores_sysadmins():
     assert "1" not in flags
 
 
-async def test_vacations_bulk_reads_dates():
+async def test_vacations_bulk_reads_dates(frozen_college_clock):
     await add_staff("500", "Петрова Анна")
     assert await repo.vacations_bulk() == {}
     await repo.set_vacation("500", "05.10.2026")
@@ -93,5 +94,5 @@ async def test_vacations_bulk_reads_dates():
 
 async def test_vacations_bulk_ignores_present_staff():
     await add_staff("500", "Петрова Анна")
-    await repo.set_vacation("500", (date.today() - timedelta(days=2)).isoformat())
+    await repo.set_vacation("500", (clock.today() - timedelta(days=2)).isoformat())
     assert "500" not in await repo.vacations_bulk()

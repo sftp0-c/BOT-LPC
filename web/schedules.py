@@ -200,7 +200,7 @@ async def schedule_lesson_time(request: Request):
         return redirect(f"/panel/schedules/{code}")
     changed = await repo.set_lesson_time(code, weekday, number, start, end)
     if changed:
-        await repo.log_action(actor, "время пары исправлено", f"{code}, день {weekday}, пара {number}: {start}–{end}")
+        await repo.log_action(actor, "время пары исправлено", f"{code}, день {weekday}, пара {number}; поля: start, end")
         flash(f"Время пары сохранено: {start}–{end}.")
     else:
         flash("!Такая пара не найдена — возможно, расписание переразобрали.")
@@ -225,7 +225,7 @@ async def schedules_parse(request: Request):
         await repo.log_action(actor, "расписание разобрано", f"{code}: {result.schedule.lessons_count} пар")
         flash(f"Группа {code}: разобрано {result.schedule.lessons_count} пар по {len(result.schedule.days)} дням.")
     else:
-        await repo.log_action(actor, "разбор расписания не удался", f"{code}: {result.reason}")
+        await repo.log_action(actor, "разбор расписания не удался", f"{code}: занятия не получены")
         flash(f"!Группа {code}: {result.reason}.")
     return redirect("/panel/schedules")
 
@@ -284,7 +284,7 @@ async def schedules_import(request: Request):
     try:
         result = await schedule_import.import_sources(source)
     except Exception as exc:  # noqa: BLE001 - причину покажем сис-админу
-        log.warning("импорт расписаний не получился: %s", exc)
+        log.warning("импорт расписаний не получился (%s)", type(exc).__name__)
         flash(f"!Не удалось импортировать: {exc}")
         return redirect("/panel/schedules")
     if not result["urls"]:
@@ -322,9 +322,9 @@ async def schedules_save(request: Request):
               f"{result.schedule.lessons_count} пар по {len(result.schedule.days)} дням.")
     else:
         flash(f"Ссылка сохранена, но разобрать не вышло: {result.reason}. Студенты пока увидят ссылку на PDF.")
-    await repo.log_action(actor, "ссылка на расписание сохранена", f"{code}: {short(url, 60)}")
+    await repo.log_action(actor, "ссылка на расписание сохранена", f"{code}; поле: pdf_url")
     log.info("панель: расписание %s — %s, разбор: %s", code, "изменено" if changed else "прежнее",
-             "ок" if result.has_lessons else result.reason)
+             "ок" if result.has_lessons else "занятия не получены")
     return redirect("/panel/schedules")
 
 

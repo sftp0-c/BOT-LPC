@@ -4,10 +4,10 @@
 можно импортировать сам по себе - кругов импортов между ними нет. Публичные
 имена панели живут в webpanel.py, этот пакет для внешних потребителей закрыт.
 """
-from . import (access, common, data, database, diagnostics, directory, dossier,
+from . import (access, audit, common, data, database, diagnostics, directory, dossier,
                mailer, overview, people, router, schedules, settings, staff_bulk, student_card,
                test_lab, tickets)
 
-__all__ = ["access", "common", "data", "database", "diagnostics", "directory", "dossier", "mailer",
+__all__ = ["access", "audit", "common", "data", "database", "diagnostics", "directory", "dossier", "mailer",
            "overview", "people", "router", "schedules", "settings", "staff_bulk", "student_card",
            "test_lab", "tickets"]

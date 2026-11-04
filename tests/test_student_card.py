@@ -358,9 +358,9 @@ async def test_card_page_queries_do_not_grow_with_the_student(panel_client, monk
     """Карточка собирается в слое данных, а не запросами из шаблона.
 
     Из счёта выпадает то, что есть на любой странице панели: проверка прав при
-    входе и запросы бейджей меню. На саму карточку остаётся горстка: человек,
-    обращения, журнал, ссылка на PDF и число занятий - и она не растёт, когда
-    обращений у человека становится больше.
+    входе, запросы бейджей меню и один служебный запрос новой навигации аудита.
+    На саму карточку остаётся горстка: человек, обращения, журнал, ссылка на PDF
+    и число занятий - и она не растёт, когда обращений у человека становится больше.
     """
     import web.student_card
 
@@ -378,7 +378,7 @@ async def test_card_page_queries_do_not_grow_with_the_student(panel_client, monk
     seen = count_queries(monkeypatch)
     assert panel_client.get(CARD).status_code == 200
     small = len(seen)
-    assert small <= 12, f"карточка делает {small} запросов - это уже не сборка в store"
+    assert small <= 13, f"карточка делает {small} запросов - это уже не сборка в store"
     assert calls == [STUDENT], "шаблон страницы собрал данные сам, а не одним вызовом"
 
     for index in range(3, 30):

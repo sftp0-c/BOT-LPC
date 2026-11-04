@@ -1,7 +1,12 @@
-"""Обзор, лента событий и аналитика: что сделать сейчас и что было раньше."""
+﻿"""Обзор, лента событий и аналитика: что сделать сейчас и что было раньше."""
+from datetime import timedelta
+from urllib.parse import quote, urlencode
+
 from fastapi import Request
+from fastapi.responses import JSONResponse
 
 import charts
+import clock
 import database as db
 import repository as repo
 from panel_theme import icon
@@ -13,6 +18,62 @@ from .people import _people_table
 from .router import router
 
 
+def _search_results(needle: str, tickets, people, staff, groups) -> list[dict]:
+    """Короткие результаты для палитры Ctrl+K, без переписки в ответе."""
+    results: list[dict] = []
+    for row in tickets[:8]:
+        results.append({"kind": "Обращения", "icon": "tickets",
+                        "label": f"Обращение №{to_int(row['ticket_id'])} · {as_str(row['topic']) or 'без темы'}",
+                        "href": f"/panel/tickets?t={to_int(row['ticket_id'])}"})
+    for row in people[:8]:
+        name = as_str(row["fio"] or row["staff_name"] or row["display_name"] or row["user_id"])
+        results.append({"kind": "Люди", "icon": "people", "label": name,
+                        "href": f"/panel/people/{quote(as_str(row['user_id']), safe='')}"})
+    for row in staff[:8]:
+        results.append({"kind": "Сотрудники", "icon": "staff",
+                        "label": as_str(row["full_name"] or row["user_id"]),
+                        "href": f"/panel/staff/{quote(as_str(row['user_id']), safe='')}"})
+    for row in groups[:8]:
+        results.append({"kind": "Группы", "icon": "groups",
+                        "label": f"{as_str(row['code'])} · {as_str(row['title'])}".strip(" ·"),
+                        "href": "/panel/students?" + urlencode({"group": row["code"]})})
+    return results[:20]
+
+
+async def _find_everywhere(needle: str) -> tuple[list, list, list, list]:
+    low = needle.lower()[:120]
+    literal = low.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    like = "%" + literal + "%"
+    tickets = await db.many(
+        "SELECT ticket_id, topic FROM tickets WHERE deleted_at='' AND "
+        "(CAST(ticket_id AS TEXT)=? OR lower(topic) LIKE ? ESCAPE '\\' "
+        "OR student_id=? OR student_id IN (SELECT user_id FROM users "
+        "WHERE lower(full_name) LIKE ? ESCAPE '\\')) ORDER BY ticket_id DESC LIMIT 8",
+        (low.lstrip("№#"), like, low, like),
+    )
+    people = await repo.people(q=needle, limit=8)
+    staff = [row for row in await repo.list_staff()
+             if low in " ".join([as_str(row["user_id"]), as_str(row["full_name"]),
+                                 as_str(row["position"]), as_str(row["department"])]).lower()][:8]
+    found_groups = await db.many(
+        "SELECT group_code code, title FROM groups WHERE lower(group_code) LIKE ? ESCAPE '\\' "
+        "OR lower(title) LIKE ? ESCAPE '\\' ORDER BY group_code LIMIT 8", (like, like))
+    return tickets, people, staff, found_groups
+
+
+@router.post("/search/quick")
+async def quick_search(request: Request):
+    """Защищённый POST-поиск палитры: запрос не попадает в URL и access log."""
+    await require_form(request)
+    data = await request.form()
+    needle = as_str(data.get("q", "")).strip()[:120]
+    if len(needle) < 2 and not needle.isdigit():
+        return {"results": []}
+    tickets, people, staff, groups = await _find_everywhere(needle)
+    return JSONResponse({"results": _search_results(needle, tickets, people, staff, groups)},
+                        headers={"Cache-Control": "no-store"})
+
+
 @router.get("/search")
 async def global_search(request: Request, q: str = ""):
     """Общий поиск по панели: обращения, люди и сотрудники одним запросом."""
@@ -20,15 +81,7 @@ async def global_search(request: Request, q: str = ""):
     needle = as_str(q).strip()
     if len(needle) < 2:
         return page("Поиск", '<div class="card msg-bad">Введите хотя бы два символа.</div>', user, "/")
-    low = needle.lower()
-    tickets = [row for row in await repo.admin_tickets(None, 300)
-               if low in as_str(row["text_content"]).lower()
-               or low in as_str(row["topic"]).lower()
-               or low in as_str(row["student_id"])]
-    people = await repo.people(q=needle, limit=30)
-    staff = [row for row in await repo.list_staff()
-             if low in " ".join([as_str(row["user_id"]), as_str(row["full_name"]),
-                                 as_str(row["position"]), as_str(row["department"])]).lower()]
+    tickets, people, staff, _groups = await _find_everywhere(needle)
     staff_rows = "".join(
         f'<tr><td><a href="/panel/staff/{esc(row["user_id"])}"><b>{esc(row["full_name"])}</b></a>'
         f'<div class="small mut">ID {esc(row["user_id"])}</div></td>'
@@ -60,6 +113,7 @@ async def overview(request: Request):
     dedupe = await repo.dedupe_stats()
     today = await repo.admin_today()
     events = await repo.recent_ticket_events(20)
+    audit_rows = await repo.audit_entries(7)
     open_total = sum(counts.get(code, 0) for code in OPEN_STATUSES)
     bot = await bot_open_link()
 
@@ -84,7 +138,7 @@ async def overview(request: Request):
         f"<b>{st['total']}</b> обращений всего",
         f"<b>{open_total}</b> открытых",
         f"<b>{st['week']}</b> за 7 дней",
-        f"<b>{today['tickets_day']}</b> за сутки",
+        f"<b>{today['tickets_day']}</b> сегодня",
         f"<b>{esc(dedupe['processed'])}</b> событий обработано",
     ])
     # что требует действия: строки всегда на месте, ноль означает «делать нечего»
@@ -108,18 +162,38 @@ async def overview(request: Request):
                              f'<b>{esc(row["count"])}</b></a>' for row in gaps)
                  or "все данные заполнены")
     feed = _feed_list(events) or _empty_state("activity", "Событий пока нет")
+    audit = _audit_list(audit_rows) or _empty_state("activity", "Действий пока нет")
+    today_cards = "".join([
+        _today_stat("Создано", today["created_day"], "plus"),
+        _today_stat("Взято", today["taken_day"], "inbox"),
+        _today_stat("Отвечено", today["answered_day"], "reply"),
+        _today_stat("Закрыто", today["closed_day"], "check"),
+    ])
+    by_hour = {as_str(row["hour"]): row["count"] for row in today["hourly"]}
+    hours = [{"hour": f"{hour:02d}:00", "count": by_hour.get(f"{hour:02d}", 0)} for hour in range(24)]
+    hourly = charts.bar_chart(hours, "count", "hour", "Обращения сегодня по часам")
+    current = clock.now()
+    weekday = ("Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье")[current.weekday()]
+    greeting = "Всё важное — перед вами"
     body = f"""
+<section class="dashboard-hero"><div><span class="eyebrow">{weekday} · {current:%d.%m.%Y}</span>
+<h2>{greeting}</h2><p>Обращения не теряются, ответы приходят вовремя. Здесь собрана работа колледжа за сегодня.</p></div>
+<div class="hero-sign">{icon("navigator", 58)}<div><strong>Навигатор ЛПК</strong><small>Меньше рутины. Больше внимания.</small></div></div></section>
 <div class="big-stats">{counters}</div>
-<div class="scale-line">{scale}</div>
-<div class="card"><h2>Что требует действия сегодня</h2>
-<p class="small mut">Что сделать сегодня: строка ведёт в раздел, где это и делается,
-а ноль означает «срочного нет». У зависших диалогов есть кнопка очистки.</p>
-<ul class="todo">{actions}</ul></div>
-<div class="card"><h2>{icon("activity", 20)} Последние события</h2>
-<p class="small mut">Кто и что делал с обращениями. <a href="/panel/activity">Вся лента событий</a></p>
-{feed}</div>
-<div class="card"><h2>{icon("warning", 20)} Пробелы в данных</h2>
-<p class="small mut">Пока эти строки не заполнены, части бота работают неполно: {gaps_line}</p></div>"""
+<div class="bento">
+<section class="card bento-day"><div class="card-title"><h2>{icon("analytics", 20)} Сегодня</h2><span class="small mut">{current:%d.%m.%Y}</span></div>
+<div class="today-stats">{today_cards}</div>{hourly}</section>
+<section class="card bento-actions"><div class="card-title"><h2>{icon("inbox", 20)} Что требует действия сегодня</h2></div>
+<p class="small mut">Что сделать сегодня: откройте нужный раздел. Ноль означает, что срочного нет.</p>
+<ul class="todo">{actions}</ul></section>
+<section class="card bento-audit"><div class="card-title"><h2>{icon("audit", 20)} Последние действия</h2><a href="/panel/audit">Полный аудит →</a></div>
+<p class="small mut">Только действия и ID — без переписки.</p>{audit}</section>
+<section class="card bento-events"><div class="card-title"><h2>{icon("tickets", 20)} События обращений</h2><a href="/panel/activity">Вся лента →</a></div>
+{feed}</section></div>
+<div class="card overview-gaps"><h2>{icon("warning", 20)} Пробелы в данных</h2>
+<p class="small mut">Что стоит проверить: {gaps_line}</p></div>
+<div class="scale-line">{scale}</div>"""
+
     return page("Обзор", body, user, "/",
                 actions=f'<a class="btn btn-grey" href="/panel/activity">'
                         f'{icon("activity", 16)} Вся лента событий</a>'
@@ -141,6 +215,25 @@ def _big_stat(href: str, icon_name: str, value, label: str, kind: str = "",
             f'aria-label="{esc(label)}: {esc(value)}">'
             f'<span class="big-ico">{icon(icon_name, 18)}</span>{number}'
             f'<span>{esc(label)}</span></a>')
+
+
+def _today_stat(label: str, value, icon_name: str) -> str:
+    return (f'<div class="today-stat"><span>{icon(icon_name, 18)}</span>'
+            f'<b class="count" style="--to:{to_int(value)}"></b><small>{esc(label)}</small></div>')
+
+
+def _audit_list(rows) -> str:
+    """Семь последних структурированных действий без чувствительных деталей."""
+    if not rows:
+        return ""
+    items = "".join(
+        f'<li><span class="feed-time">{esc(fmt_when(row["created_at"]))}</span>'
+        f'<span class="feed-what"><code>{esc(row["action"])}</code> · '
+        f'{esc(row["user_id"] or "—")} · {esc(row["target_type"] or "без цели")} '
+        f'{esc(row["target_id"])}</span></li>'
+        for row in rows
+    )
+    return f'<ul class="feed">{items}</ul>'
 
 
 def _todo_row(name: str, number, href: str, icon_name: str, extra: str = "") -> str:
@@ -178,9 +271,10 @@ ACTIVITY_TYPES = (
     ("message_student", "сообщение студента"),
     ("message_staff", "ответ сотрудника"),
     ("ready", "документ готов"),
-    ("archive", "в архив"),
-    ("restore", "вернулось из архива"),
-    ("assign", "назначение сотрудника"),
+    ("archived", "в архив"),
+    ("restored", "возврат из архива"),
+    ("forward", "передача сотруднику"),
+    ("edited", "правка обращения"),
 )
 
 
@@ -361,12 +455,15 @@ async def analytics_page(request: Request, days: int = 30):
   {spark}
   {charts.donut(status_rows, 'count', 'label', 'Статусы обращений')}
   {charts.donut(category_rows, 'count', 'label', 'Разделы обращений')}
-  {charts.bars(load, 'tickets', 'full_name', f'Обращения у сотрудников за {days} дн.', color='#8b5cf6')}
-  {charts.bars(groups, 'count', 'group', 'Студенты по группам', color='#06b6d4')}
+  {charts.bars(load, 'tickets', 'full_name', f'Обращения у сотрудников за {days} дн.', color='bar_3')}
+  {charts.bars(groups, 'count', 'group', 'Студенты по группам', color='bar_4')}
 </div></div>
 <div class="card"><h2>Нагрузка на сотрудников</h2>
 <table><tr><th>Сотрудник</th><th>Обращений</th><th>Открытых</th><th>Средний ответ</th><th>Последний ответ</th></tr>
 {load_rows}</table>
 <p class="small mut">Среднее время ответа считается по первой ответной реплике сотрудника.
 Обращения без ответа в среднее не попадают, но видны в колонке «Открытых».</p></div>"""
-    return page("Аналитика", body, user, "/analytics")
+    exports = "".join(
+        f'<a class="btn btn-grey" href="/panel/tickets.csv?{esc(urlencode({"date_from": (clock.today() - timedelta(days=count - 1)).isoformat(), "date_to": clock.today().isoformat()}))}">'
+        f'{icon("download", 16)} CSV · {count} дн.</a>' for count in (7, 14, 30))
+    return page("Аналитика", body, user, "/analytics", actions=exports)

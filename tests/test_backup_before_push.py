@@ -1,26 +1,29 @@
-﻿"""Бекап перед пушем: метка, копии, остановка пуша.
+﻿"""Бекап перед пушем: метка, согласованный снимок и остановка пуша.
 
 Зачем эти тесты. Правило «не пушить без бекапа» работает только если бекап
 делается всегда. Значит, проверять надо решения, а не наличие файла:
 
-* метка уникальна - два бекапа в одну секунду не должны переписать первую
-  метку: иначе пропала бы точка отката, ради которой всё и затевалось;
-* старние копии убираются, свежие остаются - иначе диск забьётся и бекапы
-  перестанут делать вообще;
-* копия не вышла - пуш останавливается. Тихий «ну ладно» здесь хуже всего:
-  изменится поведение бота, откатывать базу будет нечем, а человек узнает
-  об этом через неделю.
+* метка уникальна - два бекапа в одну секунду не должны переписать первую;
+* старые копии убираются, свежие остаются - иначе диск забьётся;
+* SQLite-снимок сохраняет запись, которая ещё находится только в WAL;
+* временные файлы удаляются и после успеха, и после ошибки;
+* ошибка снимка, переноса или integrity_check останавливает пуш.
 
-Про блокировку. Проверяется она настоящим git-пушем в пустой репозиторий с
-настоящим хуком. Копирование заставляем упасть: контейнер оставляем рабочим
-(иначе нет копировать и остановить нечего), а путь внутри него - заведомо
-несуществующим. Тогда поведение однозначно: копии нет - пуша нет.
+Блокировка проверяется настоящим git-пушем в пустой репозиторий с настоящим
+хуком. Только Docker в дочернем Python подменён через временный sitecustomize:
+контейнер считается работающим, а создание снимка принудительно падает. Поэтому
+проверка не зависит от Docker на машине и однозначно доказывает блокировку.
 """
 import os
 import re
+import shutil
+import sqlite3
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
+
+import pytest
 
 import backup_before_push as backup
 
@@ -30,11 +33,7 @@ STAMP = "2026-01-01-000000"
 
 # ── метка ──────────────────────────────────────────────────────────────────
 def test_stamp_is_sortable_and_digits_only():
-    """Имя метки обязано сортироваться по времени, иначе «последняя» не значит свежая.
-
-    Формат: ГГГГ-ММ-ДД-ЧЧММСС. Проверяется регулярным выражением, а не сравнением
-    длины с надписью-подсказкой: длина кириллицы и длина цифр - разное число.
-    """
+    """Имя метки обязано сортироваться по времени, иначе «последняя» не значит свежая."""
     stamp = backup.now_stamp()
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}-\d{6}", stamp), \
         f"метка не разбирается как дата-время: {stamp}"
@@ -90,8 +89,7 @@ def test_prune_keeps_the_newest(tmp_path, monkeypatch):
 
 
 def test_prune_keeps_at_least_one(tmp_path, monkeypatch):
-    """Даже при нелепом «оставить 0» последний бекап остаётся: он же и есть
-    единственная точка отката."""
+    """Даже при «оставить 0» последний бекап остаётся единственной точкой отката."""
     monkeypatch.setattr(backup, "BACKUP_DIR", tmp_path)
     made = make_copies(4, tmp_path)
     backup.prune(keep=0)
@@ -118,30 +116,179 @@ def test_prune_reports_how_many_it_removed(tmp_path, monkeypatch):
     assert backup.prune(keep=2) == 4
 
 
-# ── копирование ────────────────────────────────────────────────────────────
-def test_no_copy_without_docker(monkeypatch):
-    """Нет docker - копить неоткуда, и это НЕ повод останавливать пуш.
+# ── согласованный SQLite-снимок ────────────────────────────────────────────
+def run_snapshot(source: Path, snapshot: Path, local_copy: Path):
+    with local_copy.open("wb") as output:
+        return subprocess.run(
+            [sys.executable, "-c", backup.SQLITE_SNAPSHOT_SCRIPT,
+             str(source), str(snapshot)],
+            stdout=output, stderr=subprocess.PIPE,
+        )
 
-    На сервере без docker код меняется, и останавливать из-за этого пуш нелепо.
-    """
+
+def snapshot_leftovers(snapshot: Path) -> list[Path]:
+    return [Path(str(snapshot) + suffix)
+            for suffix in ("", "-journal", "-wal", "-shm")
+            if Path(str(snapshot) + suffix).exists()]
+
+
+def test_snapshot_keeps_a_record_that_is_only_in_wal(tmp_path):
+    """Обычная копия database.db теряет строку из WAL, backup API - сохраняет."""
+    live = tmp_path / "live.db"
+    snapshot = tmp_path / ".container-snapshot.tmp"
+    local_copy = tmp_path / "copied.db"
+    main_file_only = tmp_path / "main-file-only.db"
+
+    writer = sqlite3.connect(live)
+    try:
+        mode = writer.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+        assert mode == "wal"
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("CREATE TABLE proof(value TEXT NOT NULL)")
+        writer.commit()
+        writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+        writer.execute("INSERT INTO proof(value) VALUES('запись из WAL')")
+        writer.commit()
+        assert Path(str(live) + "-wal").stat().st_size > 0
+
+        # Контрольная мутация: небезопасное копирование только database.db строку
+        # не видит. Значит, зелёная проверка ниже действительно зависит от WAL.
+        shutil.copyfile(live, main_file_only)
+        with sqlite3.connect(main_file_only) as detached:
+            assert detached.execute("SELECT COUNT(*) FROM proof").fetchone() == (0,)
+
+        finished = run_snapshot(live, snapshot, local_copy)
+        assert finished.returncode == 0, finished.stderr.decode("utf-8", errors="replace")
+        with sqlite3.connect(local_copy) as copied:
+            assert copied.execute("SELECT value FROM proof").fetchone() == ("запись из WAL",)
+            assert copied.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert snapshot_leftovers(snapshot) == []
+    finally:
+        writer.close()
+
+
+def test_snapshot_removes_container_files_after_an_error(tmp_path):
+    """Даже ошибка backup API не оставляет снимок и служебные файлы SQLite."""
+    broken = tmp_path / "broken.db"
+    broken.write_bytes("это не SQLite".encode("utf-8") * 100)
+    snapshot = tmp_path / ".container-snapshot.tmp"
+    local_copy = tmp_path / "copied.db.part"
+    for suffix in ("", "-journal", "-wal", "-shm"):
+        Path(str(snapshot) + suffix).write_bytes("старый остаток".encode("utf-8"))
+
+    finished = run_snapshot(broken, snapshot, local_copy)
+    assert finished.returncode != 0
+    assert snapshot_leftovers(snapshot) == []
+
+
+# ── перенос и локальная проверка ───────────────────────────────────────────
+def sqlite_payload(path: Path) -> bytes:
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE proof(value TEXT NOT NULL)")
+        connection.execute("INSERT INTO proof(value) VALUES('сохранено')")
+        connection.commit()
+    return path.read_bytes()
+
+
+def fake_running_docker(monkeypatch, payload: bytes = b"", *, returncode: int = 0,
+                        stderr: bytes = b"") -> list[list[str]]:
+    calls = []
+    monkeypatch.setattr(backup.shutil, "which", lambda _name: "docker")
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[1] == "inspect":
+            return subprocess.CompletedProcess(command, 0, stdout="true\n", stderr="")
+        assert command[1] == "exec"
+        kwargs["stdout"].write(payload)
+        return subprocess.CompletedProcess(command, returncode, stdout=None, stderr=stderr)
+
+    monkeypatch.setattr(backup.subprocess, "run", run)
+    return calls
+
+
+def test_no_copy_without_docker(monkeypatch):
+    """Нет docker - копить неоткуда, и это не повод останавливать пуш."""
     monkeypatch.setattr(backup.shutil, "which", lambda _name: None)
     assert backup.copy_database(STAMP) is None
 
 
 def test_no_copy_when_the_container_is_not_there(monkeypatch):
     """Несуществующий контейнер - тоже «копить неоткуда», а не ошибка."""
-    monkeypatch.setenv("BOTLPC_CONTAINER", "контейнера-которого-нет")
+    monkeypatch.setattr(backup.shutil, "which", lambda _name: "docker")
+    monkeypatch.setattr(
+        backup.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(
+            command, 1, stdout="", stderr="нет контейнера"
+        ),
+    )
     assert backup.copy_database(STAMP) is None
+
+
+def test_copy_database_checks_and_atomically_publishes_snapshot(tmp_path, monkeypatch):
+    backup_dir = tmp_path / "backups"
+    monkeypatch.setattr(backup, "BACKUP_DIR", backup_dir)
+    calls = fake_running_docker(monkeypatch, sqlite_payload(tmp_path / "payload.db"))
+
+    result = backup.copy_database(STAMP)
+
+    assert result == backup_dir / f"database-{STAMP}.db"
+    assert result.exists()
+    assert not list(backup_dir.glob("*.part"))
+    with sqlite3.connect(result) as copied:
+        assert copied.execute("SELECT value FROM proof").fetchone() == ("сохранено",)
+    execute = calls[-1]
+    assert execute[1:4] == ["exec", backup.container(), "python"]
+    assert "source.backup(snapshot" in execute[5]
+    assert execute[6] == backup.db_in_container()
+    assert execute[7].startswith("/app/data/.database.db.pre-push-")
+
+
+def test_snapshot_failure_is_runtime_error_and_removes_local_part(tmp_path, monkeypatch):
+    monkeypatch.setattr(backup, "BACKUP_DIR", tmp_path)
+    fake_running_docker(monkeypatch, "неполная копия".encode("utf-8"), returncode=1,
+                        stderr=b"snapshot failed")
+
+    with pytest.raises(RuntimeError, match="согласованный снимок"):
+        backup.copy_database(STAMP)
+
+    assert not list(tmp_path.glob("*.part"))
+    assert not list(tmp_path.glob("database-*.db"))
+
+
+def test_copy_transport_failure_is_runtime_error_and_removes_part(tmp_path, monkeypatch):
+    monkeypatch.setattr(backup, "BACKUP_DIR", tmp_path)
+    monkeypatch.setattr(backup.shutil, "which", lambda _name: "docker")
+
+    def run(command, **_kwargs):
+        if command[1] == "inspect":
+            return subprocess.CompletedProcess(command, 0, stdout="true\n", stderr="")
+        raise OSError("оборвался поток docker exec")
+
+    monkeypatch.setattr(backup.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="базу сохранить не удалось"):
+        backup.copy_database(STAMP)
+
+    assert not list(tmp_path.glob("*.part"))
+    assert not list(tmp_path.glob("database-*.db"))
+
+
+def test_integrity_failure_is_runtime_error_and_removes_part(tmp_path, monkeypatch):
+    monkeypatch.setattr(backup, "BACKUP_DIR", tmp_path)
+    fake_running_docker(monkeypatch, "это не база SQLite".encode("utf-8"))
+
+    with pytest.raises(RuntimeError, match="integrity_check"):
+        backup.copy_database(STAMP)
+
+    assert not list(tmp_path.glob("*.part"))
+    assert not list(tmp_path.glob("database-*.db"))
 
 
 # ── хук: пуск и блокировка ─────────────────────────────────────────────────
 def make_repo(tmp_path: Path) -> Path:
-    """Репозиторий с нашим скриптом, рабочим хуком и НАСТОЯЩИМ получателем.
-
-    Получатель обязателен: git разбирается с адресом раньше, чем зовёт pre-push,
-    и при сломанном origin хук не запускается вовсе. Проверять нечего, если
-    хук не вызвали.
-    """
+    """Репозиторий с нашим скриптом, рабочим хуком и настоящим получателем."""
     repo = tmp_path / "проверка"
     repo.mkdir()
     remote = tmp_path / "приёмник"
@@ -158,6 +305,48 @@ def make_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def failing_docker_shim(repo: Path) -> Path:
+    """Подменяет Docker только в Python, который запускает проверяемый хук."""
+    folder = repo / "python-shim"
+    folder.mkdir()
+    code = textwrap.dedent(r"""
+        import shutil
+        import subprocess
+
+        _original_which = shutil.which
+        _original_run = subprocess.run
+
+
+        def which(name, *args, **kwargs):
+            if name == "docker":
+                return "docker"
+            return _original_which(name, *args, **kwargs)
+
+
+        def run(command, *args, **kwargs):
+            if (isinstance(command, (list, tuple)) and len(command) > 1
+                    and command[0] == "docker"):
+                if command[1] == "inspect":
+                    return subprocess.CompletedProcess(
+                        command, 0, stdout="true\n", stderr=""
+                    )
+                if command[1] == "exec":
+                    output = kwargs.get("stdout")
+                    if output is not None:
+                        output.write(b"partial snapshot")
+                    return subprocess.CompletedProcess(
+                        command, 1, stdout=None, stderr=b"snapshot failed"
+                    )
+            return _original_run(command, *args, **kwargs)
+
+
+        shutil.which = which
+        subprocess.run = run
+    """).lstrip()
+    (folder / "sitecustomize.py").write_text(code, encoding="utf-8")
+    return folder
+
+
 def push(repo: Path, **overrides) -> subprocess.CompletedProcess:
     environment = dict(os.environ)
     environment["PATH"] = environment["PATH"] + os.pathsep + str(Path(sys.executable).parent)
@@ -172,22 +361,18 @@ def tags_of(repo: Path) -> str:
                           capture_output=True, text=True, encoding="utf-8").stdout
 
 
-def test_hook_stops_the_push_when_the_copy_fails(tmp_path):
-    """Главное правило: копия не вышла - пуша нет.
-
-    Контейнер оставляем тот же, что и на машине (иначе нечего копировать), а
-    путь внутри него - заведомо несуществующий. Ожидание одно: пуш не проходит,
-    метка не появляется, и в тексте есть слова про бекап.
-    """
+def test_hook_stops_the_push_when_the_snapshot_fails(tmp_path):
+    """Главное правило: контейнер есть, но снимок не вышел - пуша нет."""
     repo = make_repo(tmp_path)
-    finished = push(repo, BOTLPC_SKIP_DB_BACKUP="", BOTLPC_DB_PATH="/app/data/нет-такой-базы.db")
-    assert finished.returncode != 0, "пуш прошёл, хотя копия не получилась"
-    assert "backup/" not in tags_of(repo), "метка поставлена, хотя копия не получилась"
+    shim = failing_docker_shim(repo)
+    finished = push(repo, BOTLPC_SKIP_DB_BACKUP="", PYTHONPATH=str(shim))
+    assert finished.returncode != 0, "пуш прошёл, хотя снимок не получился"
+    assert "backup/" not in tags_of(repo), "метка поставлена, хотя снимок не получился"
     assert "бекап" in (finished.stdout + finished.stderr).lower(), finished.stdout + finished.stderr
 
 
-def test_hook_lets_a_push_through_when_the_copy_works(tmp_path):
-    """Обратная сторона: бекап получился - хук обязан пропустить пуш."""
+def test_hook_lets_a_push_through_when_the_copy_is_skipped_on_purpose(tmp_path):
+    """Явный разовый обход оставляет прежнюю семантику и ставит метку."""
     repo = make_repo(tmp_path)
     finished = push(repo, BOTLPC_SKIP_DB_BACKUP="1")
     assert finished.returncode == 0, finished.stdout + finished.stderr
@@ -195,8 +380,9 @@ def test_hook_lets_a_push_through_when_the_copy_works(tmp_path):
 
 
 def test_hook_mentions_how_to_skip_on_purpose(tmp_path):
-    """Обход должен быть виден в тексте ошибки, иначе его не найти и не сделать."""
+    """В отказе должно быть сказано, как явно пропустить базу один раз."""
     repo = make_repo(tmp_path)
-    finished = push(repo, BOTLPC_SKIP_DB_BACKUP="", BOTLPC_DB_PATH="/app/data/нет-такой-базы.db")
+    shim = failing_docker_shim(repo)
+    finished = push(repo, BOTLPC_SKIP_DB_BACKUP="", PYTHONPATH=str(shim))
     assert "BOTLPC_SKIP_DB_BACKUP=1" in (finished.stdout + finished.stderr), \
         "в отказе не сказано, как пропустить базу один раз"

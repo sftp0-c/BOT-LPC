@@ -140,20 +140,25 @@ async def test_bug_report_asks_and_can_be_cancelled(api):
 
 
 async def test_bug_report_writes_log_and_wakes_sysadmins(api):
-    """Главное: жалоба попадает в admin_log и сис-админ получает уведомление."""
+    """В журнале остаётся факт жалобы, а её текст получает только сис-админ."""
     await register(STUDENT)
     api.sent.clear()
     await press(STUDENT, "bugreport")
-    await say(STUDENT, "нажал «Мой профиль», а открылось расписание")
+    report = "нажал «Мой профиль», а открылось расписание"
+    await say(STUDENT, report)
 
     entry = (await repo.admin_log(5))[0]
+    assert entry["actor_id"] == STUDENT
     assert entry["action"] == "ошибка в боте"
-    assert entry["details"].startswith("ошибка в боте: нажал «Мой профиль»")
-    assert "Иванов Иван Иванович" in entry["details"]
-    assert "ИС-21" in entry["details"] and f"ID {STUDENT}" in entry["details"]
+    assert entry["details"] == "описание получено"
+    # admin_log не хранит переписку и значения профиля студента.
+    assert report not in entry["details"]
+    assert "Иванов Иван Иванович" not in entry["details"]
+    assert "ИС-21" not in entry["details"]
 
     to_sys = texts_of(api, SYS)
-    assert "нажал «Мой профиль»" in to_sys and "Иванов Иван Иванович" in to_sys
+    assert report in to_sys and "Иванов Иван Иванович" in to_sys
+    assert "ИС-21" in to_sys and f"ID {STUDENT}" in to_sys
     assert api.to(SYS)[-1][2][0][0]["payload"] == "diag"   # кнопка «Журнал»
 
 

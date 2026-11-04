@@ -1,4 +1,4 @@
-"""Диаграммы для панели: чистые SVG без внешних библиотек и без JavaScript.
+﻿"""Диаграммы для панели: чистые SVG без внешних библиотек и без JavaScript.
 
 Почему так: панель открывается в обычном браузере, работает офлайн и не должна
 тянуть за собой Chart.js. Данные приходят уже посчитанными из репозитория,
@@ -431,7 +431,7 @@ def _empty_state(title: str, hint: str, period: str) -> str:
 
 
 # ── стили ────────────────────────────────────────────────────────────────────
-def palette_css() -> str:
+def palette_css(theme_only: bool = False) -> str:
     """CSS для ролей палитры: вставить в стиль панели рядом с блоком ``--chart-*``.
 
     Правило простое: цвет элемента задаёт класс ``chart-c-<роль>``, а сама фигура
@@ -447,6 +447,8 @@ def palette_css() -> str:
     for role, value in PALETTE.items():
         own, theme = css_var(role), THEME_VAR.get(role, "")
         chain = f"var({own}, {value})" if theme in ("", own) else f"var({own}, var({theme}, {value}))"
+        if theme_only:
+            chain = f"var({theme or own})"
         roles.append(f".chart-c-{role}{{color:{chain}}}")
     return "\n".join([
         "/* ── графики: роли палитры вместо «голых» цветов ─────────────────────── */",
@@ -462,11 +464,11 @@ def palette_css() -> str:
         (".chart .chart-spark-line{fill:none;stroke:currentColor;stroke-width:2;"
          "stroke-linejoin:round;stroke-linecap:round}"),
         ".chart .chart-spark-dot{fill:currentColor}",
-        ".donut-total{color:var(--ink,#e9eff8)}",
-        ".donut-sub{color:var(--mut,#93a5be)}",
+        ".donut-total{color:var(--ink)}" if theme_only else ".donut-total{color:var(--ink,#e9eff8)}",
+        ".donut-sub{color:var(--mut)}" if theme_only else ".donut-sub{color:var(--mut,#93a5be)}",
         (".chart-box .legend i,.chart-box .legend-list i{background:currentColor;"
          "border-radius:3px}"),
-        ".hbar-track{background:var(--chart-track,#e6ebf3)}",
+        ".hbar-track{background:var(--chart-track)}" if theme_only else ".hbar-track{background:var(--chart-track,#e6ebf3)}",
         ".hbar-fill{display:block;height:100%;border-radius:5px;background:currentColor}",
         (".chart-empty-hint{display:block;margin-top:4px;"
          "font-size:var(--text-xs,12px);opacity:.75}"),

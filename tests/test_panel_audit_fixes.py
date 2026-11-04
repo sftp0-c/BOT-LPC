@@ -242,6 +242,7 @@ async def test_staff_page_queries_do_not_grow_with_staff(panel_client, monkeypat
     assert len(seen) <= small, f"запросов стало {small} -> {len(seen)} при росте сотрудников"
 
 
+@pytest.mark.usefixtures("frozen_college_clock")
 async def test_staff_page_queries_do_not_grow_when_several_are_away(panel_client, monkeypatch):
     """Отпуск не возвращает N+1: список читается одним запросом и с отпусками."""
     assert login_panel(panel_client)
@@ -288,6 +289,7 @@ async def test_tickets_access_still_shows_every_flag(panel_client):
     assert states == {"200": False, "201": True}
 
 
+@pytest.mark.usefixtures("frozen_college_clock")
 async def test_staff_list_marks_vacation_and_replacement(panel_client):
     """Заместитель ищется по тому же правилу, что и раньше: должность, потом раздел."""
     await add_staff("500", "Петрова Анна", position="Секретарь")
@@ -303,6 +305,7 @@ async def test_staff_list_marks_vacation_and_replacement(panel_client):
     assert (await repo.vacation_replacement(await repo.get_admin("500")))["user_id"] == "501"
 
 
+@pytest.mark.usefixtures("frozen_college_clock")
 async def test_staff_list_vacation_without_replacement(panel_client):
     await add_staff("500", "Петрова Анна")
     await repo.set_vacation("500", "05.10.2026")

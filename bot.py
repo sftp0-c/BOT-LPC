@@ -29,6 +29,7 @@ import version
 import database as db
 import repository as repo
 from handlers import admin, broadcast, invites, menus, tickets  # noqa: F401  — регистрация обработчиков при импорте
+from handlers.admin import admin_of
 from handlers.common import api, log, notify, pending_tasks, spawn
 from handlers.registry import CALLBACKS
 from schedule_watch import start_watcher, stop_watcher  # слежение за PDF с расписанием
@@ -76,14 +77,37 @@ STATE_KEEPING_CALLBACKS = frozenset({"bcgo", "mph", "mkc", "sfbc", "tplsend", "t
                                      "ticketsend", "draftclr"})
 
 
+async def _audit_role(user_id: str) -> str:
+    """Роль для аудита MAX: только тип доступа, без ФИО и других данных."""
+    admin_row = await admin_of(user_id)
+    if admin_row:
+        role_type = as_str(admin_row["role_type"])
+        if role_type == "owner":
+            return "owner"
+        return "sysadmin" if role_type in ("sysadmin", "superadmin") else "staff"
+    return "student" if await repo.get_user(user_id) else "unknown"
+
+
+async def audit_event(user_id: str, action: str, target_type: str = "",
+                      target_id: str = "", result: str = "received") -> None:
+    """Аудит не мешает ответу пользователю, но его потеря никогда не молчит."""
+    try:
+        await repo.log_audit(user_id, await _audit_role(user_id), action,
+                             target_type, target_id, result)
+    except Exception as exc:  # noqa: BLE001 — бот продолжает работу, потеря видна в техжурнале
+        log.warning("аудит события %s не записан: %s", action, type(exc).__name__)
+
+
 async def on_callback(x: str, payload: str):
     name, _, arg = payload.partition(":")
     handler = CALLBACKS.get(name)
     if not handler:
-        return log.warning("неизвестный callback %r от %s", payload, x)
+        return log.warning("неизвестная кнопка от %s", x)
     if name not in STATE_KEEPING_CALLBACKS:
         # нажатие любой кнопки прерывает незавершённый ввод
         await db.clear_state(x)
+    # Аргумент намеренно не пишется: в нём встречаются коды приглашений и текст.
+    await audit_event(x, "callback", "callback", name)
     return await handler(x, arg)
 
 
@@ -121,6 +145,8 @@ async def process(u: dict):
         async with _locks.get(x):
             await remember_contact(u, x, kind)
             if kind == "bot_started":
+                # Сам payload не журналируется: переход по приглашению содержит секретный код.
+                await audit_event(x, "bot_started")
                 # переход по диплинку: payload приносит inv_<КОД> приглашения
                 await invites.on_start(x, start_payload(u))
             elif kind == "message_created":
@@ -128,6 +154,8 @@ async def process(u: dict):
                     return  # группы и каналы не обслуживаем
                 files = message_attachments(u)
                 text = message_text(u)
+                # Фиксируем только факт сообщения: его текст остаётся в обращении, не в аудите.
+                await audit_event(x, "message_received")
                 if files:
                     handled = await tickets.on_attachment(x, files)
                     if handled:
@@ -262,6 +290,18 @@ async def backup_loop():
             await repo.log_action("bot", "автокопия базы", "ошибка" if warned else "создана копия")
 
 
+async def audit_cleanup_loop() -> None:
+    """Раз в сутки удерживает только 30 дней безопасного полного аудита."""
+    while True:
+        await asyncio.sleep(24 * 60 * 60)
+        try:
+            removed = await repo.prune_audit(30)
+            if removed:
+                log.info("полный аудит: удалено старых записей — %s", removed)
+        except Exception as exc:  # noqa: BLE001 — обслуживание не роняет бота
+            log.warning("полный аудит не очищен: %s", exc)
+
+
 async def _db_sysadmins() -> set:
     try:
         return {as_str(row["user_id"]) for row in await db.many(
@@ -327,10 +367,15 @@ async def register_bot_menu() -> None:
 async def lifespan(app: FastAPI):
     poller = None
     maintenance = None
+    audit_maintenance = None
     try:
         for warning in config.validate():
             log.warning(warning)
         await db.init_db()
+        removed_audit = await repo.prune_audit(30)
+        if removed_audit:
+            log.info("полный аудит: при старте удалено старых записей — %s", removed_audit)
+        audit_maintenance = spawn(audit_cleanup_loop())
         # черновик частых вопросов с сайта колледжа: seed_defaults не трогает
         # правки сис-админа, поэтому вызывается на каждом старте
         from handlers import faq as faq_module
@@ -373,15 +418,15 @@ async def lifespan(app: FastAPI):
         yield
     finally:  # try/finally обязателен: при сбое старта клиент тоже должен закрыться
         stop_watcher()
-        if maintenance:
-            maintenance.cancel()
+        for task in (maintenance, audit_maintenance):
+            if task:
+                task.cancel()
         await shutdown(poller)
 
 
 app = FastAPI(title="College MAX bot", lifespan=lifespan)
 app.include_router(panel_router)
 app.include_router(panel_open_router)      # /join/<код>: открыто без входа в панель
-app.include_router(panel_open_router)      # /join/<код> - без входа в панель
 
 
 @app.exception_handler(sqlite3.OperationalError)

@@ -341,7 +341,7 @@ async def finish_ready(x: str, t, place: str) -> None:
     await notify(t["student_id"],
                  f"✅ Документ по обращению №{tid} готов. Заберите в кабинете {place}.",
                  [[btn("📂 Открыть обращение", f"t:{tid}")]])
-    await repo.log_action(x, "документ готов", f"№{tid}, кабинет {place}")
+    await repo.log_action(x, "документ готов", f"№{tid}; поля: status, pickup_place")
     await send_ticket(x, await repo.get_ticket(tid), True)
 
 
@@ -1247,7 +1247,7 @@ async def on_attachment(x: str, files: list) -> bool:
 
         path, name = await download_attachment(item.get("url", ""), item.get("name", ""))
     except Exception as exc:  # noqa: BLE001 - студенту нужна причина, а не трассировка
-        log.warning("не удалось сохранить вложение %s: %s", item.get("name"), exc)
+        log.warning("не удалось сохранить вложение обращения №%s (%s)", tid, type(exc).__name__)
         return await api.send(x, f"⚠️ Файл не сохранился: {exc}\nПришлите другой или напишите текстом.",
                               attach_kb(tid)) or True
     size = item.get("size") or os.path.getsize(path)

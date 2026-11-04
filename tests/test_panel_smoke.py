@@ -1,11 +1,13 @@
-"""Тесты-охранники панели: ловят ошибки, которые не видно в основных сценариях.
+﻿"""Тесты-охранники панели: ловят ошибки, которые не видно в основных сценариях.
 
 Здесь нет проверки бизнес-логики - только «страница не падает» и «форма работает».
 Такие тесты обычно ловят то, что забывают: пустой список, поиск без результатов,
 POST без CSRF-токена.
 """
+import ast
 import pytest
 import re
+from pathlib import Path
 
 # Веб-панель: поднимает TestClient, поэтому медленнее обычного экрана.
 pytestmark = pytest.mark.panel
@@ -52,22 +54,30 @@ def test_staff_page_with_no_staff_at_all(panel_client):
 
 
 # ── формы: CSRF и работоспособность ───────────────────────────────────────────
-def test_every_post_form_has_csrf():
-    """Каждая POST-форма панели (кроме входа) обязана содержать csrf.
+def test_every_post_route_has_csrf_guard():
+    """Каждый реальный POST-маршрут (кроме входа) зовёт CSRF-проверку.
 
-    Без токена require_form() отвечает 403 - форма выглядит целой, но не работает.
-    Именно так «сломалось» выдачу кодов.
+    После разбиения панели фасад ``webpanel.py`` не содержит разметки, поэтому
+    прежний поиск форм в нём всегда был пустым и ничего не защищал.
     """
-    text = open("webpanel.py", encoding="utf-8").read()
     broken = []
-    for block in re.findall(r"<form\b[^>]*method=[\"']post[\"'][^>]*>.*?</form>", text, re.S):
-        action = re.search(r"action=[\"']([^\"']+)[\"']", block)
-        action = action.group(1) if action else "?"
-        if action == "/panel/login":
-            continue  # вход идёт до сессии и CSRF-токена ещё нет
-        if "csrf(" not in block:
-            broken.append(action)
-    assert not broken, f"формы без CSRF-токена: {broken}"
+    for path in Path("web").glob("*.py"):
+        text = path.read_text(encoding="utf-8-sig")
+        tree = ast.parse(text)
+        lines = text.splitlines()
+        for node in tree.body:
+            if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
+                continue
+            posts = [dec for dec in node.decorator_list
+                     if isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)
+                     and dec.func.attr == "post"]
+            if not posts or node.name == "login_submit":
+                continue
+            source = "\n".join(lines[node.lineno - 1:node.end_lineno])
+            if "require_form(" not in source and "require_owner_form(" not in source:
+                broken.append(f"{path.name}:{node.name}")
+    assert not broken, "POST без CSRF-проверки: " + ", ".join(broken)
+
 
 
 def test_code_form_works_from_page(panel_client):

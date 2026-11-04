@@ -2,7 +2,9 @@
 import csv
 import io
 import os
+import unicodedata
 from datetime import timedelta
+from urllib.parse import parse_qsl, urlencode
 
 import clock
 import database as db
@@ -12,6 +14,7 @@ from fastapi.responses import FileResponse, Response
 from handlers.common import admin_of, is_personal_template, notify
 from handlers.tickets import TPL_FIELDS, render_template, unknown_placeholders
 from panel_theme import icon
+from store.tickets import ticket_filter_dates
 from utils import (CATS, OPEN_STATUSES, STAFF_CATS, STATUS, as_str, cut_plain, fmt_when,
                     group_code, to_int)
 
@@ -161,8 +164,8 @@ async def templates_add(request: Request):
         flash("!Нужны и название, и текст ответа.")
         return redirect("/panel/templates")
     template_id = await repo.add_template(title, text, value(data, "category") or "all", user)
-    log.info("панель: добавлен шаблон «%s» (сис-админ %s)", title, user)
-    await repo.log_action(user, "шаблон ответа добавлен", f"{title} (ID {template_id})")
+    log.info("панель: добавлен шаблон %s (сис-админ %s)", template_id, user)
+    await repo.log_action(user, "шаблон ответа добавлен", f"ID {template_id}; поля: title, text, category")
     flash(f"Шаблон «{title}» добавлен.")
     return redirect("/panel/templates")
 
@@ -176,7 +179,7 @@ async def templates_delete(request: Request, template_id: int):
         return redirect("/panel/templates")
     await repo.delete_template(template_id)
     log.info("панель: удалён шаблон %s (сис-админ %s)", template_id, user)
-    await repo.log_action(user, "шаблон ответа удалён", f"{template['title']} (ID {template_id})")
+    await repo.log_action(user, "шаблон ответа удалён", f"ID {template_id}")
     flash(f"Шаблон «{template['title']}» удалён.")
     return redirect("/panel/templates")
 
@@ -226,9 +229,8 @@ async def templates_edit(request: Request, template_id: int):
 async def templates_edit_submit(request: Request, template_id: int):
     """Сохранение правки: название, раздел и текст ответа.
 
-    В журнал идут только название и id: текст шаблона уходит студентам, а
-    переписка сотрудников - тем более. Счётчик применений и дата добавления не
-    трогаются: правка не «применение».
+    В журнал идут только ID и имена полей, без названия и текста шаблона.
+    Счётчик применений и дата добавления не трогаются: правка не «применение».
     """
     user = await require_form(request)
     data = await request.form()
@@ -243,27 +245,38 @@ async def templates_edit_submit(request: Request, template_id: int):
     await db.run("UPDATE reply_templates SET title=?, text=?, category=? WHERE id=?",
                  (title[:80], text[:2000], category, template_id))
     log.info("панель: изменён шаблон %s (сис-админ %s)", template_id, user)
-    await repo.log_action(user, "шаблон ответа изменён", f"{title} (ID {template_id})")
+    await repo.log_action(user, "шаблон ответа изменён", f"ID {template_id}; поля: title, text, category")
     flash(f"Шаблон «{title}» сохранён.")
     return redirect("/panel/templates")
 
 
+def csv_cell(value) -> str:
+    """Excel не должен исполнить пользовательское значение как формулу."""
+    text = as_str(value)
+    # Таблица может отбросить пробелы, BOM и управляющие символы перед формулой.
+    significant = text
+    while significant and (significant[0].isspace() or
+                           unicodedata.category(significant[0]) in ("Cc", "Cf")):
+        significant = significant[1:]
+    return "'" + text if significant.startswith(("=", "+", "-", "@")) else text
+
+
 @router.get("/tickets.csv")
 async def tickets_csv(request: Request, status: str = "", category: str = "",
-                      q: str = "", scope: str = "", view: str = ""):
+                      q: str = "", scope: str = "", view: str = "", mine: str = "",
+                      date_from: str = "", date_to: str = ""):
     """Выгрузка обращений в CSV: для отчётов и разборов вне панели.
 
     Фильтры те же, что на странице, и правила те же - берём общую функцию.
     Раньше выгрузка знала только статус и раздел, поэтому из архива отдавала
     пустоту, а из списка с поиском - не то, что человек видит на экране.
     """
-    await require_user(request)  # CSRF-токен не нужен: это скачивание
-    rows, _latest, _waiting, _overdue = await filter_tickets(status, category, q, scope,
-                                                             view, limit=2000)
-    # имена подставляем словарём: в строках обращений их нет, а десятки
-    # отдельных запросов на каждую строку были бы лишней нагрузкой
-    students = {as_str(u["user_id"]): as_str(u["full_name"]) for u in await repo.list_users(2000)}
-    staff_names = {as_str(a["user_id"]): as_str(a["full_name"]) for a in await repo.all_admins()}
+    user = await require_user(request)  # CSRF-токен не нужен: это скачивание
+    rows, _latest, _waiting, _overdue = await filter_tickets(
+        status, category, q, scope, view, limit=2000, mine=mine, actor_id=user,
+        date_from=date_from, date_to=date_to,
+    )
+    # Имена уже присоединены к каждой строке: не зависят от окна списка людей.
     buffer = io.StringIO()
     writer = csv.writer(buffer, delimiter=";", quoting=csv.QUOTE_MINIMAL)
     writer.writerow(["№", "Создано", "Статус", "Раздел", "Тема", "Студент", "ID студента",
@@ -271,18 +284,19 @@ async def tickets_csv(request: Request, status: str = "", category: str = "",
     for row in rows:
         student_id = as_str(row["student_id"])
         admin_id = as_str(row["target_admin_id"])
-        writer.writerow([
+        writer.writerow([csv_cell(value) for value in [
             row["ticket_id"], as_str(row["created_at"]),
             STATUS.get(as_str(row["status"]), as_str(row["status"])),
             STAFF_CATS.get(as_str(row["category"]), as_str(row["category"])),
-            as_str(row["topic"]), students.get(student_id, student_id), student_id,
-            staff_names.get(admin_id, admin_id), admin_id,
+            as_str(row["topic"]), as_str(row["student_name"]) or student_id, student_id,
+            as_str(row["staff_name"]) or admin_id, admin_id,
             as_str(row["text_content"])[:1000],
-        ])
+        ]])
     return Response(
         "\ufeff" + buffer.getvalue(),   # BOM - чтобы Excel открыл в UTF-8
         media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": 'attachment; filename="tickets.csv"'},
+        headers={"Content-Disposition": 'attachment; filename="tickets.csv"',
+                 "Cache-Control": "no-store"},
     )
 
 
@@ -300,102 +314,143 @@ OVERDUE_HOURS = 24
 именно на такие и нужен счётчик, а не на все ожидающие."""
 
 
-def is_overdue(row, latest: dict) -> bool:
-    """Ждёт ли обращение дольше суток.
+TICKET_FILTERS = ("status", "category", "q", "scope", "view", "mine", "date_from", "date_to")
 
-    Ждёт - значит последнее сообщение в нём оставил студент (тот же признак,
-    что у фильтра «только ждут ответа»). Давно - это когда обращение давно не
-    трогали: на updated_at пишется любое сообщение, поэтому время последнего
-    касания доступно без лишних запросов к базе.
-    """
-    ticket_id = to_int(row["ticket_id"])
-    if latest.get(ticket_id) != "student":
+
+def _filter_params(status: str = "", category: str = "", q: str = "", scope: str = "",
+                   view: str = "", mine: str = "", date_from: str = "", date_to: str = "") -> dict:
+    """Один канонический набор для SQL, формы, ссылок, CSV и возврата после POST."""
+    try:
+        date_from, date_to = ticket_filter_dates(date_from, date_to)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": as_str(status), "category": as_str(category), "q": as_str(q),
+            "scope": as_str(scope), "view": as_str(view),
+            "mine": "1" if as_str(mine).strip().lower() in ("1", "true", "yes", "on") else "0",
+            "date_from": date_from, "date_to": date_to}
+
+
+def _filter_query(params: dict, **changes) -> str:
+    """Изменяет только указанный фильтр и кодирует все значения ровно один раз."""
+    return urlencode({key: val for key, val in (params | changes).items() if val != "" and val is not None})
+
+
+def _tickets_url(params: dict, **changes) -> str:
+    query = _filter_query(params, **changes)
+    return "/panel/tickets" + ("?" + query if query else "")
+
+
+def is_overdue(row, latest: dict) -> bool:
+    """Сутки от последнего сообщения студента, не от правки карточки."""
+    state = latest.get(to_int(row["ticket_id"]), {})
+    role = state.get("role", "") if isinstance(state, dict) else as_str(state)
+    if as_str(row["status"]) not in OPEN_STATUSES or role != "student":
         return False
-    touched = clock.parse(row["updated_at"])
-    if touched is None:
-        return False
-    return (clock.now() - touched) >= timedelta(hours=OVERDUE_HOURS)
+    stamp = state.get("created_at", "") if isinstance(state, dict) else _row_get(row, "latest_message_at")
+    touched = clock.parse(stamp)
+    return touched is not None and (clock.now() - touched) >= timedelta(hours=OVERDUE_HOURS)
+
+
+def _ticket_timer(row) -> str:
+    """Одинаковый источник времени в очереди и карточке; неизвестную дату не выдумываем."""
+    data = dict(row)
+    if data["status"] == "in_progress":
+        kind, label, stamp = "in_progress", "в работе", data.get("in_progress_at", "")
+    elif data.get("is_waiting"):
+        kind, label, stamp = "waiting", "ждёт ответа", data.get("latest_message_at", "")
+    else:
+        kind, label, stamp = "message", "последнее сообщение", data.get("latest_message_at", "")
+    moment = clock.parse(stamp)
+    if moment is None:
+        if kind == "in_progress":
+            return '<span class="wb-age">в работе · время начала неизвестно</span>'
+        return f'<span class="wb-age">{esc(label)} · время неизвестно</span>' if stamp or data.get("is_waiting") else ""
+    aware = moment.replace(tzinfo=clock.zone())
+    return (f'<span class="wb-age live-age" data-time="{esc(aware.isoformat())}" '
+            f'data-time-ms="{int(aware.timestamp() * 1000)}" data-prefix="{esc(label)}" '
+            f'data-timer-kind="{kind}">{esc(label)} · {esc(fmt_when(stamp))}</span>')
 
 
 async def filter_tickets(status: str = "", category: str = "", q: str = "",
-                        scope: str = "", view: str = "", limit: int = 500) -> tuple:
-    """Отбор обращений под фильтры панели. Возвращает (строки, ждут ответа).
-
-    Один источник правил для страницы и для выгрузки в CSV. Пока условия были
-    написаны дважды, они разошлись: выгрузка знала про статус и раздел, но не
-    про поиск, «только ждут ответа» и архив, - и молча отдавала не то, что
-    человек видит на экране.
-    """
-    archived = view == "archive"
-    rows = await repo.admin_tickets(None, limit, archived=archived)
-    if status == "open":
-        rows = [r for r in rows if as_str(r["status"]) in OPEN_STATUSES]
-    elif status:
-        rows = [r for r in rows if as_str(r["status"]) == status]
-    if category:
-        rows = [r for r in rows if as_str(r["category"]) == category]
-    if q:
-        needle = q.lower()
-        # подходящие по фамилии: один запрос к базе, а не перебор всех
-        # студентов. ФИО не пишут в тексте обращения, а MAX ID сотрудник не
-        # знает - искать было нечем.
-        by_name = await repo.student_ids_by_name(q)
-        rows = [r for r in rows
-                if needle in as_str(r["text_content"]).lower()
-                or needle in as_str(r["student_id"])
-                or as_str(r["student_id"]) in by_name]
-    latest = await repo.latest_message_roles([row["ticket_id"] for row in rows])
-    if scope == "waiting":
-        rows = [row for row in rows if latest.get(int(row["ticket_id"])) == "student"]
-    waiting = sum(1 for row in rows if latest.get(int(row["ticket_id"])) == "student")
-    if scope == "overdue":
-        rows = [row for row in rows if is_overdue(row, latest)]
-    overdue = sum(1 for row in rows if is_overdue(row, latest))
-    return rows, latest, waiting, overdue
+                         scope: str = "", view: str = "", limit: int = 500,
+                         mine: str = "", actor_id: str = "", date_from: str = "",
+                         date_to: str = "") -> tuple:
+    """Условия и счётчики применяются в SQL до LIMIT, без фильтрации в Python."""
+    params = _filter_params(status, category, q, scope, view, mine, date_from, date_to)
+    mine_enabled = params.pop("mine") == "1"
+    archived = params.pop("view") == "archive"
+    # Без известного сотрудника «Только мои» не должно раскрывать общую очередь.
+    if mine_enabled and not actor_id:
+        return [], {}, 0, 0
+    rows = await repo.admin_tickets(as_str(actor_id) if mine_enabled else None, limit,
+                                    archived=archived, with_counts=True,
+                                    overdue_hours=OVERDUE_HOURS, **params)
+    states = {int(row["ticket_id"]): {"role": as_str(row["latest_role"]),
+                                      "created_at": as_str(row["latest_message_at"])} for row in rows}
+    waiting = int(rows[0]["filtered_waiting"]) if rows else 0
+    overdue = int(rows[0]["filtered_overdue"]) if rows else 0
+    return rows, states, waiting, overdue
 
 
 @router.get("/tickets")
 async def tickets_list(request: Request, status: str = "", q: str = "", category: str = "",
-                       scope: str = "", t: int = 0, view: str = ""):
+                       scope: str = "", t: int = 0, view: str = "", mine: str = "",
+                       date_from: str = "", date_to: str = ""):
     """Рабочее место: очередь слева, выбранное обращение справа.
 
     Отдельная страница карточки больше не нужна - рутина идёт без переходов,
     а старые ссылки из отчётов ведут сюда же.
     """
     user = await require_user(request)
-    archived = view == "archive"
-    rows, latest, waiting, overdue = await filter_tickets(status, category, q, scope, view)
+    params = _filter_params(status, category, q, scope, view, mine, date_from, date_to)
+    archived = params["view"] == "archive"
+    mine_enabled = params["mine"] == "1"
+    rows, latest, waiting, overdue = await filter_tickets(**params, actor_id=user)
     selected = next((row for row in rows if int(row["ticket_id"]) == int(t or 0)), None)
-    counts = await repo.status_counts()
-    archived_n = await repo.archive_count()
+    counts = {code: int(rows[0][f"filtered_{code}"]) if rows else 0 for code in STATUS}
+    if archived:
+        archived_n = int(rows[0]["filtered_total"]) if rows else 0
+    else:
+        archive_rows, *_ = await filter_tickets(**(params | {"view": "archive"}), actor_id=user, limit=1)
+        archived_n = int(archive_rows[0]["filtered_total"]) if archive_rows else 0
 
     options = {"": "все статусы", "open": "🔓 открытые"}
     options |= {code: label for code, label in STATUS.items()}
     cat_options = {"": "все разделы", **{code: label for code, label in CATS.items()}}
-    query = f"status={esc(status)}&category={esc(category)}&q={esc(q)}&scope={esc(scope)}"
-    live_query = query + (f"&view={esc(view)}" if view else "")
-    # фильтры запоминает actions_script(): пустая форма - восстанавливаем прошлые
-    fresh = "" if (status or category or q or scope) else ' data-filters-saved="1"'
+    live_query = _filter_query(params)
+    fresh = "" if request.query_params else ' data-filters-saved="1"'
+    today = clock.today()
+    presets = " ".join(
+        f'<a class="btn btn-grey" data-period-days="{days}" '
+        f'href="{esc(_tickets_url(params, date_from=(today - timedelta(days=days - 1)).isoformat(), date_to=today.isoformat()))}">'
+        f'За {days} дней</a>' for days in (7, 14, 30))
+    create_link = "/panel/tickets/new?" + urlencode({"return": _tickets_url(params)})
     filters = f"""
 <form method="get" action="/panel/tickets" class="grid wb-filters" style="margin-bottom:10px"
- data-filters="status,category,q"{fresh}>
-<div>{select("status", options, status, label="Статус")}</div>
-<div>{select("category", cat_options, category, label="Раздел")}</div>
-<div><label>Поиск: текст обращения или MAX ID</label>
-<input name="q" value="{esc(q)}" placeholder="фамилия, текст обращения или MAX ID"></div>
-<div><button>Найти</button></div></form>
+ data-filters="{','.join(TICKET_FILTERS)}" data-filter-key="tickets:{esc(user)}"{fresh}>
+<input type="hidden" name="scope" value="{esc(params['scope'])}"><input type="hidden" name="view" value="{esc(params['view'])}">
+<input type="hidden" name="mine" value="{params['mine']}">
+<div>{select("status", options, params['status'], label="Статус")}</div>
+<div>{select("category", cat_options, params['category'], label="Раздел")}</div>
+<div><label>Поиск: номер, ФИО, текст, тема или MAX ID</label>
+<input name="q" value="{esc(params['q'])}" placeholder="номер, фамилия, текст или MAX ID"></div>
+<div><label>С даты</label><input name="date_from" type="date" value="{esc(params['date_from'])}"></div>
+<div><label>По дату</label><input name="date_to" type="date" value="{esc(params['date_to'])}"></div>
+<div><button>{icon("search", 16)} Найти</button></div></form>
+<p class="small mut wb-tools">Период: {presets}</p>
 <p class="small mut wb-tools">
-<a class="btn{' btn-grey' if scope else ''}" href="/panel/tickets?{live_query}">{icon("clock", 16)} Только ждут ответа: {waiting}</a>
-<a class="btn{' btn-bad' if overdue else ' btn-grey'}" href="/panel/tickets?{query}&amp;scope=overdue">{icon("alert", 16)} Дольше суток: {overdue}</a>
-<a class="btn{' btn-grey' if not archived else ''}" href="/panel/tickets?{query}">{icon("inbox", 16)} В работе</a>
-<a class="btn{' btn-grey' if not archived else ' btn-ok'}" href="/panel/tickets?{query}&view=archive">{icon("archive", 16)} Архив: {archived_n}</a>
-<a class="btn" href="/panel/tickets/new">{icon("plus", 16)} Создать обращение</a>
+<a class="btn{' btn-grey' if scope != 'waiting' else ''}" href="{esc(_tickets_url(params, scope='waiting'))}">{icon("clock", 16)} Только ждут ответа: {waiting}</a>
+<a class="btn{' btn-bad' if scope == 'overdue' else ' btn-grey'}" href="{esc(_tickets_url(params, scope='overdue'))}">{icon("warning", 16)} Дольше суток: {overdue}</a>
+<a class="btn{' btn-ok' if mine_enabled else ' btn-grey'}" href="{esc(_tickets_url(params, mine='0' if mine_enabled else '1'))}">{icon("user", 16)} {'Все обращения' if mine_enabled else 'Только мои'}</a>
+<a class="btn{' btn-grey' if not archived else ''}" href="{esc(_tickets_url(params, view=''))}">{icon("inbox", 16)} В работе</a>
+<a class="btn{' btn-grey' if not archived else ' btn-ok'}" href="{esc(_tickets_url(params, view='archive'))}">{icon("archive", 16)} Архив: {archived_n}</a>
+<a class="btn" href="{esc(create_link)}">{icon("plus", 16)} Создать обращение</a>
 <a class="btn btn-grey" href="/panel/tickets" data-filters-reset>{icon("close", 16)} Сбросить фильтры</a></p>"""
-    summary = " · ".join(f"{plain(STATUS.get(c, c))}: {counts.get(c, 0)}" for c in STATUS)
+    summary = " · ".join(f"{plain(STATUS.get(c, c))}: {counts[c]}" for c in STATUS)
     bot = await bot_open_link()
-    access = await _tickets_access(request)
+    access = await _tickets_access(request, _tickets_url(params, t=t) if t else _tickets_url(params))
     queue = _tickets_queue(request, rows, latest, live_query, selected, archived)
-    card = await _ticket_workbench(request, selected, bot, view) if selected else (
+    card = await _ticket_workbench(request, selected, bot, view, live_query) if selected else (
         '<div class="card mut">Выберите обращение в очереди слева — здесь появятся переписка, '
         'правки и быстрые ответы. Клавиши: j и k — по очереди, Enter — открыть, '
         'a — в архив, ? — все клавиши.</div>')
@@ -456,15 +511,15 @@ async def tickets_see_all(request: Request):
     flag = as_str(data.get("value", "")).strip() in ("1", "on", "true", "да")
     if not await repo.get_admin(user_id):
         flash("!Сотрудник не найден.")
-        return redirect("/panel/tickets")
+        return redirect(safe_return(data))
     await repo.set_staff_see_all(user_id, flag)
     await repo.log_action(actor, "доступ к чужим обращениям",
-                          f"{user_id}: {'видит все' if flag else 'только свои'}")
+                          f"ID {user_id}; поля: see_all_tickets")
     flash(f"{user_id}: {'видит все обращения' if flag else 'видит только свои'}.")
-    return redirect("/panel/tickets")
+    return redirect(safe_return(data))
 
 
-async def _tickets_access(request: Request) -> str:
+async def _tickets_access(request: Request, return_to: str = "/panel/tickets") -> str:
     """Кто видит чужие обращения: галочка рядом с именем сотрудника.
 
     Права читает staff_sees_all_bulk(): раньше на каждого сотрудника уходил
@@ -488,6 +543,7 @@ async def _tickets_access(request: Request) -> str:
         items.append(
             f"""<form method="post" action="/panel/tickets/see-all" class="wb-access">
 {csrf(request)}<input type="hidden" name="user_id" value="{esc(uid)}">
+<input type="hidden" name="return" value="{esc(return_to)}">
 <label><input type="checkbox" name="value" value="1" {'checked' if sees_all else ''}
  onchange="this.form.submit()"><span class="wb-access-name">{esc(who)}
 <span class="wb-access-pos">{esc(position)}</span></span></label>
@@ -517,8 +573,10 @@ async def ticket_new(request: Request):
     """Создание обращения из панели: для заявок, пришедших не через бота."""
     user = await require_user(request)
     staff_options, staff_titles = await _staff_choices()
+    return_to = safe_return(request.query_params)
     body = f"""<div class="card"><h2>Новое обращение</h2>
 <form method="post" action="/panel/tickets/new">{csrf(request)}
+<input type="hidden" name="return" value="{esc(return_to)}">
 <div class="grid">
 <div><label>MAX ID студента</label><input name="student_id" required></div>
 <div><label>ФИО (если ещё не регистрировался)</label><input name="full_name"></div>
@@ -533,7 +591,7 @@ async def ticket_new(request: Request):
 </div>
 <div class="grid" style="margin-top:10px">
 <div><button class="btn-ok">Создать</button></div>
-<div><a class="btn btn-grey" href="/panel/tickets">Отмена</a></div></div>
+<div><a class="btn btn-grey" href="{esc(return_to)}">Отмена</a></div></div>
 </form></div>"""
     return page("Новое обращение", body, user, "/tickets")
 
@@ -566,7 +624,7 @@ async def ticket_new_submit(request: Request):
     await repo.log_action(actor, "обращение создано из панели",
                           f"№{ticket_id}, студент {student_id}")
     flash(f"Обращение №{ticket_id} создано.")
-    return redirect(f"/panel/tickets?t={ticket_id}")
+    return redirect(safe_return(data, f"/panel/tickets?t={ticket_id}"))
 
 
 @router.post("/tickets/bulk")
@@ -575,6 +633,8 @@ async def tickets_bulk(request: Request):
     data = await request.form()
     chosen = [item for item in value(data, "tids").split(",") if item]
     action = value(data, "action")
+    if action not in {"assign", "status", "pickup", "archive"}:
+        raise HTTPException(status_code=400, detail="Неизвестное массовое действие")
     if not chosen:
         flash("!Отметьте обращения галочкой слева.")
         return redirect(safe_return(data))
@@ -599,7 +659,7 @@ async def ticket_edit(request: Request, ticket_id: int):
         status=value(data, "status"),
     )
     flash(message if ok else f"!{message}")
-    return redirect(f"/panel/tickets?t={ticket_id}")
+    return redirect(safe_return(data, f"/panel/tickets?t={ticket_id}"))
 
 
 @router.post("/tickets/{ticket_id}/ready")
@@ -611,29 +671,31 @@ async def ticket_ready(request: Request, ticket_id: int):
     забрать, нечем.
     """
     actor = await require_form(request)
+    data = await request.form()
     t = await repo.get_ticket(ticket_id)
     if not t:
         flash("!Обращение не найдено.")
-        return redirect("/panel/tickets")
+        return redirect(safe_return(data, "/panel/tickets"))
     place = as_str(t["pickup_place"]).strip()
     if not place and is_certificate(t):
         place = CERT_PICKUP
     if not place:
         flash("!Укажите кабинет выдачи: 115 зашит только под справки.")
-        return redirect(f"/panel/tickets?t={ticket_id}")
+        return redirect(safe_return(data, f"/panel/tickets?t={ticket_id}"))
     await repo.update_ticket(ticket_id, actor, status="ready", pickup_place=place)
     await repo.add_ticket_message(ticket_id, actor, "staff",
                                   f"✅ Документ готов. Заберите в кабинете {place}.")
     await notify(t["student_id"],
                  f"✅ Документ по обращению №{ticket_id} готов. Заберите в кабинете {place}.")
-    await repo.log_action(actor, "справка готова", f"№{ticket_id}, кабинет {place}")
+    await repo.log_action(actor, "справка готова", f"№{ticket_id}; поля: status, pickup_place")
     flash(f"Обращение №{ticket_id}: документ готов, кабинет {place}. Студенту отправлено уведомление.")
-    return redirect(f"/panel/tickets?t={ticket_id}")
+    return redirect(safe_return(data, f"/panel/tickets?t={ticket_id}"))
 
 
 @router.post("/tickets/{ticket_id}/archive")
 async def ticket_archive(request: Request, ticket_id: int):
     actor = await require_form(request)
+    data = await request.form()
     ok, message = await repo.archive_ticket(ticket_id, actor)
     if ok:
         t = await repo.get_ticket(ticket_id, include_archived=True)
@@ -643,17 +705,18 @@ async def ticket_archive(request: Request, ticket_id: int):
                          "напишите новое обращение.")
         await repo.log_action(actor, "обращение в архиве", f"№{ticket_id}")
     flash(message if ok else f"!{message}")
-    return redirect("/panel/tickets")
+    return redirect(safe_return(data, "/panel/tickets"))
 
 
 @router.post("/tickets/{ticket_id}/restore")
 async def ticket_restore(request: Request, ticket_id: int):
     actor = await require_form(request)
+    data = await request.form()
     ok, message = await repo.restore_ticket(ticket_id, actor)
     if ok:
         await repo.log_action(actor, "обращение восстановлено", f"№{ticket_id}")
     flash(message if ok else f"!{message}")
-    return redirect("/panel/tickets?view=archive")
+    return redirect(safe_return(data, "/panel/tickets?view=archive"))
 
 
 @router.get("/tickets/{ticket_id}")
@@ -666,20 +729,21 @@ async def ticket_card(request: Request, ticket_id: int):
 @router.post("/tickets/{ticket_id}/delete")
 async def ticket_delete(request: Request, ticket_id: int):
     actor = await require_form(request)
+    data = await request.form()
     t = await repo.get_ticket(ticket_id)
     if not t:
         raise HTTPException(status_code=404, detail="Обращение не найдено")
     done, message = await repo.delete_ticket(ticket_id)
     if not done:
         flash(f"!{message}")
-        return redirect("/panel/tickets")
+        return redirect(safe_return(data, "/panel/tickets"))
     await repo.log_action(actor, "обращение удалено", f"№{ticket_id} (автор {t['student_id']})")
     await notify(t["student_id"],
                  f"🗑 Обращение №{ticket_id} удалено администратором. Если вопрос остался актуальным — "
                  "напишите новое обращение.")
     log.warning("панель: %s (сис-админ %s)", message, actor)
     flash(message)
-    return redirect("/panel/tickets")
+    return redirect(safe_return(data, "/panel/tickets"))
 
 
 async def _answerer_choices(keep_current: str = "", current_name: str = "") -> tuple[dict, dict]:
@@ -768,14 +832,14 @@ async def ticket_reply(request: Request, ticket_id: int):
     if template_id and not template:
         flash("!Шаблон удалён, пока вы писали ответ. Выберите другой или отправьте "
               "свой текст.")
-        return redirect(f"/panel/tickets?t={ticket_id}")
+        return redirect(safe_return(data, f"/panel/tickets?t={ticket_id}"))
     # текст сотрудника главнее: подсказка из браузера могла подставить шаблон,
     # который он переписал, - такой ответ применением шаблона не считается
     by_template = bool(template) and not own
     raw = as_str(template["text"]) if by_template else own
     if not raw.strip():
         flash("!Пустой ответ не отправлен: напишите текст или выберите шаблон.")
-        return redirect(f"/panel/tickets?t={ticket_id}")
+        return redirect(safe_return(data, f"/panel/tickets?t={ticket_id}"))
     # Автор ответа - выбранный сотрудник. Вошедший в панель может отвечать за
     # кого угодно, в том числе за тестового, и студент должен видеть, ОТ КОГО
     # пришёл ответ, а не кто нажал кнопку в панели.
@@ -817,7 +881,7 @@ async def ticket_reply(request: Request, ticket_id: int):
                  + ", ".join("{%s}" % name for name in unknown)
                  + " - эти слова ушли студенту как есть.")
     flash(f"!{note}" if unknown else note)
-    return redirect(f"/panel/tickets?t={ticket_id}")
+    return redirect(safe_return(data, f"/panel/tickets?t={ticket_id}"))
 
 
 @router.post("/tickets/{ticket_id}/status")
@@ -834,7 +898,7 @@ async def ticket_status(request: Request, ticket_id: int):
                  [[{"type": "callback", "text": "📂 Открыть", "payload": f"t:{ticket_id}"}]])
     log.info("панель: статус обращения %s → %s (сис-админ %s)", ticket_id, status, user)
     flash(f"Статус обращения №{ticket_id}: {STATUS[status]}")
-    return redirect(f"/panel/tickets/{ticket_id}")
+    return redirect(safe_return(form_data, f"/panel/tickets?t={ticket_id}"))
 
 
 def _tickets_queue(request: Request, rows, latest: dict, live_query: str, selected,
@@ -854,7 +918,7 @@ def _tickets_queue(request: Request, rows, latest: dict, live_query: str, select
     for row in visible:
         ticket_id = row["ticket_id"]
         mark = "wb-on" if selected and int(selected["ticket_id"]) == int(ticket_id) else ""
-        waiting = latest.get(int(ticket_id)) == "student"
+        waiting = bool(row["is_waiting"])
         # db.many отдаёт sqlite3.Row, поэтому по именам колонок идём через dict()
         data = dict(row)
         # ФИО из базы приходит целиком, и резать его нельзя: очередь сверяют
@@ -865,20 +929,24 @@ def _tickets_queue(request: Request, rows, latest: dict, live_query: str, select
         group_html = f'<span class="wb-group">{esc(group)}</span>' if group else ""
         status = esc(plain(STATUS.get(data["status"], data["status"])))
         if waiting:
-            status += f' <span class="wb-wait">{icon("clock", 14)} ждёт ответа</span>'
+            status += f' <span class="wb-wait">{icon("clock", 14)}</span>'
+        age = _ticket_timer(row)
+        target = _tickets_url(dict(parse_qsl(live_query)), t=ticket_id)
         items.append(
             f'<label class="wb-item {mark}" data-hk><input type="checkbox" name="tids" value="{esc(ticket_id)}">'
-            f'<a href="/panel/tickets?{live_query}&t={esc(ticket_id)}">'
+            f'<a href="{esc(target)}">'
             f'<span class="wb-head"><b>№{esc(ticket_id)}</b>'
             f'<span class="wb-status">{status}</span>'
-            f'<span class="wb-date">{esc(fmt_when(data["updated_at"]))}</span></span>'
+            f'<span class="wb-date">{esc(data["updated_at"])}</span></span>{age}'
             f'<span class="wb-who"><span class="wb-fio">{esc(who)}</span>{group_html}</span>'
             f'<span class="wb-text" title="{esc(data["text_content"])}">'
             f'{esc(cut_plain(data["text_content"], 90))}</span>'
             f'</a></label>')
-    head = f'{icon("archive", 18)} Из архива' if archived else f'{icon("inbox", 18)} Очередь · {len(rows)}'
-    more = (f'<p class="small mut">Показано {len(visible)} из {len(rows)} — сузьте фильтр '
-            f'по статусу, чтобы увидеть нужное.</p>' if len(rows) > len(visible) else "")
+    total = int(rows[0]["filtered_total"])
+    head = (f'{icon("archive", 18)} Из архива · {total}' if archived
+            else f'{icon("inbox", 18)} Очередь · {total}')
+    more = (f'<p class="small mut">Показано {len(visible)} из {total} — сузьте фильтр '
+            f'по статусу, чтобы увидеть нужное.</p>' if total > len(visible) else "")
     return f"""<div class="card"><h2>{head}</h2>
 <form method="post" action="/panel/tickets/bulk">{csrf(request)}
 <input type="hidden" name="return" value="/panel/tickets?{esc(live_query)}">
@@ -899,13 +967,16 @@ def _tickets_queue(request: Request, rows, latest: dict, live_query: str, select
 </form>{more}</div>"""
 
 
-async def _ticket_workbench(request: Request, t, bot: str = "", view: str = "") -> str:
+async def _ticket_workbench(request: Request, t, bot: str = "", view: str = "",
+                            live_query: str = "") -> str:
     """Правая колонка: карточка со всеми правками и быстрыми ответами.
 
     Формы правки и ответа помечены классами ``wb-edit`` и ``wb-reply`` - на
     печати их нет, поэтому на бумагу попадает переписка, а не пустые поля.
     """
     ticket_id = int(t["ticket_id"])
+    return_to = _tickets_url(dict(parse_qsl(live_query)), t=ticket_id)
+    return_input = f'<input type="hidden" name="return" value="{esc(return_to)}">'
     # ФИО целиком; без ФИО подписью становится MAX ID (person_label) - так же,
     # как в очереди, чтобы человека узнавали в обоих списках одинаково.
     student_name = fio(t["student_name"], t["student_id"])
@@ -962,7 +1033,7 @@ async def _ticket_workbench(request: Request, t, bot: str = "", view: str = "") 
     ) or "<tr><td colspan='3' class='mut'>Событий нет</td></tr>"
     pickup_options_html = await pickup_options()
     edit = f"""
-<form method="post" action="/panel/tickets/{ticket_id}/edit" class="wb-edit">{csrf(request)}
+<form method="post" action="/panel/tickets/{ticket_id}/edit" class="wb-edit">{csrf(request)}{return_input}
 <div class="grid">
 <div class="full"><label>Текст обращения</label>
 <textarea name="text_content" rows="2">{esc(t['text_content'])}</textarea></div>
@@ -977,23 +1048,23 @@ async def _ticket_workbench(request: Request, t, bot: str = "", view: str = "") 
   placeholder="например, 15:00 в пятницу"></div>
 <div>{select("status", dict(STATUS), as_str(t['status']))}</div>
 </div>
-<div class="grid" style="margin-top:10px">
-<div><button class="btn-ok">Сохранить</button></div>
-<div>{_action_form(request, f'/panel/tickets/{ticket_id}/ready',
-                   f'{icon("check", 16)} Готово')}</div>
-<div>{_action_form(request, f'/panel/tickets/{ticket_id}/archive',
-                   f'{icon("archive", 16)} В архив', cls="btn-grey")}</div>
-</div>
+<p><button class="btn-ok">Сохранить</button></p>
 <p class="small mut">Пустое поле не затирает старое значение. «Готово» пишет
-студенту кабинет и закрывает обращение. Кабинет {CERT_PICKUP} зашит только
-под справки; для остального нужно указать кабинет, иначе панель не закроет
-обращение молча.</p></form>"""
+студенту кабинет выдачи. Кабинет {CERT_PICKUP} зашит только
+под справки; для остального нужно указать кабинет.</p></form>
+<div class="wb-tools">
+{_action_form(request, f'/panel/tickets/{ticket_id}/ready',
+              f'{icon("check", 16)} Готово', fields=return_input) if view != "archive" else ""}
+{_action_form(request, f'/panel/tickets/{ticket_id}/' + ('restore' if view == 'archive' else 'archive'),
+              'Восстановить' if view == 'archive' else 'В архив', fields=return_input)}
+</div>"""
     # в архиве ссылка на обращение тоже должна вести в архив: получатель открыл
     # бы рабочее место, где этого обращения уже нет
     card_link = f"/tickets?t={ticket_id}" + ("&view=archive" if view == "archive" else "")
     # шапка карточки - то, что должно попасть на бумагу
     head = f"""<div class="card"><h2>Обращение №{ticket_id}
 <span class="pill">{esc(plain(STATUS.get(as_str(t['status']), as_str(t['status']))))}</span></h2>
+{_ticket_timer(t)}
 <p class="wb-who">{icon('students', 16)}<span class="wb-fio">{esc(student_name)}</span>
 <span class="wb-group">{esc(student_group)}</span>
 <span class="wb-id">ID {code_cell(t['student_id'], "MAX ID студента скопирован")}</span>
@@ -1003,7 +1074,7 @@ async def _ticket_workbench(request: Request, t, bot: str = "", view: str = "") 
 {edit}</div>"""
     return f"""{head}
 <div class="card"><h2>Быстрый ответ</h2>
-<form method="post" action="/panel/tickets/{ticket_id}/reply" class="wb-reply">{csrf(request)}
+<form method="post" action="/panel/tickets/{ticket_id}/reply" class="wb-reply">{csrf(request)}{return_input}
 <textarea name="text" rows="3" placeholder="Ответ студенту — уйдёт в MAX"></textarea>
 <div class="grid" style="margin-top:10px">
 <div><button class="btn-ok">Отправить</button></div>

@@ -203,6 +203,7 @@ async def env(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "SYSADMIN_IDS", ["1"])
     # владелец в тестах появляется только там, где это проверяется явно
     monkeypatch.setattr(config, "ROOT_IDS", [])
+    monkeypatch.setattr(config, "WEB_SESSION_SECRET", "test-session-secret-that-is-long-enough-123456")
     # журнал тестов не должен попадать в настоящий logs/bot.log: иначе реальный
     # журнал наполняется мусором из прогонов и засоряет вкладку панели
     monkeypatch.setattr(config, "LOG_FILE", str(tmp_path / "test.log"))

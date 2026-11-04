@@ -60,9 +60,14 @@ def textarea_of(body: str, name: str) -> str:
     return match.group(1)
 
 
-def flash_of(body: str) -> str:
-    match = re.search(r'<div class="msg msg-\w+">(.*?)</div>', body, re.S)
-    assert match, "на странице нет сообщения"
+def toast_of(body: str) -> str:
+    """Источник тоста после действия: скрываемый JS блок ``data-flash``."""
+    match = re.search(
+        r'<div(?=[^>]*class="msg msg-\w+")(?=[^>]*data-flash)[^>]*>(.*?)</div>',
+        body,
+        re.S,
+    )
+    assert match, "на странице нет источника тоста"
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", match.group(1))).strip()
 
 
@@ -109,7 +114,7 @@ async def test_edit_saves_title_category_and_text(panel_client, env, clear_templ
     assert row["title"] == "Справка готова (новый кабинет)"
     assert row["category"] == "feedback"
     assert row["text"] == "Заберите справку в кабинете 203."
-    assert "сохранён" in flash_of(panel_client.get(LIST).text)
+    assert "сохранён" in toast_of(panel_client.get(LIST).text)
     # и правка видна в списке
     assert "Заберите справку в кабинете 203." in panel_client.get(LIST).text
 
@@ -168,7 +173,7 @@ async def test_empty_title_is_not_saved(panel_client, env, clear_templates):
     assert f"{LIST}/{template_id}/edit" in response.headers["location"]
     row = await repo.get_template(template_id)
     assert row["title"] == TPL_TITLE and row["text"] == TPL_TEXT
-    assert "Нужны и название" in flash_of(edit_page(panel_client, template_id))
+    assert "Нужны и название" in toast_of(edit_page(panel_client, template_id))
 
 
 async def test_empty_text_is_not_saved(panel_client, env, clear_templates):
@@ -200,8 +205,8 @@ async def test_edit_requires_csrf(panel_client, env, clear_templates):
 
 
 # ── журнал действий ──────────────────────────────────────────────────────────
-async def test_edit_is_logged_with_title_and_id_only(panel_client, env, clear_templates):
-    """Кто, что и какой шаблон - без текста шаблона."""
+async def test_edit_is_logged_with_id_and_field_names_only(panel_client, env, clear_templates):
+    """Кто, какой шаблон и какие поля — без значений полей и текста."""
     template_id = await template()
     assert login_panel(panel_client)
     post_form(panel_client, f"{LIST}/{template_id}/edit",
@@ -209,6 +214,8 @@ async def test_edit_is_logged_with_title_and_id_only(panel_client, env, clear_te
     entry = next(row for row in await repo.admin_log(50)
                  if row["action"] == "шаблон ответа изменён")
     assert entry["actor_id"] == SYS
-    assert "Справка выдана" in entry["details"]
     assert f"ID {template_id}" in entry["details"]
-    assert SECRET not in await admin_log_text(), "текст шаблона попал в журнал"
+    assert all(field in entry["details"] for field in ("title", "text", "category"))
+    joined = await admin_log_text()
+    assert "Справка выдана" not in joined, "название шаблона попало в журнал"
+    assert SECRET not in joined, "текст шаблона попал в журнал"

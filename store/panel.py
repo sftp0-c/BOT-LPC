@@ -1,4 +1,4 @@
-"""Данные сводки дня и списков веб-панели сис-админа.
+﻿"""Данные сводки дня и списков веб-панели сис-админа.
 
 Только чтение: панель показывает то, что уже есть в базе, поэтому раздел не
 меняет состояние."""
@@ -12,14 +12,12 @@ from .common import STAFF_ROLES_SQL, _code_forms, _row_value
 
 # ── сводка дня для сис-админа ─────────────────────────────────────────────────
 async def admin_today() -> dict:
-    """Один запрос на всё: что требует внимания сис-админа прямо сейчас.
-
-    Считается на стороне SQLite, чтобы панель и бот показывали одно и то же.
-    """
+    """Оперативная сводка и календарная статистика от полуночи колледжа."""
+    day_start = f"{clock.today():%Y-%m-%d} 00:00:00"
     row = await db.one(
         "SELECT "
-        "(SELECT COUNT(*) FROM tickets WHERE status='new') no_answer, "
-        "(SELECT COUNT(*) FROM tickets WHERE status='ready' AND doc_url='') ready_not_picked, "
+        "(SELECT COUNT(*) FROM tickets WHERE status='new' AND deleted_at='') no_answer, "
+        "(SELECT COUNT(*) FROM tickets WHERE status='ready' AND doc_url='' AND deleted_at='') ready_not_picked, "
         "(SELECT COUNT(*) FROM staff_requests WHERE status='new') requests, "
         "(SELECT COUNT(*) FROM contacts c LEFT JOIN admins a ON a.user_id=c.user_id "
         " WHERE a.user_id IS NULL) no_staff, "
@@ -27,11 +25,23 @@ async def admin_today() -> dict:
         "(expires_at='' OR expires_at > ?)) codes_active, "
         "(SELECT COUNT(*) FROM user_states WHERE created_at='' OR created_at < ?) stuck_states, "
         "(SELECT COUNT(*) FROM tickets WHERE created_at >= ?) tickets_day, "
-        "(SELECT ROUND(AVG(julianday(m.created_at) - julianday(t.created_at)), 2) FROM ticket_messages m "
-        " JOIN tickets t ON t.ticket_id = m.ticket_id WHERE m.sender_role='staff') avg_reply_days",
-        (clock.stamp(), clock.stamp_at(-24 * 60), clock.stamp_at(-24 * 60)),
+        "(SELECT COUNT(DISTINCT ticket_id) FROM ticket_events "
+        " WHERE event='status' AND detail IN ('accepted','in_progress') AND created_at>=?) taken_day, "
+        "(SELECT COUNT(DISTINCT ticket_id) FROM ticket_messages "
+        " WHERE sender_role='staff' AND created_at>=?) answered_day, "
+        "(SELECT COUNT(DISTINCT ticket_id) FROM ticket_events "
+        " WHERE event='status' AND detail IN ('completed','rejected') AND created_at>=?) closed_day, "
+        "(SELECT ROUND(AVG((julianday(r.first_reply) - julianday(t.created_at)) * 24 * 60)) "
+        " FROM tickets t JOIN (SELECT ticket_id, MIN(created_at) first_reply FROM ticket_messages "
+        " WHERE sender_role='staff' GROUP BY ticket_id) r ON r.ticket_id=t.ticket_id "
+        " WHERE t.created_at>=?) avg_reply_minutes",
+        (clock.stamp(), clock.stamp_at(-24 * 60), day_start, day_start,
+         day_start, day_start, day_start),
     )
-    days = row["avg_reply_days"]
+    by_hour = await db.many(
+        "SELECT substr(created_at, 12, 2) hour, COUNT(*) count FROM tickets "
+        "WHERE created_at>=? GROUP BY hour ORDER BY hour", (day_start,))
+    avg_minutes = row["avg_reply_minutes"]
     return {
         "no_answer": row["no_answer"] or 0,
         "ready_not_picked": row["ready_not_picked"] or 0,
@@ -40,8 +50,26 @@ async def admin_today() -> dict:
         "codes_active": row["codes_active"] or 0,
         "stuck_states": row["stuck_states"] or 0,
         "tickets_day": row["tickets_day"] or 0,
-        "avg_reply": _duration_ru(days),
+        "created_day": row["tickets_day"] or 0,
+        "taken_day": row["taken_day"] or 0,
+        "answered_day": row["answered_day"] or 0,
+        "closed_day": row["closed_day"] or 0,
+        "hourly": [{"hour": as_str(item["hour"]), "count": item["count"] or 0}
+                   for item in by_hour],
+        "avg_reply": _minutes_ru(avg_minutes),
     }
+
+
+def _minutes_ru(value) -> str:
+    """Минуты первого ответа в ту же краткую подпись сводки."""
+    if value is None:
+        return ""
+    minutes = max(1, int(float(value)))
+    if minutes < 60:
+        return f"{minutes} мин"
+    if minutes < 24 * 60:
+        return f"{minutes // 60} ч {minutes % 60} мин"
+    return f"{minutes // (24 * 60)} дн"
 
 
 def _duration_ru(days) -> str:
@@ -128,9 +156,10 @@ def event_feed_label(row) -> str:
     event = as_str(_row_value(row, "event"))
     ticket_id = to_int(_row_value(row, "ticket_id"), 0)
     labels = {
-        "created": "создал", "status": "сменил статус", "ready": "документ готов",
-        "message_student": "ответил студенту", "message_staff": "ответил сотруднику",
-        "archive": "в архив", "restore": "вернул из архива", "assign": "назначил",
+        "created": "обращение создано", "status": "смена статуса", "ready": "документ готов",
+        "message_student": "сообщение студента", "message_staff": "ответ сотрудника",
+        "archived": "в архив", "restored": "возврат из архива", "forward": "передача сотруднику",
+        "edited": "правка обращения", "archive": "в архив", "restore": "возврат из архива", "assign": "назначение",
     }
     tail = labels.get(event, event or "что-то сделал")
     return f"№{ticket_id} · {who} {tail}"

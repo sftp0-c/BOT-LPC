@@ -1,13 +1,14 @@
-"""Обращения: очередь, переписка, статусы, архив и массовые действия.
+﻿"""Обращения: очередь, переписка, статусы, архив и массовые действия.
 
 Очередь сотрудника и списки панели читаются одними и теми же запросами,
 поэтому раздел отвечает и за то, что видит бот, и за то, что видит панель."""
 
+from datetime import date, timedelta
 from typing import Optional
 
 import clock
 import database as db
-from utils import as_str, is_sysadmin_role, to_int
+from utils import OPEN_STATUSES, STATUS, as_str, is_sysadmin_role, to_int
 
 from .common import _row_dict
 from .staff import get_admin
@@ -44,36 +45,109 @@ async def recent_student_tickets(user_id: str, limit: int = 15) -> list:
     return await db.many("SELECT * FROM tickets WHERE student_id=? ORDER BY ticket_id DESC LIMIT ?", (user_id, limit))
 
 
-async def admin_tickets(admin_id: Optional[str], limit: int = 20,
-                        archived: bool = False) -> list:
-    """Обращения сотрудника; None — все обращения (для сис-админа). Сначала открытые.
+def ticket_filter_dates(date_from: str = "", date_to: str = "") -> tuple[str, str]:
+    """Строгие календарные даты фильтра; ошибки переводит в HTTP 400 веб-слой."""
+    dates = []
+    for value, label in ((date_from, "С даты"), (date_to, "По дату")):
+        value = as_str(value).strip()
+        if value:
+            try:
+                parsed = date.fromisoformat(value)
+                if parsed.isoformat() != value:
+                    raise ValueError
+            except ValueError as exc:
+                raise ValueError(f'Поле «{label}»: укажите существующую дату в формате ГГГГ-ММ-ДД.') from exc
+        dates.append(value)
+    if all(dates) and dates[0] > dates[1]:
+        raise ValueError('Дата «С даты» не может быть позже даты «По дату».')
+    return dates[0], dates[1]
 
-    По умолчанию отдаёт живые обращения: убранные в архив видны только
-    отдельным запросом, иначе они засоряли бы очередь.
+
+def _ticket_time_ms(value) -> int | None:
+    """Локальное время базы и ISO со смещением сравниваются как один момент."""
+    moment = clock.parse(value)
+    return int(moment.replace(tzinfo=clock.zone()).timestamp() * 1000) if moment else None
+
+
+async def admin_tickets(admin_id: Optional[str], limit: int = 20,
+                        archived: bool = False, date_from: str = "", date_to: str = "", *,
+                        status: str = "", category: str = "", q: str = "", scope: str = "",
+                        with_counts: bool = False, overdue_hours: int = 24) -> list:
+    """Единая SQL-выборка панели и MAX; прежние аргументы и порядок сохранены.
+
+    Все условия, в том числе поиск и ожидание, действуют ДО LIMIT. Последнее
+    сообщение, текущее событие взятия в работу и имена присоединены без N+1.
+    with_counts добавляет filtered_* по всей отфильтрованной выборке до LIMIT.
     """
+    date_from, date_to = ticket_filter_dates(date_from, date_to)
+    clauses = ["t.deleted_at<>''" if archived else "t.deleted_at=''"]
+    params = []
     if admin_id:
-        where = "WHERE t.deleted_at<>''" if archived else "WHERE t.target_admin_id=? AND t.deleted_at=''"
-        params = (admin_id,)
-    else:
-        where = "WHERE t.deleted_at<>''" if archived else "WHERE t.deleted_at=''"
-        params = ()
-    # Студент и сотрудник джойнятся сразу: и боту, и панели нужны ФИО и группа в
-    # каждой строке очереди, а запрос на строку здесь обернулся бы в N+1.
-    return await db.many(
-        "SELECT t.*, "
-        "COALESCE(NULLIF(u.full_name, ''), '') student_name, "
+        clauses.append("t.target_admin_id=?")
+        params.append(as_str(admin_id))
+    for field, value in (("category", category), ("status", status)):
+        if field == "status" and value == "open":
+            clauses.append("t.status IN (" + ",".join("?" for _ in OPEN_STATUSES) + ")")
+            params.extend(OPEN_STATUSES)
+        elif value:
+            clauses.append(f"t.{field}=?")
+            params.append(value)
+    if q:
+        # instr ищет буквальную подстроку: %, _ и кавычки не становятся SQL.
+        fields = ("CAST(t.ticket_id AS TEXT)", "t.student_id", "t.target_admin_id",
+                  "u.full_name", "t.text_content", "t.topic")
+        search = [f"instr(lower({field}), ?) > 0" for field in fields]
+        params.extend([as_str(q).lower()] * len(fields))
+        number = as_str(q).strip().lstrip("№#")
+        if as_str(q).strip().startswith(("№", "#")) and number.isdecimal():
+            search.append("CAST(t.ticket_id AS TEXT)=?")
+            params.append(str(int(number)))
+        clauses.append("(" + " OR ".join(search) + ")")
+    if date_from:
+        clauses.append("ticket_time_ms(t.created_at)>=?")
+        params.append(_ticket_time_ms(date_from))
+    if date_to:
+        clauses.append("ticket_time_ms(t.created_at)<=?")
+        params.append(_ticket_time_ms(date_to + " 23:59:59.999"))
+    open_sql = ",".join(f"'{code}'" for code in OPEN_STATUSES)
+    waiting_sql = f"(t.status IN ({open_sql}) AND m.sender_role='student')"
+    cutoff = _ticket_time_ms((clock.now() - timedelta(hours=overdue_hours)).isoformat())
+    scope_sql = {"waiting": "WHERE is_waiting=1", "overdue": "WHERE is_overdue=1"}.get(scope, "")
+    totals = ""
+    if with_counts:
+        totals = (", COUNT(*) OVER () filtered_total"
+                  ", SUM(is_waiting) OVER () filtered_waiting"
+                  ", SUM(is_overdue) OVER () filtered_overdue")
+        totals += "".join(f", SUM(status='{code}') OVER () filtered_{code}" for code in STATUS)
+    query = (
+        "WITH matched AS (SELECT t.*, "
+        "COALESCE(u.full_name, '') student_name, "
         "COALESCE(u.group_code, '') student_group, "
         "COALESCE(a.full_name, '') staff_name, "
-        "COALESCE(NULLIF(a.position, ''), a.role, '') staff_position "
+        "COALESCE(NULLIF(a.position, ''), a.role, '') staff_position, "
+        "COALESCE(m.sender_role, '') latest_role, "
+        "COALESCE(m.created_at, '') latest_message_at, "
+        "CASE WHEN t.status='in_progress' AND e.event='status' "
+        "AND (e.detail='in_progress' OR e.detail LIKE 'статус: % → in_progress') "
+        "THEN e.created_at ELSE '' END in_progress_at, "
+        f"COALESCE({waiting_sql}, 0) is_waiting, "
+        f"COALESCE({waiting_sql} AND ticket_time_ms(m.created_at)<=?, 0) is_overdue "
         "FROM tickets t "
-        "LEFT JOIN users u ON u.user_id = t.student_id "
-        "LEFT JOIN admins a ON a.user_id = t.target_admin_id "
-        f"{where} "
-        "ORDER BY (t.status IN ('ready','completed','rejected')), "
-        "CASE WHEN t.status='ready' THEN 0 ELSE 1 END, "
-        "t.ticket_id DESC LIMIT ?",
-        params + (limit,),
+        "LEFT JOIN users u ON u.user_id=t.student_id "
+        "LEFT JOIN admins a ON a.user_id=t.target_admin_id "
+        "LEFT JOIN ticket_messages m ON m.id=(SELECT id FROM ticket_messages "
+        "WHERE ticket_id=t.ticket_id ORDER BY id DESC LIMIT 1) "
+        "LEFT JOIN ticket_events e ON e.id=(SELECT id FROM ticket_events "
+        "WHERE ticket_id=t.ticket_id AND event IN ('status','ready') ORDER BY id DESC LIMIT 1) "
+        "WHERE " + " AND ".join(clauses) + ") "
+        f"SELECT matched.*{totals} FROM matched {scope_sql} "
+        "ORDER BY (status IN ('ready','completed','rejected')), "
+        "CASE WHEN status='ready' THEN 0 ELSE 1 END, ticket_id DESC LIMIT ?"
     )
+    async with db._conn() as conn:
+        await conn.create_function("ticket_time_ms", 1, _ticket_time_ms, deterministic=True)
+        cursor = await conn.execute(query, (cutoff, *params, limit))
+        return await cursor.fetchall()
 
 
 async def ticket_thread(ticket_id: int, limit: int = 50) -> list:
@@ -92,11 +166,7 @@ async def ticket_thread(ticket_id: int, limit: int = 50) -> list:
 
 
 async def latest_message_roles(ticket_ids: list[int]) -> dict:
-    """Роль автора последнего сообщения по каждому обращению: {ticket_id: 'student'|'staff'}.
-
-    Один запрос на весь список — иначе карточка списка обращений делала бы запрос
-    на каждое обращение. Отсутствующее обращение в словарь не попадает.
-    """
+    """Роль автора последнего сообщения по каждому обращению."""
     ids = [int(value) for value in ticket_ids if to_int(value, -1) >= 0]
     if not ids:
         return {}
@@ -107,6 +177,21 @@ async def latest_message_roles(ticket_ids: list[int]) -> dict:
         tuple(ids),
     )
     return {int(row["ticket_id"]): as_str(row["sender_role"]) for row in rows}
+
+
+async def latest_message_states(ticket_ids: list[int]) -> dict:
+    """Последняя роль и время одним запросом: {ticket_id: {role, created_at}}."""
+    ids = [int(value) for value in ticket_ids if to_int(value, -1) >= 0]
+    if not ids:
+        return {}
+    placeholders = ",".join("?" * len(ids))
+    rows = await db.many(
+        f"SELECT ticket_id, sender_role, created_at FROM ticket_messages WHERE id IN "
+        f"(SELECT MAX(id) FROM ticket_messages WHERE ticket_id IN ({placeholders}) GROUP BY ticket_id)",
+        tuple(ids),
+    )
+    return {int(row["ticket_id"]): {"role": as_str(row["sender_role"]),
+                                    "created_at": as_str(row["created_at"])} for row in rows}
 
 
 async def log_ticket_event(ticket_id: int, actor_id: str, event: str, detail: str = "") -> int:
@@ -352,13 +437,17 @@ async def update_ticket(ticket_id: int, actor_id: str = "", **fields) -> tuple[b
         if not value or value == as_str(row[field]):
             continue
         changes.append(f"{label}: {as_str(row[field]) or '—'} → {value}")
-        await db.run(f"UPDATE tickets SET {field}=?, updated_at=? WHERE ticket_id=?",
-                     (value, clock.stamp(), ticket_id))
+        if field == "status":
+            # Машинное событие нужно таймеру даже при правке сразу нескольких полей.
+            await set_ticket_status(ticket_id, value, as_str(actor_id) or "сис-админ")
+        else:
+            await db.run(f"UPDATE tickets SET {field}=?, updated_at=? WHERE ticket_id=?",
+                         (value, clock.stamp(), ticket_id))
     if not changes:
         return True, "Изменений не было"
     detail = "; ".join(changes)[:300]
-    event = "status" if len(changes) == 1 and changes[0].startswith("статус") else "edited"
-    await log_ticket_event(ticket_id, as_str(actor_id) or "сис-админ", event, detail)
+    if len(changes) != 1 or not changes[0].startswith("статус"):
+        await log_ticket_event(ticket_id, as_str(actor_id) or "сис-админ", "edited", detail)
     return True, f"Обращение №{ticket_id} сохранено: {detail}"
 
 

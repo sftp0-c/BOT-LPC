@@ -1,4 +1,4 @@
-"""Веб-панель сис-админа: вход, права, правка данных, JSON-API.
+﻿"""Веб-панель сис-админа: вход, права, правка данных, JSON-API.
 
 Панель работает в том же процессе, что и бот, поэтому тесты бьют по ней через
 TestClient с настоящей (временной) базой.
@@ -77,7 +77,8 @@ def test_login_rejects_wrong_password_and_stranger(panel):
 def test_login_and_logout(panel):
     assert login(panel)
     assert panel.get("/panel/").status_code == 200
-    assert panel.get("/panel/logout", follow_redirects=False).status_code == 303
+    assert panel.get("/panel/logout", follow_redirects=False).status_code == 405
+    assert post(panel, "/panel/logout").status_code == 303
     assert panel.get("/panel/", follow_redirects=False).status_code == 303
 
 
@@ -609,7 +610,7 @@ async def test_csrf_token_differs_from_session_cookie(panel):
 async def test_session_cookie_cannot_post_after_logout(panel):
     assert login(panel)
     token = csrf(panel)
-    assert panel.get("/panel/logout", follow_redirects=False).status_code == 303
+    assert post(panel, "/panel/logout").status_code == 303
     after = panel.post("/panel/settings/welcome", data={"value": "x", "csrf": token},
                        follow_redirects=False)
     assert after.status_code == 303  # на вход: сессии больше нет
@@ -630,7 +631,8 @@ async def test_actions_are_logged_and_shown(panel):
     body = panel.get("/panel/settings").text
     assert "Действия сис-админов" in body
     assert "сделать сотрудником" in body or "Права" in body or "Группа" in body
-    assert "Иванов Иван Иванович" in body
+    assert "Иванов Иван Иванович" not in body
+    assert "ID 100" in body
     assert "За 30 дней" in body
 
     log_rows = await repo.admin_log(20)

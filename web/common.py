@@ -5,13 +5,18 @@
 меню и page(), вход и выход, шкала диаграмм. Разделы панели лежат в соседних
 модулях пакета и берут отсюда всё, что нужно их страницам.
 """
+import base64
+import binascii
 import contextvars
+import hashlib
 import hmac
+import json
 import logging
 import re
 import secrets
 import time
 from html import escape as _escape
+from urllib.parse import urlencode
 
 from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -22,7 +27,7 @@ import charts
 import database as db
 import repository as repo
 from panel_theme import (ICON_NAMES_BY_PATH, STYLESHEET, actions_script, hotkeys_script, icon,
-                          panel_toast_js, theme_script)
+                          panel_toast_js, theme_boot_script, theme_script)
 from utils import as_str, cut_plain, norm_code, person_label, short_name, to_int
 
 from .router import router
@@ -44,6 +49,7 @@ _flashes: dict[str, str] = {}
 
 
 _current_token: contextvars.ContextVar[str] = contextvars.ContextVar("panel_token", default="")
+_current_request: contextvars.ContextVar[Request | None] = contextvars.ContextVar("panel_request", default=None)
 
 
 # Бейджи меню считает nav_badges() на каждый показ страницы, а читает page().
@@ -52,47 +58,110 @@ _nav_badges: contextvars.ContextVar[dict[str, int]] = contextvars.ContextVar(
 
 
 # ── сессии и доступ ───────────────────────────────────────────────────────────
-# _sessions: токен сессии → (MAX ID, время окончания)
-# _csrf: токен сессии → CSRF-токен формы. Раньше токеном формы был сам cookie
-# сессии: утечка cookie давала и CSRF-защиту. Теперь это разные значения.
+# Словари остаются только как совместимый наблюдаемый кэш для тестов и flash.
+# Источник истины — подписанная cookie: поэтому «Запомнить меня» переживает
+# перезапуск процесса. В cookie нет пароля, только MAX ID, срок и случайный nonce.
 _sessions: dict[str, tuple[str, float]] = {}
-
-
 _csrf: dict[str, str] = {}
+
+
+def _session_secret() -> bytes:
+    secret = as_str(config.WEB_SESSION_SECRET)
+    if len(secret) < 32:
+        raise RuntimeError("WEB_SESSION_SECRET должен быть не короче 32 символов")
+    return secret.encode("utf-8")
+
+
+def _b64(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
+
+
+def _unb64(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def _signature(payload: str, purpose: bytes = b"session") -> str:
+    digest = hmac.new(_session_secret(), purpose + b":" + payload.encode("ascii"), hashlib.sha256).digest()
+    return _b64(digest)
+
+
+def _decode_session(token: str) -> tuple[str, float] | None:
+    if not isinstance(token, str) or len(token) > 2048 or token.count(".") != 1:
+        return None
+    try:
+        payload, signature = token.split(".")
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", payload) or not re.fullmatch(r"[A-Za-z0-9_-]{43}", signature):
+            return None
+        if not hmac.compare_digest(signature, _signature(payload)):
+            return None
+        decoded = json.loads(_unb64(payload).decode("utf-8"))
+        if not isinstance(decoded, list) or len(decoded) != 3:
+            return None
+        user_id, expires, nonce = decoded
+        if not isinstance(user_id, str) or not re.fullmatch(r"[0-9]{1,20}", user_id):
+            return None
+        if type(expires) is not int or not time.time() < expires <= time.time() + 30 * 86400 + 60:
+            return None
+        if not isinstance(nonce, str) or not re.fullmatch(r"[A-Za-z0-9_-]{16,64}", nonce):
+            return None
+        return user_id, float(expires)
+    except (ValueError, TypeError, binascii.Error, UnicodeError, RuntimeError):
+        return None
+
+
+def _csrf_for(token: str) -> str:
+    return _signature(token, purpose=b"csrf") if _decode_session(token) else ""
 
 
 def _purge_sessions() -> None:
     now = time.time()
-    for token in [t for t, (_, exp) in _sessions.items() if exp < now]:
+    for token in [t for t, (_, exp) in _sessions.items() if exp <= now]:
         _sessions.pop(token, None)
         _csrf.pop(token, None)
 
 
-def start_session(user_id: str) -> str:
-    """Новый токен сессии; время жизни — WEB_PANEL_HOURS."""
+def start_session(user_id: str, hours: int | None = None) -> str:
+    """Подписанная сессия: обычная на WEB_PANEL_HOURS, запомненная — на 30 дней."""
     _purge_sessions()
-    token = secrets.token_urlsafe(32)
-    _sessions[token] = (str(user_id), time.time() + max(1, config.WEB_PANEL_HOURS) * 3600)
-    _csrf[token] = secrets.token_urlsafe(32)
+    if hours is None:
+        hours = config.WEB_PANEL_HOURS
+    expires = int(time.time() + max(1, min(720, int(hours))) * 3600)
+    payload = _b64(json.dumps(
+        [str(user_id), expires, secrets.token_urlsafe(12)],
+        ensure_ascii=False, separators=(",", ":"),
+    ).encode("utf-8"))
+    token = payload + "." + _signature(payload)
+    _sessions[token] = (str(user_id), float(expires))
+    _csrf[token] = _csrf_for(token)
     return token
 
 
 def end_session(token: str) -> None:
+    # Подписанная cookie не хранится на сервере: выход удаляет её в браузере.
+    # Отзыв роли всё равно действует сразу — require_user проверяет БД на каждый запрос.
     _sessions.pop(token, None)
     _csrf.pop(token, None)
 
 
 def form_token(request: Request) -> str:
-    """CSRF-токен текущей сессии; подставляется в каждую форму."""
-    return _csrf.get(request.cookies.get(COOKIE, ""), "")
+    """CSRF-токен независимо выводится из подписанной cookie и переживает рестарт."""
+    token = request.cookies.get(COOKIE, "")
+    value = _csrf_for(token)
+    if value:
+        _csrf[token] = value
+    return value
 
 
 def session_user(request: Request) -> str:
+    _purge_sessions()
     token = request.cookies.get(COOKIE, "")
-    item = _sessions.get(token)
-    if not item or item[1] < time.time():
+    item = _decode_session(token)
+    if not item:
         _sessions.pop(token, None)
+        _csrf.pop(token, None)
         return ""
+    _sessions[token] = item
+    _csrf[token] = _csrf_for(token)
     return item[0]
 
 
@@ -109,6 +178,25 @@ async def is_sysadmin(user_id: str) -> bool:
     return await repo.is_sysadmin(user_id)
 
 
+async def panel_role(user_id: str) -> str:
+    """Точная роль вошедшего человека для безопасного аудита панели."""
+    if not user_id:
+        return "unknown"
+    if await repo.is_owner(user_id):
+        return "owner"
+    return "sysadmin" if await repo.is_sysadmin(user_id) else "unknown"
+
+
+async def log_panel_audit(user_id: str, action: str, target_type: str = "",
+                          target_id: str = "", result: str = "ok") -> None:
+    """Пишет аудит панели, не мешая запросу, но сообщая о сбое в техжурнал."""
+    try:
+        await repo.log_audit(user_id, await panel_role(user_id), action,
+                             target_type, target_id, result)
+    except Exception as exc:  # noqa: BLE001 — панель работает, потеря аудита видна
+        log.warning("аудит панели %s не записан: %s", action, type(exc).__name__)
+
+
 async def require_user(request: Request) -> str:
     """MAX ID вошедшего сис-админа, иначе — 503 (панель выключена) или 303 на вход.
 
@@ -118,11 +206,13 @@ async def require_user(request: Request) -> str:
     странице отдельно.
     """
     _current_token.set(request.cookies.get(COOKIE, ""))
+    _current_request.set(request)
     if not panel_enabled():
         raise HTTPException(status_code=503, detail="Панель выключена: задайте WEB_PANEL_PASSWORD в .env")
     user = session_user(request)
     if not user:
         raise HTTPException(status_code=303, headers={"Location": "/panel/login"})
+    request.state.audit_user = user
     if not await is_sysadmin(user):
         raise HTTPException(status_code=403, detail="Панель доступна только сис-админам")
     # бейджи нужны только страницам: JSON-API и выгрузки CSV их не показывают
@@ -161,12 +251,13 @@ async def nav_badges() -> dict[str, int]:
 
 
 async def require_form(request: Request) -> str:
-    """То, что require_user, плюс проверка CSRF-токена из формы."""
+    """Проверяет вход и CSRF. Результат действия журналируется после ответа маршрута."""
     user = await require_user(request)
     form_data = await request.form()
     expected = form_token(request)
     given = as_str(form_data.get("csrf", ""))
-    if not expected or not hmac.compare_digest(given, expected):
+    if not expected or not hmac.compare_digest(given.encode(), expected.encode()):
+        request.state.audit_result = "denied"
         raise HTTPException(status_code=403, detail="Устаревшая форма — обновите страницу")
     return user
 
@@ -184,7 +275,7 @@ DATA_STYLE = """
 """
 
 
-STYLE = STYLESHEET + DATA_STYLE   # токены темы + стили раздела «Данные»
+STYLE = STYLESHEET + charts.palette_css(theme_only=True) + DATA_STYLE   # токены темы + стили раздела «Данные»
 
 
 def esc(value) -> str:
@@ -311,7 +402,8 @@ NAV_GROUPS: tuple[tuple[str, tuple[tuple[str, str, str, str], ...]], ...] = (
                  ("/database", "База данных", "database", ""),
                  ("/data", "Данные", "archive", "Владельцу"),
                  ("/test", "Тест", "check", "Владельцу"),
-                 ("/logs", "Журнал", "logs", ""))),
+                 ("/logs", "Технический журнал", "logs", ""),
+                 ("/audit", "Полный аудит", "audit", ""))),
 )
 
 
@@ -396,7 +488,7 @@ def nav_html(tab: str, badges: dict | None = None) -> str:
                 current = sub
                 if sub:
                     chunks.append(f'<span class="nav-sub-label">{esc(sub)}</span>')
-            chosen = ' class="on"' if item_path == tab else ""
+            chosen = ' class="on" aria-current="page"' if item_path == tab else ""
             chunks.append(
                 f'<a href="/panel{item_path}"{chosen}>'
                 f'<span class="nav-ico" aria-hidden="true">{icon(item_icon, 18)}</span>'
@@ -411,44 +503,62 @@ def nav_html(tab: str, badges: dict | None = None) -> str:
 
 
 def page(title: str, body: str, user: str = "", tab: str = "",
-         actions: str = "") -> HTMLResponse:
+         actions: str = "", status_code: int = 200) -> HTMLResponse:
     """Оболочка страницы: шапка, меню группами, заголовок с действиями, скрипты.
 
     ``actions`` - кнопки в шапке (выгрузка CSV, печать): раньше они прятались
     в середине страницы, а на телефоне до них приходилось долистывать.
     """
-    nav = nav_html(tab, _nav_badges.get())
     notice = _flashes.pop(_current_token.get(""), "")
     kind = "bad" if notice.startswith("!") else "ok"
     mark = icon("warning", 20) if kind == "bad" else icon("check", 20)
-    banner = (f'<div class="msg msg-{kind}">{mark}<span>{esc(notice.lstrip("!"))}</span></div>'
-              if notice else "")
-    head = (f'<div class="dochead"><h1 class="page-title">{esc(title)}</h1>'
-            f'<div class="page-actions">{actions}</div></div>' if actions
-            else f'<h1 class="page-title">{esc(title)}</h1>')
+    banner = (f'<div class="msg msg-{kind}" data-flash data-kind="{kind}" role="status">'
+              f'{mark}<span>{esc(notice.lstrip("!"))}</span></div>' if notice else "")
+    theme_boot = f'<script>{theme_boot_script()}</script>'
+    css_head = (f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+                f'<meta name="color-scheme" content="dark light">{theme_boot}'
+                f'<title>{esc(title)} — Навигатор ЛПК</title><style>{STYLE}</style>')
+    scripts = (f'<script>{theme_script()}</script><script>{panel_toast_js()}</script>'
+               f'<script>{actions_script()}</script>')
+    if title in ("Вход", "Панель выключена"):
+        return HTMLResponse(
+            f'<!doctype html><html lang="ru" data-theme="dark"><head><meta charset="utf-8">'
+            f'{css_head}</head><body class="login-page">'
+            f'<button class="theme-toggle login-theme" type="button" aria-label="Сменить тему"></button>'
+            f'<main id="main-content" class="login-shell">{banner}{body}</main>'
+            f'<footer class="login-footer">Навигатор ЛПК · Работа с обращениями в MAX · '
+            f'версия {esc(version.__version__)}</footer>{scripts}</body></html>',
+            status_code=status_code, headers={"Cache-Control": "no-store"},
+        )
+    scripts += f'<script>{hotkeys_script(NAV_SECTIONS)}</script>'
+    nav = nav_html(tab, _nav_badges.get())
+    section = next((group for group, items in NAV_GROUPS
+                    if any(item[0] == tab for item in items)), "Рабочее пространство")
+    head = (f'<div class="dochead"><div class="dochead-title"><span class="eyebrow">{esc(section)}</span>'
+            f'<h1 class="page-title">{esc(title)}</h1></div>'
+            f'<div class="page-actions">{actions}</div></div>')
     return HTMLResponse(
         f"""<!doctype html><html lang="ru" data-theme="dark"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{esc(title)} — панель сис-админа</title><style>{STYLE}</style></head><body>
-<header>
-  <div class="brand"><span class="logo">{icon("college", 22)}</span><span>
-    <b>Навигатор ЛПК</b><small>панель сис-админа</small></span></div>
-  <form class="gsearch" method="get" action="/panel/search">
-    <input name="q" value="" placeholder="Поиск: обращение, человек, сотрудник, группа…" autocomplete="off">
-    <button type="submit" aria-label="Найти">{icon("search", 18)}</button>
-  </form>
-  <button class="theme-toggle" type="button" title="Клавиатура: Ctrl+K — разделы, ? — подсказка"></button>
-  <div class="who">вошёл как <b>{esc(user) or '—'}</b> · <a href="/panel/logout">выйти</a></div>
+{css_head}</head><body class="panel-app" data-tab="{esc(tab)}">
+<a class="skip-link" href="#main-content">Перейти к содержимому</a>
+<header class="app-header">
+  <div class="brand"><span class="logo">{icon("navigator", 24)}</span><span>
+    <b>Навигатор <em>ЛПК</em></b><small>панель сис-админа</small></span></div>
+  <button class="gsearch palette-trigger" type="button" data-palette-open aria-label="Поиск по панели">
+    {icon("search", 18)}<span>Найти обращение, человека, группу</span><kbd>Ctrl K</kbd>
+  </button>
+  <div class="header-account"><button class="theme-toggle" type="button" aria-label="Сменить тему"></button>
+    <div class="who"><span class="avatar">{icon("user", 18)}</span><span><small>Учётная запись</small><b>{esc(user) or '—'}</b></span></div>
+    <form method="post" action="/panel/logout" class="inline shell-logout">{csrf_from_current()}</form>
+  </div>
 </header>
-<footer class="foot-ver">версия {esc(version.__version__)} · <a href="/panel/api/health">состояние</a></footer>
-<nav aria-label="Разделы панели">{nav}</nav>
-<main>{head}{banner}{body}</main>
-<footer>Данные те же, что в боте: изменения применяются сразу · MAX ID {esc(user)}</footer>
-<script>{theme_script()}</script>
-<script>{panel_toast_js()}</script>
-<script>{actions_script()}</script>
-<script>{hotkeys_script(NAV_SECTIONS)}</script>
-</body></html>"""
+<nav class="app-nav" aria-label="Разделы панели"><div class="nav-caption">Рабочее пространство</div>{nav}</nav>
+<footer class="foot-ver"><span>{icon("college", 14)} Панель колледжа</span><span>версия {esc(version.__version__)}</span>
+<a href="/panel/api/health">{icon("activity", 14)} состояние</a></footer>
+<main id="main-content" tabindex="-1">{head}{banner}{body}</main>
+<footer class="app-footer"><span>Навигатор ЛПК</span><span>Единая очередь · Данные из бота в MAX</span></footer>
+{scripts}
+</body></html>""", status_code=status_code, headers={"Cache-Control": "no-store"},
     )
 
 
@@ -457,7 +567,19 @@ def flash(message: str) -> None:
 
     Сообщение получает только та сессия, из которой оно отправлено.
     """
+    request = _current_request.get()
+    if request is not None and message.startswith("!"):
+        request.state.audit_result = "denied"
     _flashes[_current_token.get("")] = message[:300]
+
+
+def csrf_from_current() -> str:
+    """Кнопка выхода в общей шапке: токен берётся из текущего подписанного cookie."""
+    token = _current_token.get("")
+    value = _csrf.get(token, "") or _csrf_for(token)
+    return (f'<input type="hidden" name="csrf" value="{esc(value)}">'
+            f'<button class="link-button" type="submit" title="Выйти" aria-label="Выйти из панели">'
+            f'{icon("logout", 18)}<span>Выйти</span></button>')
 
 
 def csrf(request: Request) -> str:
@@ -526,8 +648,7 @@ def pager(path: str, params: list[tuple[str, str]], page_no: int, pages: int,
         return ""
 
     def step(number: int, label: str) -> str:
-        query = "&".join(f"{key}={esc(val)}"
-                         for key, val in [*params, ("page_no", str(number))])
+        query = esc(urlencode([*params, ("page_no", str(number))]))
         cls = "btn-grey" if number != page_no else ""
         return f'<a class="btn {cls}" href="{path}?{query}">{label}</a>'
 
@@ -649,42 +770,76 @@ async def login_page(request: Request):
         )
     if session_user(request):
         return redirect("/panel/")
-    return page(
-        "Вход",
-        """<div class="card" style="max-width:420px;margin:40px auto"><h2>Вход для сис-админа</h2>
+    return login_response()
+
+
+def login_response(message: str = "", status_code: int = 200) -> HTMLResponse:
+    """Вход без данных студентов: фирменное вступление и доступная форма."""
+    error = (f'<div class="msg msg-bad" role="alert">{icon("warning", 18)}'
+             f'<span>{esc(message)}</span></div>') if message else ""
+    body = f"""<section class="login-story" aria-labelledby="login-heading">
+<div class="login-brand"><span class="logo">{icon("navigator", 32)}</span><div><b>Навигатор ЛПК</b><small>Колледж ближе</small></div></div>
+<span class="eyebrow">ЕДИНАЯ РАБОЧАЯ СРЕДА</span>
+<h1 id="login-heading">Меньше рутины.<br><span>Больше внимания.</span></h1>
+<p class="login-lead">Обращения, расписание и работа колледжа — в одном месте. Студенты остаются в привычном MAX.</p>
+<div class="login-flow" aria-label="Путь обращения"><span>{icon("tickets", 20)} Обращение</span><i>{icon("chevron-right", 16)}</i>
+<span>{icon("clock", 20)} В работе</span><i>{icon("chevron-right", 16)}</i><span>{icon("check", 20)} Ответ</span></div>
+<div class="login-points"><span>{icon("inbox", 18)} Прозрачная очередь</span><span>{icon("audit", 18)} История действий</span><span>{icon("schedules", 18)} Расписание в MAX</span></div>
+<div class="login-orbit" aria-hidden="true"><div class="orbit-ring"></div><div class="orbit-core">{icon("navigator", 100)}</div>
+<span class="orbit-note orbit-note-a">{icon("check", 16)} Ни одного потерянного обращения</span>
+<span class="orbit-note orbit-note-b">{icon("reply", 16)} Понятный следующий шаг</span></div>
+</section>
+<section class="card login-card"><span class="login-lock">{icon("lock", 24)}</span><h2>Вход для сис-админа</h2>
+<p class="mut">Рады видеть вас снова.<br>Продолжим работу с обращениями.</p>{error}
 <form method="post" action="/panel/login">
-<label>MAX ID</label><input name="user_id" autofocus required>
-<label>Пароль</label><input name="password" type="password" required>
-<div class="grid" style="margin-top:12px"><button>Войти</button></div></form>
-<p class="small mut" style="margin-bottom:0">MAX ID — кнопка «🔐 Сис-админ» в боте или команда <code>/id</code>.
-Роль сис-админа проверяется по SYSADMIN_IDS и таблице сотрудников.</p></div>""",
-    )
+<div><label for="login-id">MAX ID</label><input id="login-id" name="user_id" required autocomplete="username" inputmode="numeric" placeholder="Ваш идентификатор в MAX"></div>
+<div><label for="login-password">Пароль</label><input id="login-password" name="password" type="password" required autocomplete="current-password" placeholder="Введите пароль панели"></div>
+<label class="remember-row"><input type="checkbox" name="remember" value="1"> Запомнить меня на 30 дней</label>
+<button class="login-submit" type="submit">Войти {icon("chevron-right", 18)}</button></form>
+<p class="login-help">Не знаете свой ID? Отправьте боту <code>/id</code>.</p>
+<div class="login-security">{icon("audit", 16)} Доступ только по роли сис-админа</div></section>"""
+    return page("Вход", body, status_code=status_code)
 
 
 @router.post("/login")
 async def login_submit(request: Request):
+    _current_request.set(request)
+    _current_token.set("")
+    request.state.audit_skip = True
     form_data = await request.form()
     if not panel_enabled():
         raise HTTPException(status_code=503, detail="Панель выключена")
-    user_id = as_str(form_data.get("user_id", "")).strip()
+    raw_user_id = as_str(form_data.get("user_id", "")).strip()
+    user_id = raw_user_id if re.fullmatch(r"[0-9]{1,20}", raw_user_id) else ""
     password = as_str(form_data.get("password", ""))
+    remember = flag(form_data.get("remember"))
     ok_password = hmac.compare_digest(password.encode(), config.WEB_PANEL_PASSWORD.encode())
     if not user_id or not ok_password or not await is_sysadmin(user_id):
         log.warning("неудачный вход в панель: id=%s", user_id or "?")
-        raise HTTPException(status_code=403, detail="Неверный MAX ID или пароль")
-    token = start_session(user_id)
-    log.info("вход в панель: %s", user_id)
+        await log_panel_audit(user_id or "", "panel_login", result="denied")
+        return login_response("Неверный MAX ID или пароль", status_code=403)
+    hours = 24 * 30 if remember else max(1, min(720, config.WEB_PANEL_HOURS))
+    token = start_session(user_id, hours=hours)
+    log.info("вход в панель: %s%s", user_id, " (запомнить)" if remember else "")
+    await log_panel_audit(user_id, "panel_login", "session", "remember" if remember else "regular")
     response = redirect("/panel/")
+    max_age = hours * 3600
+    forwarded = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip().lower()
+    secure = request.url.scheme == "https" or forwarded == "https"
     response.set_cookie(
-        COOKIE, token, max_age=max(1, config.WEB_PANEL_HOURS) * 3600,
-        httponly=True, samesite="lax", path="/panel",
+        COOKIE, token, max_age=max_age,
+        httponly=True, secure=secure, samesite="lax", path="/panel",
     )
     return response
 
 
-@router.get("/logout")
+@router.post("/logout")
 async def logout(request: Request):
-    end_session(request.cookies.get(COOKIE, ""))
+    user_id = await require_form(request)
+    request.state.audit_skip = True
+    token = request.cookies.get(COOKIE, "")
+    await log_panel_audit(user_id, "panel_logout")
+    end_session(token)
     response = redirect("/panel/login")
     response.delete_cookie(COOKIE, path="/panel")
     return response
@@ -723,7 +878,8 @@ def _action_form(request: Request, action: str, label: str, fields: str = "",
     В ``label`` можно передать готовую иконку ``icon(...)`` - такие подписи
     вставляются как есть, всё остальное экранируется.
     """
-    script = f" onclick=\"return confirm('{confirm_text}')\"" if confirm_text else ""
+    script = (f' onclick="{esc("return confirm(" + json.dumps(confirm_text, ensure_ascii=False) + ")")}"'
+              if confirm_text else "")
     body = label if label.lstrip().startswith("<svg") else esc(label)
     return (f'<form method="post" action="{esc(action)}" class="inline"{script}>{csrf(request)}'
             f'{fields}<button class="{esc(cls)}">{body}</button></form>')

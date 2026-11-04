@@ -1326,10 +1326,10 @@ async def st_bug_report(x, text, p):
         )
     report = report[:BUGREPORT_LIMIT]
     details = f"ошибка в боте: {report}{_who_line(x, await repo.get_user(x))}"
-    await repo.log_action(x, "ошибка в боте", details)
+    await repo.log_action(x, "ошибка в боте", "описание получено")
     for uid in sysadmin_ids():
         await notify(uid, f"⚠️ {details}", [[btn("🗂 Журнал", "diag")]])
-    log.info("студент %s сообщил об ошибке: %s", x, short(report, 120))
+    log.info("студент %s сообщил об ошибке", x)
     await db.clear_state(x)
     await api.send(x, "✅ Спасибо, сообщили. Сис-админ прочитает и исправит.")
     return await show_home(x)

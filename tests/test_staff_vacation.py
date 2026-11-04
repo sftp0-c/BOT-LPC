@@ -1,11 +1,15 @@
 """Отпуск сотрудника: обращения уходят заместителю, студент знает об этом."""
 import pytest
-from datetime import date, timedelta
+from datetime import timedelta
 
 # Веб-панель: поднимает TestClient, поэтому медленнее обычного экрана.
-pytestmark = pytest.mark.panel
+pytestmark = [
+    pytest.mark.panel,
+    pytest.mark.usefixtures("frozen_college_clock"),
+]
 
 
+import clock
 import repository as repo
 from conftest import add_staff, csrf_of, login_panel, press, register, say
 
@@ -29,7 +33,7 @@ async def test_set_vacation_saves_iso_date():
 
 async def test_vacation_ends_by_itself():
     await add_staff("500", "Петрова Анна")
-    await repo.set_vacation("500", (date.today() - timedelta(days=1)).isoformat())
+    await repo.set_vacation("500", (clock.today() - timedelta(days=1)).isoformat())
     assert await repo.on_vacation("500") is False
 
 

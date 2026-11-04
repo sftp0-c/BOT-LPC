@@ -15,6 +15,8 @@ HTTP: не по строкам кода, а по странице, котору�
 обращения, свой текст важнее шаблона, удалённый шаблон не отправляет пустоту, а
 неизвестная подстановка не выбрасывается молча.
 """
+from html import unescape
+from urllib.parse import parse_qs, urlsplit
 import re
 
 import pytest
@@ -43,22 +45,23 @@ async def env(env):
     return env
 
 
-async def ticket(text: str = "Нужна справка", status: str = "new") -> int:
+async def ticket(text: str = "Нужна справка", status: str = "new",
+                 target: str = STAFF) -> int:
     """Живое обращение студента на сотрудника."""
-    ticket_id = await repo.create_ticket(STUDENT, STAFF, "feedback", text, "Справка")
+    ticket_id = await repo.create_ticket(STUDENT, target, "feedback", text, "Справка")
     if status != "new":
         await repo.set_ticket_status(ticket_id, status)
     return ticket_id
 
 
 async def archived(text: str = "Нужна справка", status: str = "new",
-                   asked: bool = False) -> int:
+                   asked: bool = False, target: str = STAFF) -> int:
     """Обращение, убранное в архив, - как после кнопки «В архив».
 
     ``asked`` - последнее слово в обращении за сотрудником: так обращение
     попадает в фильтр «только ждут ответа».
     """
-    ticket_id = await ticket(text, status)
+    ticket_id = await ticket(text, status, target)
     if asked:
         await repo.add_ticket_message(ticket_id, STUDENT, "student",
                                       "Когда ответите?")
@@ -90,7 +93,7 @@ def queue_link(body: str, ticket_id: int) -> str:
     """Ссылка пункта очереди на карточку обращения."""
     match = re.search(r'<a href="([^"]+)"', queue_item(body, ticket_id))
     assert match, "в пункте очереди нет ссылки на обращение"
-    return match.group(1)
+    return unescape(match.group(1))
 
 
 def copied_link(body: str) -> str:
@@ -100,10 +103,14 @@ def copied_link(body: str) -> str:
     return found[0].replace("&amp;", "&")
 
 
-def flash_of(body: str) -> str:
-    """Сообщение сис-админу над страницей: так выглядит flash после кнопки."""
-    match = re.search(r'<div class="msg msg-\w+">(.*?)</div>', body, re.S)
-    assert match, "на странице нет сообщения"
+def toast_of(body: str) -> str:
+    """Источник тоста после действия: скрываемый JS блок ``data-flash``."""
+    match = re.search(
+        r'<div(?=[^>]*class="msg msg-\w+")(?=[^>]*data-flash)[^>]*>(.*?)</div>',
+        body,
+        re.S,
+    )
+    assert match, "на странице нет источника тоста"
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", match.group(1))).strip()
 
 
@@ -154,16 +161,16 @@ async def test_archive_link_really_opens_the_card(panel_client, env):
 
 
 async def test_archive_link_keeps_filters(panel_client, env):
-    """Фильтры в ссылке остаются: сузили очередь - вернулись в ту же очередь."""
-    ticket_id = await archived("Нужна справка для военной части",
-                              status="completed", asked=True)
+    """Декодированная ссылка сохраняет каждый активный фильтр ровно один раз."""
+    ticket_id = await archived("Нужна справка для военной части", status="new", asked=True, target="1")
     assert login_panel(panel_client)
-    body = panel_client.get("/panel/tickets?view=archive&status=completed"
-                            "&category=feedback&q=военной&scope=").text
+    filters = {"view": "archive", "status": "new", "category": "feedback", "q": "военной",
+               "scope": "waiting", "mine": "1", "date_from": "2000-01-01", "date_to": "2099-12-31"}
+    body = panel_client.get("/panel/tickets", params=filters).text
     link = queue_link(body, ticket_id)
-    for part in ("view=archive", "status=completed", "category=feedback",
-                 "q=военной", "scope="):
-        assert part in link, f"в ссылке потерялось «{part}»: {link}"
+    values = parse_qs(urlsplit(link).query)
+    for name, value in filters.items():
+        assert values.get(name) == [value], f"В ссылке изменился фильтр {name}: {link}"
     assert f"Обращение №{ticket_id}" in panel_client.get(link).text
 
 
@@ -295,7 +302,7 @@ async def test_deleted_template_sends_nothing(panel_client, env, clear_templates
     assert post_form(panel_client, f"/panel/tickets/{ticket_id}/reply",
                      {"text": "", "template": str(template_id)}).status_code == 303
     assert await staff_messages(ticket_id) == [], "ответ ушёл, а отправлять было нечего"
-    assert "удалён" in flash_of(panel_client.get(f"/panel/tickets?t={ticket_id}").text)
+    assert "удалён" in toast_of(panel_client.get(f"/panel/tickets?t={ticket_id}").text)
 
 
 async def test_empty_answer_is_not_sent(panel_client, env, clear_templates, api):
@@ -305,7 +312,7 @@ async def test_empty_answer_is_not_sent(panel_client, env, clear_templates, api)
     assert post_form(panel_client, f"/panel/tickets/{ticket_id}/reply",
                      {"text": "   "}).status_code == 303
     assert await staff_messages(ticket_id) == []
-    assert "Пустой ответ" in flash_of(panel_client.get(f"/panel/tickets?t={ticket_id}").text)
+    assert "Пустой ответ" in toast_of(panel_client.get(f"/panel/tickets?t={ticket_id}").text)
 
 
 async def test_unknown_placeholder_is_not_dropped_silently(panel_client, env,
@@ -318,7 +325,7 @@ async def test_unknown_placeholder_is_not_dropped_silently(panel_client, env,
               {"text": "Причина: {причина}"})
     assert "{причина}" in api.to(STUDENT)[-1][1]
     body = panel_client.get(f"/panel/tickets?t={ticket_id}").text
-    notice = flash_of(body)
+    notice = toast_of(body)
     assert "Не подставилось" in notice and "{причина}" in notice
     assert 'class="msg msg-bad"' in body, "о неизвестной подстановке должно быть видно"
 

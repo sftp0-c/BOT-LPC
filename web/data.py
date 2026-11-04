@@ -1,4 +1,4 @@
-"""Раздел «Данные»: содержимое базы глазами и руками владельца бота.
+﻿"""Раздел «Данные»: содержимое базы глазами и руками владельца бота.
 
 Панель показывает таблицы, колонки и строки так, как их видит SQLite, и
 позволяет поправить значение, добавить строку или удалить её. Раздел открыт
@@ -81,6 +81,7 @@ CONFIRM_WORD = "удалить"
 # Таблицы, где строку нельзя удалять сырым DELETE: у человека и у обращения
 # есть правила проекта, и они живут в функциях репозитория.
 GUARDED_TABLES = ("users", "admins", "tickets")
+READ_ONLY_TABLES = ("admin_log", "audit_log")
 # Таблицы, где строка - это человек.
 PERSON_TABLES = ("users", "admins", "contacts")
 
@@ -174,6 +175,11 @@ async def known_table(name: str) -> str:
 async def table_columns(name: str) -> list:
     """PRAGMA table_info: имя, тип, NOT NULL, значение по умолчанию, ключ."""
     rows = await db.many(f"PRAGMA table_info({ident(name)})")
+    if name == "audit_log":
+        # Старые поля могут содержать переписку и сетевые данные: не показываем,
+        # не ищем и не выгружаем их; содержимое базы при этом не меняется.
+        safe = {"id", "created_at", "user_id", "role", "action", "target_type", "target_id", "result"}
+        rows = [row for row in rows if row["name"] in safe]
     return [{"name": as_str(row["name"]), "type": as_str(row["type"]),
              "notnull": bool(row["notnull"]), "default": as_str(row["dflt_value"]),
              "pk": bool(row["pk"]), "time": is_time_column(row["name"])}
@@ -294,7 +300,7 @@ async def snapshot(note: str) -> str:
     try:
         path = await db.backup_to()
     except Exception as exc:  # noqa: BLE001 - снимок не должен ронять действие
-        log.error("панель «Данные»: снимок базы перед «%s» не создан: %s", note, exc)
+        log.error("панель «Данные»: снимок базы перед «%s» не создан (%s)", note, type(exc).__name__)
         return ""
     log.warning("панель «Данные»: снимок базы перед «%s» - %s", note, path)
     return path
@@ -462,8 +468,10 @@ async def data_table(request: Request, name: str, page_no: int = 1, sort: str = 
     head = "".join(f"<th>{head_link(c['name'])}"
                    f"<div class='small mut'>{esc(c['type'] or '—')}</div></th>" for c in columns)
     body_rows = "".join(
-        f'<tr><td class="data-key"><a href="/panel/data/table/{quote(name)}/row/{row["_rid"]}">'
-        f'№{row["_rid"]}</a></td>'
+        '<tr><td class="data-key">' + (
+            f'№{row["_rid"]}' if name in READ_ONLY_TABLES else
+            f'<a href="/panel/data/table/{quote(name)}/row/{row["_rid"]}">№{row["_rid"]}</a>'
+        ) + '</td>'
         + "".join(f'<td>{"—" if row[c["name"]] is None else esc(row[c["name"]])}</td>'
                   for c in columns) + "</tr>"
         for row in rows
@@ -498,6 +506,10 @@ async def data_table(request: Request, name: str, page_no: int = 1, sort: str = 
               + f'</table><p class="small mut">CREATE TABLE</p><pre>{esc(info["sql"])}</pre></details>')
     hint = "" if info["rowid"] else " Таблица создана без rowid: построчная правка недоступна."
     purge_card = _purge_card() if name == "tickets" else ""
+    add_card = "" if name in READ_ONLY_TABLES else f"""<div class="card"><h2>{icon("plus", 20)} Добавить строку</h2>
+<p class="small mut">Заполняются только нужные колонки, остальные получат значения по
+умолчанию из схемы. Перед записью делается снимок базы.</p>
+<a class="btn-ok" href="{base}/row/new">{icon("plus", 16)} Новая строка</a></div>"""
     body = f"""
 <div class="card"><h2>{icon("database", 20)} {esc(name)}: {total} строк</h2>
 <p class="small mut">Ключ строки: {esc(", ".join(info["keys"]) or "rowid")}. На странице
@@ -507,10 +519,7 @@ async def data_table(request: Request, name: str, page_no: int = 1, sort: str = 
 {pager(base, [(k, v) for k, v in keep.items() if v], page_no, pages, f"строк: {total}")}
 </div>
 {schema}
-<div class="card"><h2>{icon("plus", 20)} Добавить строку</h2>
-<p class="small mut">Заполняются только нужные колонки, остальные получат значения по
-умолчанию из схемы. Перед записью делается снимок базы.</p>
-<a class="btn-ok" href="{base}/row/new">{icon("plus", 16)} Новая строка</a></div>{purge_card}"""
+{add_card}{purge_card}"""
     return page(f"Данные: {name}", body, user, "/data",
                 actions=f'<a class="btn" href="{link("/panel/data/table.csv", name=name, **keep)}">'
                         f'{icon("download", 16)} Выгрузить в CSV</a>'
@@ -588,6 +597,8 @@ def _row_form(request: Request, name: str, columns: list, row, creating: bool, b
 @router.get("/data/table/{name}/row/new")
 async def data_row_new(request: Request, name: str):
     """Форма новой строки: те же поля, что при правке, но без текущих значений."""
+    if as_str(name) in READ_ONLY_TABLES:
+        raise HTTPException(status_code=404, detail="Журнал доступен только для чтения")
     user = await require_owner(request)
     name = await known_table(name)
     info = await table_info(name)
@@ -604,6 +615,8 @@ async def data_row_new(request: Request, name: str):
 @router.get("/data/table/{name}/row/{rowid}")
 async def data_row(request: Request, name: str, rowid: str):
     """Одна строка: форма правки, правила проекта и удаление."""
+    if as_str(name) in READ_ONLY_TABLES:
+        raise HTTPException(status_code=404, detail="Журнал доступен только для чтения")
     user = await require_owner(request)
     name = await known_table(name)
     info = await table_info(name)
@@ -757,6 +770,8 @@ async def data_row_save(request: Request, name: str, rowid: str):
     клик обнулял бы колонку. Стерётся только то, что отмечено галочкой
     «очистить поле».
     """
+    if as_str(name) in READ_ONLY_TABLES:
+        raise HTTPException(status_code=404, detail="Журнал доступен только для чтения")
     actor = await require_owner_form(request)
     name = await known_table(name)
     data = await request.form()
@@ -781,7 +796,7 @@ async def data_row_save(request: Request, name: str, rowid: str):
                 continue
         if as_str(row[key]) == as_str(wanted):
             continue
-        changes.append(f"{key}: «{as_str(row[key])[:40]}» → «{as_str(wanted)[:40]}»")
+        changes.append(key)
         sets.append(f"{ident(key)}=?")
         params.append(wanted)
         wanted_values.append((column, wanted))
@@ -797,13 +812,13 @@ async def data_row_save(request: Request, name: str, rowid: str):
         await db.run(f"UPDATE {ident(name)} SET {', '.join(sets)} WHERE rowid=?",
                      tuple(params) + (int(rowid),))
     except Exception as exc:  # noqa: BLE001 - причину показываем сис-админу, а не 500
-        log.error("панель «Данные»: правка %s №%s не удалась: %s", name, rowid, exc)
+        log.error("панель «Данные»: правка %s №%s не удалась (%s)", name, rowid, type(exc).__name__)
         flash(f"!Правка не сохранена: {exc}")
         return redirect(f"/panel/data/table/{quote(name)}/row/{rowid}")
-    log.warning("панель «Данные»: %s №%s изменён сис-админом %s: %s", name, rowid, actor,
-                "; ".join(changes))
+    log.warning("панель «Данные»: %s №%s изменён сис-админом %s; поля: %s",
+                name, rowid, actor, ", ".join(changes))
     await repo.log_action(actor, "правка строки данных",
-                          f"{name} №{rowid}: " + "; ".join(changes)[:240])
+                          f"{name} №{rowid}; поля: " + ", ".join(changes)[:200])
     hint = "".join(canonical_note(column["name"], value) for column, value in wanted_values)
     flash(f"Сохранено полей: {len(sets)} — {name} №{rowid}.{hint} {snapshot_text(path)}")
     return redirect(back)
@@ -812,6 +827,8 @@ async def data_row_save(request: Request, name: str, rowid: str):
 @router.post("/data/table/{name}/row")
 async def data_row_create(request: Request, name: str):
     """Создать строку: в INSERT идут только заполненные поля."""
+    if as_str(name) in READ_ONLY_TABLES:
+        raise HTTPException(status_code=404, detail="Журнал доступен только для чтения")
     actor = await require_owner_form(request)
     name = await known_table(name)
     data = await request.form()
@@ -838,11 +855,12 @@ async def data_row_create(request: Request, name: str):
         rowid = await db.run(f"INSERT INTO {ident(name)}({', '.join(keys)}) "
                              f"VALUES({', '.join('?' * len(keys))})", tuple(params))
     except Exception as exc:  # noqa: BLE001 - уникальность и внешние ключи видны сис-админу
-        log.error("панель «Данные»: вставка в %s не удалась: %s", name, exc)
+        log.error("панель «Данные»: вставка в %s не удалась (%s)", name, type(exc).__name__)
         flash(f"!Строка не создана: {exc}")
         return redirect(f"/panel/data/table/{quote(name)}/row/new")
-    log.warning("панель «Данные»: в %s добавлена строка №%s сис-админом %s", name, rowid, actor)
-    await repo.log_action(actor, "добавлена строка данных", f"{name} №{rowid}: полей {len(keys)}")
+    fields = ", ".join(column["name"] for column, _ in used)
+    log.warning("панель «Данные»: в %s добавлена строка №%s сис-админом %s; поля: %s", name, rowid, actor, fields)
+    await repo.log_action(actor, "добавлена строка данных", f"{name} №{rowid}; поля: {fields}")
     hint = "".join(canonical_note(column["name"], value) for column, value in used)
     flash(f"Строка создана: {name} №{rowid}.{hint} {snapshot_text(path)}")
     return redirect(f"/panel/data/table/{quote(name)}/row/{rowid}")
@@ -855,6 +873,8 @@ async def data_row_delete(request: Request, name: str, rowid: str):
     name = await known_table(name)
     data = await request.form()
     back = _safe_back(data, f"/panel/data/table/{quote(name)}")
+    if name in READ_ONLY_TABLES:
+        raise HTTPException(status_code=404, detail="Журнал доступен только для чтения")
     if name in GUARDED_TABLES:
         flash("!Сырое удаление строк в этой таблице запрещено: у человека и обращения есть "
               "правила проекта. Кнопки выше зовут функции репозитория.")
@@ -869,9 +889,9 @@ async def data_row_delete(request: Request, name: str, rowid: str):
         return redirect(f"/panel/data/table/{quote(name)}/row/{rowid}")
     path = await snapshot(f"удаление {name} №{rowid}")
     await db.run(f"DELETE FROM {ident(name)} WHERE rowid=?", (int(rowid),))
-    shown = ", ".join(f"{key}={as_str(row[key])[:24]}" for key in row.keys())[:200]
-    log.warning("панель «Данные»: удалена строка %s №%s сис-админом %s: %s", name, rowid, actor, shown)
-    await repo.log_action(actor, "удалена строка данных", f"{name} №{rowid}: {shown}")
+    fields = ", ".join(row.keys())
+    log.warning("панель «Данные»: удалена строка %s №%s сис-админом %s; поля: %s", name, rowid, actor, fields)
+    await repo.log_action(actor, "удалена строка данных", f"{name} №{rowid}; поля: {fields}")
     flash(f"Строка {name} №{rowid} удалена. {snapshot_text(path)}")
     return redirect(back)
 
@@ -938,7 +958,7 @@ async def data_user_revoke(request: Request, user_id: str):
         flash(f"!Права не сняты: {message}")
         return redirect(back)
     log.warning("панель «Данные»: сняты права %s сис-админом %s", uid, actor)
-    await repo.log_action(actor, "снятие прав сотрудника", f"id={uid}: {message}")
+    await repo.log_action(actor, "снятие прав сотрудника", f"id={uid}; поле: role_type")
     flash(f"{message}. {snapshot_text(path)}")
     return redirect("/panel/data")
 
@@ -961,7 +981,7 @@ async def data_ticket(request: Request, ticket_id: str, action: str):
         flash(f"!Действие не выполнено: {message}")
         return redirect(back)
     log.warning("панель «Данные»: обращение №%s — %s (сис-админ %s)", number, action, actor)
-    await repo.log_action(actor, f"обращение {action}", f"№{number}: {message}")
+    await repo.log_action(actor, f"обращение {action}", f"№{number}")
     flash(f"{message}.")
     return redirect(back)
 

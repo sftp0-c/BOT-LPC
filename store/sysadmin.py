@@ -1,4 +1,4 @@
-"""Список сис-админов и журнал их действий.
+﻿"""Список сис-админов и журнал их действий.
 
 Список живёт в базе, а .env только заводит первых. Права проверяются тут же,
 по той же таблице admins, поэтому панель и бот всегда сходятся во мнении о
@@ -111,6 +111,112 @@ async def log_action(actor_id: str, action: str, details: str = "") -> None:
         "INSERT INTO admin_log(actor_id, action, details, created_at) VALUES(?,?,?,?)",
         (as_str(actor_id).strip()[:64], as_str(action).strip()[:60], as_str(details).strip()[:300],
          clock.stamp()),
+    )
+
+
+_AUDIT_ROLES = frozenset({"owner", "sysadmin", "staff", "student", "bot", "unknown"})
+_AUDIT_RESULTS = frozenset({"ok", "denied", "failed", "received"})
+_AUDIT_SECRET_TARGETS = frozenset({"invite", "invite_code", "staff_invite"})
+
+
+def _audit_code(value, fallback: str = "unknown", limit: int = 64) -> str:
+    """Фиксированный код, не произвольная фраза с заменёнными пробелами."""
+    text = as_str(value).strip()
+    if not text or len(text) > limit or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789_" for c in text):
+        return fallback
+    return text
+
+
+def _audit_id(value, limit: int = 20) -> str:
+    text = as_str(value).strip()
+    return text if text.isascii() and text.isdigit() and len(text) <= limit else ""
+
+
+def _audit_target(kind: str, value) -> str:
+    if kind in ("ticket", "user", "template", "faq", "row"):
+        return _audit_id(value)
+    if kind == "callback":
+        return _audit_code(value, fallback="")
+    if kind == "session":
+        return as_str(value) if value in ("regular", "remember") else ""
+    return ""
+
+
+async def log_audit(user_id: str = "", role: str = "", action: str = "",
+                    target_type: str = "", target_id: str = "",
+                    result: str = "ok") -> None:
+    """Структурированный аудит без переписки, значений полей и кодов приглашений."""
+    safe_role = as_str(role).strip().lower()
+    safe_role = safe_role if safe_role in _AUDIT_ROLES else "unknown"
+    safe_target = target_type if target_type in ("ticket", "user", "template", "faq", "row", "callback", "session", "invite") else ""
+    safe_result = as_str(result).strip().lower()
+    safe_result = safe_result if safe_result in _AUDIT_RESULTS else "failed"
+    # Код приглашения является секретом вне зависимости от имени вызывающего кода.
+    safe_target_id = _audit_target(safe_target, target_id)
+    await db.run(
+        "INSERT INTO audit_log(user_id, role, action, target_type, target_id, result, created_at) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (_audit_id(user_id), safe_role, _audit_code(action), safe_target,
+         safe_target_id, safe_result, clock.stamp()),
+    )
+
+
+def _audit_where(user_id: str = "", role: str = "", action: str = "",
+                 result: str = "", date_from: str = "", date_to: str = "") -> tuple[str, tuple]:
+    clauses: list[str] = []
+    params: list[str] = []
+    if user_id:
+        clauses.append("user_id=?")
+        params.append(_audit_id(user_id))
+    if role:
+        clauses.append("role=?")
+        params.append(as_str(role).strip().lower())
+    if action:
+        clauses.append("action=?")
+        params.append(_audit_code(action))
+    if result:
+        clauses.append("result=?")
+        params.append(as_str(result).strip().lower())
+    if date_from:
+        clauses.append("created_at>=?")
+        params.append(as_str(date_from).strip()[:10] + " 00:00:00")
+    if date_to:
+        clauses.append("created_at<=?")
+        params.append(as_str(date_to).strip()[:10] + " 23:59:59")
+    return (" WHERE " + " AND ".join(clauses) if clauses else ""), tuple(params)
+
+
+async def audit_entries(limit: int = 100, offset: int = 0, **filters) -> list:
+    """Записи полного аудита: свежие сверху, с комбинируемыми фильтрами."""
+    where, params = _audit_where(**filters)
+    return await db.many(
+        "SELECT id, created_at, user_id, role, action, target_type, target_id, result "
+        f"FROM audit_log{where} ORDER BY id DESC LIMIT ? OFFSET ?",
+        params + (max(1, min(int(limit), 5000)), max(0, int(offset))),
+    )
+
+
+async def audit_count(**filters) -> int:
+    """Число записей полного аудита с теми же фильтрами, что у страницы."""
+    where, params = _audit_where(**filters)
+    row = await db.one(f"SELECT COUNT(*) n FROM audit_log{where}", params)
+    return int(row["n"]) if row else 0
+
+
+async def audit_actions(limit: int = 100) -> list[str]:
+    """Коды действий, встречавшиеся за срок хранения журнала."""
+    rows = await db.many(
+        "SELECT action FROM audit_log GROUP BY action ORDER BY MAX(id) DESC LIMIT ?",
+        (max(1, min(int(limit), 500)),),
+    )
+    return [as_str(row["action"]) for row in rows]
+
+
+async def prune_audit(days: int = 30) -> int:
+    """Удаляет полный аудит старше заданного срока хранения."""
+    return await db.run_count(
+        "DELETE FROM audit_log WHERE created_at < ?",
+        (clock.stamp_at(-max(1, int(days)) * 24 * 60),),
     )
 
 

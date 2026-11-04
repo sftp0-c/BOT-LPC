@@ -254,7 +254,7 @@ def test_action_column_rule_is_written_down_for_the_theme():
 @pytest.mark.parametrize("path", [COLLEGE, GROUPS])
 async def test_page_carries_no_inline_style_block(seeded, path):
     """Раскладка живёт в теме: своего <style> раздел не тащит на страницу."""
-    body = re.search(r"<main>(.*)</main>", seeded.get(path).text, re.S).group(1)
+    body = re.search(r"<main[^>]*>(.*)</main>", seeded.get(path).text, re.S).group(1)
     assert "<style" not in body
 
 

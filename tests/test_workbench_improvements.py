@@ -52,10 +52,11 @@ async def answer(tid: int) -> None:
 
 
 async def touch(tid: int, hours: float) -> None:
-    """Отматываем обращение назад: столько часов назад его последний раз трогали."""
+    """Отматываем последнее сообщение: правки карточки не сбрасывают ожидание."""
     # stamp_at принимает МИНУТЫ (минус - назад), а не дату
     moment = clock.stamp_at(-hours * 60)
     await db.run("UPDATE tickets SET updated_at=? WHERE ticket_id=?", (moment, tid))
+    await db.run("UPDATE ticket_messages SET created_at=? WHERE ticket_id=?", (moment, tid))
 
 
 # ── 1. выгрузка respect'ит фильтры ─────────────────────────────────────────
@@ -99,8 +100,7 @@ async def test_csv_and_page_agree_on_counts(owner_client, env):
     await make_ticket("Ещё одно", status="closed")
 
     page = owner_client.get("/panel/tickets").text
-    # считаем пункты очереди, а не строку класса: «wb-item» есть ещё и в <style>
-    # считаем пункты очереди, а не строку класса: «wb-item» есть ещё и в <style>
+    # Считаем пункты очереди, а не строку класса: «wb-item» есть ещё и в <style>.
     on_screen = len(re.findall(r'&amp;t=\d+', page)) + len(re.findall(r'&t=\d+', page))
     body = owner_client.get("/panel/tickets.csv").text
     lines = [line for line in body.splitlines()[1:] if line.strip()]
@@ -117,7 +117,8 @@ async def test_overdue_means_waiting_more_than_a_day(env):
     tid = await make_ticket("Ждёт давно")
     await touch(tid, OVERDUE_HOURS + 2)
     row = await repo.get_ticket(tid)
-    assert is_overdue(row, {tid: "student"}) is True
+    states = await repo.latest_message_states([tid])
+    assert is_overdue(row, states) is True
 
 
 async def test_fresh_waiting_is_not_overdue(env):
@@ -125,23 +126,27 @@ async def test_fresh_waiting_is_not_overdue(env):
     tid = await make_ticket("Ждёт час")
     await touch(tid, 1)
     row = await repo.get_ticket(tid)
-    assert is_overdue(row, {tid: "student"}) is False
+    states = await repo.latest_message_states([tid])
+    assert is_overdue(row, states) is False
 
 
 async def test_answered_ticket_is_never_overdue(env):
     """Ответили сотрудник - письмо ждёт сотрудника, а не студента."""
     tid = await make_ticket("Ответили вовремя")
     await touch(tid, 48)
+    await answer(tid)
     row = await repo.get_ticket(tid)
-    assert is_overdue(row, {tid: "staff"}) is False, "ответивший сотрудник ждёт не считается"
+    states = await repo.latest_message_states([tid])
+    assert is_overdue(row, states) is False, "ответивший сотрудник ждёт не считается"
 
 
 async def test_unparsable_date_is_not_overdue(env):
     """Мусор в дате не должен превращаться в «просрочено»."""
     tid = await make_ticket("Без даты")
-    await db.run("UPDATE tickets SET updated_at='' WHERE ticket_id=?", (tid,))
+    await db.run("UPDATE ticket_messages SET created_at='не дата' WHERE ticket_id=?", (tid,))
     row = await repo.get_ticket(tid)
-    assert is_overdue(row, {tid: "student"}) is False
+    states = await repo.latest_message_states([tid])
+    assert is_overdue(row, states) is False
 
 
 async def test_filter_by_overdue_scope(owner_client, env):

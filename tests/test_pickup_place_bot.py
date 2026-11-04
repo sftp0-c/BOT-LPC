@@ -175,19 +175,31 @@ async def test_crafted_empty_room_keeps_ticket_open(api):
 async def test_card_shows_room_in_ready_button(api):
     tid = await make_ticket("certificates", CERT_TEXT)
     await press(STAFF, f"t:{tid}")
-    assert "✅ Готово · 115" in labels(api, STAFF)
-    assert "справка — 115" in api.last(STAFF)[1]
+    card_text = api.last(STAFF)[1]
+    assert "справка — 115" in card_text
+    assert not [p for p in api.payloads(STAFF) if p.startswith("tdready:")]
+    assert f"tmore:{tid}" in api.payloads(STAFF), "подменю с готовностью недоступно"
     assert_fits(api, STAFF, "карточка справки")
+
+    await press(STAFF, f"tmore:{tid}")
+    assert "✅ Готово · 115" in labels(api, STAFF)
+    assert_fits(api, STAFF, "ещё для справки")
 
 
 async def test_card_without_room_shows_no_number(api):
     tid = await make_ticket("feedback", PLAIN_TEXT)
     await press(STAFF, f"t:{tid}")
+    card_text = api.last(STAFF)[1]
+    assert "кабинет ответственного сотрудника" in card_text
+    assert "115" not in card_text.split("Кабинет выдачи:")[1]
+    assert not [p for p in api.payloads(STAFF) if p.startswith("tdready:")]
+    assert f"tmore:{tid}" in api.payloads(STAFF), "подменю с готовностью недоступно"
+    assert_fits(api, STAFF, "карточка заявки")
+
+    await press(STAFF, f"tmore:{tid}")
     assert "✅ Готово" in labels(api, STAFF)
     assert "✅ Готово · 115" not in labels(api, STAFF)
-    assert "кабинет ответственного сотрудника" in api.last(STAFF)[1]
-    assert "115" not in api.last(STAFF)[1].split("Кабинет выдачи:")[1]
-    assert_fits(api, STAFF, "карточка заявки")
+    assert_fits(api, STAFF, "ещё для заявки")
 
 
 async def test_ready_ticket_with_own_room_has_no_ready_button(api):
