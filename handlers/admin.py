@@ -171,7 +171,11 @@ async def cb_stats(x, arg):
 @callback("staffstats")
 async def cb_staff_stats(x, arg):
     if not await admin_of(x):
-        return
+        return await api.send(
+            x,
+            "📊 Статистика обращений доступна сотрудникам колледжа.",
+            [[btn("🏠 Меню", "home")]],
+        )
     counts = status_counts_line(await repo.status_counts(x))
     await api.send(x, f"📊 Ваши обращения\n{counts}", BACK)
 
@@ -184,12 +188,12 @@ def staff_roster_text(rows, limit: int = 12) -> str:
     """
     lines = []
     for row in list(rows)[:limit]:
-        parts = [f"· {short(_field(row, 'full_name'), 34)}"]
+        parts = [f"· {_field(row, 'full_name')}"]
         position, department = position_text(row), _field(row, "department")
         if position:
-            parts.append(f"— {short(position, 26)}")
+            parts.append(f"— {position}")
         if department and department != position:
-            parts.append(f"[{short(department, 22)}]")
+            parts.append(f"[{department}]")
         lines.append(" ".join(parts))
     return "\n".join(lines)
 
@@ -683,7 +687,10 @@ def contact_name(row) -> str:
 
 def contact_line(row) -> str:
     """Строка реестра: имя, роль в боте, ник и ссылка на профиль."""
-    kind = repo.contact_kind(row)
+    try:
+        kind = repo.contact_kind(row)
+    except (KeyError, IndexError, TypeError):
+        kind = "staff" if _field(row, "staff_name") else "student" if _field(row, "fio") else "guest"
     parts = [f"{repo.KIND_TITLES.get(kind, kind)}: {contact_name(row)}"]
     for extra in (_field(row, "group_code"), _field(row, "position")):
         if extra:
@@ -698,7 +705,10 @@ async def send_people(x: str, kind: str = "", offset: int = 0):
     total = await repo.people_count(kind)
     rows = await repo.people(kind, limit=PEOPLE_PAGE, offset=offset)
     if rows:
-        text = f"👥 Пользователи бота: {total} · фильтр: {PEOPLE_KINDS.get(kind, kind)}\nПоказано {offset + 1}–{offset + len(rows)}"
+        shown = "\n".join(f"{offset + index}. {contact_line(row)}"
+                           for index, row in enumerate(rows, 1))
+        text = (f"👥 Пользователи бота: {total} · фильтр: {PEOPLE_KINDS.get(kind, kind)}\n"
+                f"Показано {offset + 1}–{offset + len(rows)}\n\n{shown}")
     else:
         text = f"👥 {PEOPLE_KINDS.get(kind, kind)}: пока пусто — никто не писал боту."
     filters = [btn(f"{'● ' if code == kind else ''}{label}", f"people:{code}")
@@ -714,14 +724,14 @@ async def send_people(x: str, kind: str = "", offset: int = 0):
         keyboard.append([btn(person_label(contact_full_name(row), _field(row, "user_id")),
                              f"person:{_field(row, 'user_id')}")])
     if offset > 0:
-        keyboard.append([btn("⬅️ Назад", f"people:{kind}:{max(0, offset - PEOPLE_PAGE)}")])
+        keyboard.append([btn("↩️ Назад", f"people:{kind}:{max(0, offset - PEOPLE_PAGE)}")])
     if offset + len(rows) < total:
         keyboard.append([btn("➡️ Вперёд", f"people:{kind}:{offset + PEOPLE_PAGE}")])
     await api.send(x, text, [*keyboard, *BACK])
 
 
-@callback("today")
-async def cb_today(x, arg):
+@callback("admin_today")
+async def cb_admin_today(x, arg):
     """Сводка дня: что требует внимания сис-админа прямо сейчас."""
     if not await need_super(x):
         return
@@ -759,7 +769,8 @@ async def cb_clean_dialogs(x, arg):
         return
     removed = await db.prune("user_states", 1)
     await repo.log_action(x, "очищены зависшие диалоги", f"удалено состояний: {removed}")
-    await api.send(x, f"🧹 Удалено зависших состояний: {removed}.", [[btn("🔔 Сегодня", "today")]])
+    await api.send(x, f"🧹 Удалено зависших состояний: {removed}.",
+                   [[btn("🔔 Сегодня", "admin_today")]])
 
 
 @callback("people")
@@ -982,9 +993,13 @@ async def send_nostaff(x: str):
     keyboard = [[btn(person_label(contact_full_name(row), _field(row, "user_id")),
                   f"make:{_field(row, 'user_id')}")]
                 for row in rows]
+    listed = "\n".join(
+        f"{index}. {contact_line(row)}" for index, row in enumerate(rows, 1)
+    )
     await api.send(
         x,
-        "👤 Писали боту, но без прав сотрудника\nНажмите на человека — выдадите права сразу тут.",
+        "👤 Писали боту, но без прав сотрудника\n\n"
+        f"{listed}\n\nНажмите на человека — выдадите права сразу тут.",
         [*keyboard, [btn("👥 Сотрудники", "admins")], *BACK],
     )
 
@@ -1045,7 +1060,7 @@ async def cb_code_generate(x, arg):
 async def send_new_code(x: str, code: str, header: str) -> None:
     """Показывает код и кнопки срока: поменять можно сразу, не выпуская новый код."""
     ttl_row = [btn(f"⏳ {label}", f"codettl:{code}:{hours}") for hours, label in CODE_TTL_CHOICES]
-    keyboard = [ttl_row[i:i + 3] for i in range(0, len(ttl_row), 3)]
+    keyboard = [ttl_row[i:i + 2] for i in range(0, len(ttl_row), 2)]
     keyboard.append([btn("🗝 Все коды", "codes")])
     await api.send(
         x,
@@ -1117,11 +1132,13 @@ async def send_requests(x: str):
     if not rows:
         return await api.send(x, "📥 Новых заявок нет.", [[btn("🗝 Коды", "codes")], *BACK])
     keyboard = []
-    for row in rows:
-        label = (f"ID {row['user_id']} · {row['full_name'] or row['display_name'] or 'без имени'} · "
-                 f"{row['position'] or 'должность не указана'}")
-        keyboard.append([btn(short(label, 60), f"req:{row['user_id']}")])
-    await api.send(x, f"📥 Заявки на роль сотрудника: {len(rows)}", [*keyboard, [btn("🗝 Коды", "codes")], *BACK])
+    lines = [f"📥 Заявки на роль сотрудника: {len(rows)}", ""]
+    for index, row in enumerate(rows, 1):
+        name = row["full_name"] or row["display_name"] or "без имени"
+        position = row["position"] or "должность не указана"
+        lines.append(f"{index}. {name} · ID {row['user_id']} · {position}")
+        keyboard.append([btn(f"Заявка {index}", f"req:{row['user_id']}")])
+    await api.send(x, "\n".join(lines), [*keyboard, [btn("🗝 Коды", "codes")], *BACK])
 
 
 @callback("requests")
@@ -1296,12 +1313,12 @@ async def cb_request_card(x, arg):
 async def cb_request_position(x, arg):
     if not await need_super(x):
         return
-    await db.set_state(x, "req_position", {"id": as_str(arg), "actor": x})
+    await db.set_state(x, "admin_request_position", {"id": as_str(arg), "actor": x})
     await api.send(x, "Введите должность сотрудника для этой заявки — свободным текстом (или /cancel).")
 
 
-@state("req_position")
-async def st_req_position(x, text, p):
+@state("admin_request_position")
+async def st_admin_request_position(x, text, p):
     if not await need_super(x):
         return await db.clear_state(x)
     position = short(text, 100)
@@ -1400,11 +1417,14 @@ async def send_groups(x: str, note: str = ""):
     # по две кнопки в ряду: три в ряд обрезаются на телефоне, а код группы
     # сам по себе широкий
     kb = []
-    for code, active in rows:
-        kb.append([btn(f"{'🟢' if active else '⚪'} {cut_plain(code, 9)}", f"groupedit:{code}"),
+    group_lines = []
+    for index, (code, active) in enumerate(rows, 1):
+        group_lines.append(f"{index}. {code} · {'показана' if active else 'скрыта'}")
+        kb.append([btn(f"Группа {index}", f"groupedit:{code}"),
                    btn("🔄 Скрыть" if active else "👁 Показать", f"grouptoggle:{code}")])
         kb.append([btn("🗑 Удалить", f"groupdel:{code}")])
-    text = f"👥 Группы в справочнике: {len(rows)}" if rows else "👥 Справочник групп пуст. Добавьте первую группу."
+    text = (f"👥 Группы в справочнике: {len(rows)}\n\n" + "\n".join(group_lines)
+            if rows else "👥 Справочник групп пуст. Добавьте первую группу.")
     await api.send(x, "\n".join(part for part in (text, note) if part),
                    [*kb, [btn("➕ Добавить группу", "groupadd")], *BACK])
 
@@ -1570,17 +1590,23 @@ async def cb_schedules(x, arg):
     pages = max(1, -(-len(rows) // SCHEDULES_PAGE))
     page = min(page, pages - 1)
     chunk = rows[page * SCHEDULES_PAGE:(page + 1) * SCHEDULES_PAGE]
-    text = f"📅 Расписания групп: {len(rows)}" if rows else "📅 Расписаний пока нет."
+    listed = "\n".join(
+        f"{index}. {row['group_code']}" for index, row in
+        enumerate(chunk, page * SCHEDULES_PAGE + 1)
+    )
+    text = (f"📅 Расписания групп: {len(rows)}\n\n{listed}"
+            if rows else "📅 Расписаний пока нет.")
     if pages > 1:
-        text += f"\nСтраница {page + 1} из {pages}."
-    # «👀» открывает расписание сразу, «название» - карточку для правок
-    kb = [[btn(r["group_code"], f"sc:{r['group_code']}"), btn("👀", f"scview:{r['group_code']}")]
-          for r in chunk]
+        text += f"\n\nСтраница {page + 1} из {pages}."
+    # Полный код виден в тексте; короткая кнопка открывает карточку.
+    kb = [[btn(f"Группа {index}", f"sc:{row['group_code']}"),
+           btn("👀 Открыть", f"scview:{row['group_code']}")]
+          for index, row in enumerate(chunk, page * SCHEDULES_PAGE + 1)]
     nav = []
     if page:
-        nav.append(btn("◀️ Назад", f"schedules:{page - 1}"))
+        nav.append(btn("↩️ Назад", f"schedules:{page - 1}"))
     if page < pages - 1:
-        nav.append(btn("Вперёд ▶️", f"schedules:{page + 1}"))
+        nav.append(btn("Вперёд ➡️", f"schedules:{page + 1}"))
     if nav:
         kb.append(nav)
     await api.send(x, text, [*kb,
@@ -1726,8 +1752,11 @@ async def cb_schedule_add(x, arg):
         return
     await db.set_state(x, "sc_group")
     codes = await schedule_group_codes()
-    kb = [[btn(code, f"scaddg:{code}")] for code in codes]
-    text = "Введите код группы, например ИС-21, или выберите группу из списка (или /cancel)."
+    kb = [[btn(f"Группа {index}", f"scaddg:{code}")]
+          for index, code in enumerate(codes, 1)]
+    listed = "\n".join(f"{index}. {code}" for index, code in enumerate(codes, 1))
+    text = ("Введите код группы, например ИС-21, или выберите номер из списка "
+            f"(или /cancel).\n\n{listed}")
     await api.send(x, text, [*kb, [btn("↩️ К расписаниям", "schedules")]])
 
 

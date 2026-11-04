@@ -16,7 +16,8 @@ async def test_super_menu_is_compact_and_has_more(api):
     await press(SYS, "sysadm")
     payloads = api.payloads(SYS)
     # основное - короткое, служебное спрятано в «Ещё»
-    assert {"today", "staff", "snew", "people", "admins", "more", "home"} <= set(payloads)
+    assert {"admin_today", "staff", "snew", "people", "admins", "more",
+            "view:staff"} <= set(payloads)
     for buried in ("diag", "settings", "groups", "broadcast", "stats", "schedules"):
         assert buried not in payloads, f"{buried} не должен быть на главном экране"
 

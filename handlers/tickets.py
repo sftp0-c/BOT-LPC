@@ -36,7 +36,6 @@ from utils import (
     position_group,
     position_label,
     short,
-    short_name,
     to_int,
     topic_title,
 )
@@ -67,7 +66,8 @@ STAGE_SHORT = {"ready": "📋 К выдаче"}
 MORE_BTN = "⚡ Ещё"             # ответ шаблоном и статус «завершено» сразу
 ARCHIVE_VIEW = "archive"        # значение фильтра очереди: архив обращений
 MINE_VIEW = "mine"              # значение фильтра очереди: только свои обращения
-ARCHIVE_LIMIT = 200             # сколько архивных обращений держим в одном экране
+STAFF_PAGE = 20                 # компактная очередь сотрудника
+STUDENT_PAGE = 15               # компактный список студента
 ARCHIVE_BTN = "🗄 В архив"      # закрытое дело - в архив
 RESTORE_BTN = "📂 Вернуть из архива"
 # Ряд «Назад» + «Меню». Обе подписи влезают в 16 ячеек ряда из двух
@@ -109,14 +109,9 @@ def role_label(person) -> str:
 
 
 def staff_pick_label(person) -> str:
-    """Подпись кнопки выбора сотрудника - фамилия с инициалами.
-
-    Ни должность, ни полное ФИО в кнопку не влезают: MAX рисует подпись в одну
-    строку и обрезает, а «Соколова Мария Сергее…» не отличить ни от кого.
-    Инициалы помещаются всегда («Соколова М. С.»), а полное ФИО и должность
-    показываются текстом над списком - там места хватает.
-    """
-    return short_name(_row_value(person, "full_name"), max_api.BUTTON_TEXT)
+    """Короткая узнаваемая подпись человека; полное ФИО видно над кнопкой."""
+    return person_label(_row_value(person, "full_name"), _row_value(person, "user_id"),
+                        max_api.BUTTON_TEXT)
 
 
 async def ticket_people(t) -> dict:
@@ -269,8 +264,54 @@ async def pickup_rooms() -> list[str]:
 
 
 def _chunk(buttons: list, per_row: int = 2) -> list:
-    """Ряды по per_row кнопок: чем их больше в ряду, тем короче подпись (max_api.row_limit)."""
-    return [buttons[i : i + per_row] for i in range(0, len(buttons), per_row)]
+    """Ряды максимум по две смысловые кнопки."""
+    size = min(2, max(1, int(per_row)))
+    return [buttons[i : i + size] for i in range(0, len(buttons), size)]
+
+
+def _page(value: str, default: int = 1) -> int:
+    try:
+        return max(1, int(as_str(value).strip() or default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _paged_payload(view: str, page: int) -> str:
+    return f"{view}:p:{page}" if view else f"p:{page}"
+
+
+def _staff_view_arg(arg: str) -> tuple[str, int]:
+    raw = as_str(arg).strip()
+    if ":p:" in raw:
+        view, _, page = raw.rpartition(":p:")
+        return view, _page(page)
+    if raw.startswith("p:"):
+        return "", _page(raw[2:])
+    return raw, 1
+
+
+def _student_view_arg(arg: str) -> tuple[bool, int]:
+    raw = as_str(arg).strip()
+    if raw.startswith(f"{ARCHIVE_VIEW}:p:"):
+        return True, _page(raw.rsplit(":", 1)[-1])
+    if raw == ARCHIVE_VIEW:
+        return True, 1
+    if raw.startswith("p:"):
+        return False, _page(raw[2:])
+    return False, 1
+
+
+def _range_line(start: int, shown: int, total: int) -> str:
+    return f"Показаны {start + 1}–{start + shown} из {total}." if total else ""
+
+
+def _pager(prefix: str, view: str, page: int, page_size: int, total: int) -> list:
+    buttons = []
+    if page > 1:
+        buttons.append(btn("← Назад", f"{prefix}:{_paged_payload(view, page - 1)}"))
+    if page * page_size < total:
+        buttons.append(btn("Дальше →", f"{prefix}:{_paged_payload(view, page + 1)}"))
+    return [buttons] if buttons else []
 
 
 def ticket_kb(t, staff_side: bool, can_delete: bool = False, can_archive: bool = False,
@@ -689,112 +730,86 @@ STAFF_QUEUE_FILTERS = (("open", "🔓 Открытые"), ("new", "🆕 Без �
                        ("ready", "📄 К выдаче"), ("completed", "✅ Завершённые"))
 
 
-async def archive_rows(x: str, a) -> list:
-    """Архивные обращения, которые сотрудник может открыть и вернуть в работу.
-
-    admin_tickets(archived=True) отдаёт архив целиком, поэтому лишнее отсекаем
-    сами: весь архив видят системные права и те, кому открыт весь список
-    обращений (как в may_archive), остальные - только свои дела.
-    Кнопка «📂 Вернуть из архива» в чужом деле всё равно была бы враньём:
-    карточку чужого обращения сотрудник не открывает.
-    """
-    rows = list(await repo.admin_tickets(None, ARCHIVE_LIMIT, archived=True))
-    if is_super(a) or await repo.staff_sees_all(x):
-        return rows
-    return [row for row in rows if as_str(_get(row, "target_admin_id")) == str(x)]
+async def archive_rows(x: str, a, limit: int = STAFF_PAGE, offset: int = 0,
+                       with_count: bool = False) -> list:
+    """Доступный сотруднику архив; ограничение доступа выполняет SQL до LIMIT."""
+    scope = None if is_super(a) or await repo.staff_sees_all(x) else x
+    return list(await repo.admin_tickets(scope, limit, archived=True, offset=offset,
+                                         with_counts=with_count))
 
 
-async def send_staff_archive(x: str, a) -> None:
-    """Экран архива: закрытые дела убраны из очереди, но их можно вернуть.
-
-    Отдельный экран обязателен: из очереди архивное обращение уже не открыть,
-    и без этого кнопка «📂 Вернуть из архива» ни к чему не вела бы.
-    """
-    rows = await archive_rows(x, a)
-    lines = [f"🗄 Архив обращений — {len(rows)}",
-             "Закрытые дела: они убраны из очереди, но переписка и история сохранены.",
-             "Вернуть обращение в работу можно кнопкой на его карточке."]
-    keyboard = await ticket_rows_kb(rows[:15], True, marks=False) if rows else \
-        [[btn("🗂 Архив пуст", "noop")]]
-    keyboard += [[btn("📬 К очереди", "staff"), btn("🔄 Обновить", f"staff:{ARCHIVE_VIEW}")], *BACK]
+async def send_staff_archive(x: str, a, page: int = 1) -> None:
+    """Постраничный архив; пустое состояние — текст, не неработающая кнопка."""
+    offset = (page - 1) * STAFF_PAGE
+    rows = await archive_rows(x, a, STAFF_PAGE, offset, with_count=True)
+    total = int(_get(rows[0], "filtered_total", 0)) if rows else 0
+    if page > 1 and not rows:
+        return await send_staff_archive(x, a, 1)
+    lines = ["🗄 Архив обращений", "Закрытые дела: переписка и история сохранены."]
+    if rows:
+        lines += [_range_line(offset, len(rows), total),
+                  "Откройте обращение, чтобы вернуть его в работу."]
+    else:
+        lines.append("Архив пока пуст.")
+    keyboard = await ticket_rows_kb(rows, True, marks=False)
+    keyboard += _pager("staff", ARCHIVE_VIEW, page, STAFF_PAGE, total)
+    keyboard += [[btn("📬 К очереди", "staff"),
+                  btn("🔄 Обновить", f"staff:{_paged_payload(ARCHIVE_VIEW, page)}")], *BACK]
     await api.send(x, "\n".join(lines), keyboard)
 
 
-async def send_staff_queue(x: str, view: str = "") -> None:
-    """Очередь сотрудника: счётчики, фильтры и список.
+@callback("noop")
+async def cb_legacy_noop(x, arg):
+    """Старые сообщения с кнопкой пустого архива остаются безопасными."""
+    return None
 
-    Фильтр передаётся в кнопке, а не хранится в состоянии: так он не слетает
-    при возврате из карточки и не зависит от того, какую кнопку нажали раньше.
-    """
+
+async def send_staff_queue(x: str, view: str = "", page: int = 1) -> None:
+    """Компактная очередь; фильтр и пагинация выполняются SQL до LIMIT."""
     a = await admin_of(x)
     if not a:
         return await api.send(x, "Сотрудник не найден.", BACK)
-    # Системные права видят всё; остальным достаточно выданного права:
-    # scope=None в admin_tickets отдаёт всю очередь, scope=x - только свои.
-    # Право «видит все обращения» проверяется и в load_ticket: очередь, в
-    # которой нельзя открыть карточку, - это кнопка, ведущая в «не найдено».
-    super_view = is_super(a)
-    sees_all = super_view or await repo.staff_sees_all(x)
-    scope = None if sees_all else x
+    sees_all = is_super(a) or await repo.staff_sees_all(x)
     if view == ARCHIVE_VIEW:
-        return await send_staff_archive(x, a)
-    mine = view == MINE_VIEW
-    arch_n = len(await archive_rows(x, a))
-    all_rows = await repo.admin_tickets(scope)
-    # «Ждут ответа» - это не статус, а признак: последнее слово написал студент.
-    # Поэтому его считают отдельно, по сообщениям, а не по полю status. Раньше
-    # кнопка слала view=waiting, а код ждал "__waiting__", - условие не
-    # сходилось никогда, и фильтр молча показывал все обращения.
-    latest_roles = await repo.latest_message_roles(
-        [row["ticket_id"] for row in all_rows]) if all_rows else {}
-
-    def ждёт_ответа(row) -> bool:
-        return latest_roles.get(int(row["ticket_id"])) == "student"
-
-    # Что считается незакрытым. «Готово к выдаче» тоже: документ сделан, но
-    # ещё не отдан студенту, и про него надо помнить. Закрытые живут в архиве.
-    незакрытые = {"new", "accepted", "in_progress", "ready"}
-
-    if mine:
-        # «Только мои»: право видеть все обращения не значит права отвечать за всех
-        rows = [row for row in all_rows
-                if as_str(row["target_admin_id"]) == str(x)
-                and as_str(row["status"]) in незакрытые]
-    elif view in ("waiting", "__waiting__"):
-        rows = [row for row in all_rows if ждёт_ответа(row)
-                and as_str(row["status"]) in незакрытые]
+        return await send_staff_archive(x, a, page)
+    admin_id = x if view == MINE_VIEW or not sees_all else None
+    status = ""
+    category = ""
+    waiting = ""
+    if view in ("waiting", "__waiting__"):
+        waiting = "waiting"
     elif view == "in_progress":
-        # Отдельная ветка: in_progress не входит в STAFF_QUEUE_FILTERS, и раньше
-        # из-за этого попадал в «показать все» с подписью «Фильтр: В работе».
-        rows = [row for row in all_rows if as_str(row["status"]) == "in_progress"]
-    elif view == "open":
-        rows = [row for row in all_rows if as_str(row["status"]) in незакрытые]
+        status = "in_progress"
+    elif view == "open" or not view:
+        status = "open"
     elif view in dict(STAFF_QUEUE_FILTERS):
-        rows = [row for row in all_rows if as_str(row["status"]) == view]
+        status = view
     elif view in CATS:
-        rows = [row for row in all_rows if as_str(row["category"]) == view]
+        category = view
     else:
-        rows = [row for row in all_rows if as_str(row["status"]) in незакрытые]
-    # Текст - одна строка. Раньше здесь было четыре: пять счётчиков с эмодзи,
-    # строка про права и строка про фильтр. Человек читал это каждый раз и
-    # ничего не решал: цифры те же, что на кнопках фильтров, а права он и так
-    # знает.
+        status = "open"
+    offset = (page - 1) * STAFF_PAGE
+    rows = list(await repo.admin_tickets(
+        admin_id, STAFF_PAGE, status=status, category=category, scope=waiting,
+        with_counts=True, offset=offset))
+    total = int(_get(rows[0], "filtered_total", 0)) if rows else 0
+    if page > 1 and not rows:
+        return await send_staff_queue(x, view, 1)
+    archive = await archive_rows(x, a, 1, 0, with_count=True)
+    arch_n = int(_get(archive[0], "filtered_total", 0)) if archive else 0
     lines = ["📬 Очередь обращений"]
-    if not rows:
-        lines.append("Пока пусто. Новые обращения появятся здесь сами.")
-
-    # Кнопки обслуживания: пять, а не девять. Фильтры убраны решением владельца -
-    # они занимали пол-экрана и мешали видеть сами обращения. Обновить,
-    # архив и раздел по отделам остались: без них нельзя ни обновить список,
-    # ни найти закрытое, ни посмотреть дела по подразделениям.
-    keyboard = []
-    if rows:
-        keyboard += await ticket_rows_kb(rows[:15], True)
-    keyboard.append([btn("🔄 Обновить", f"staff:{view}"),
+    lines.append(_range_line(offset, len(rows), total) if rows
+                 else "Пока пусто. Новые обращения появятся здесь сами.")
+    keyboard = await ticket_rows_kb(rows, True)
+    keyboard += _pager("staff", view, page, STAFF_PAGE, total)
+    refresh = (f"staff:{_paged_payload(view, page)}" if page > 1
+               else f"staff:{view}")
+    keyboard.append([btn("🔄 Обновить", refresh),
                      btn(f"🗄 Архив{'' if not arch_n else f': {arch_n}'}",
                          f"staff:{ARCHIVE_VIEW}")])
     keyboard.append([btn("👥 По отделам", "staffcat")])
     await api.send(x, "\n".join(lines), [*keyboard, *BACK])
+
 
 # ── свой раздел сотрудника ───────────────────────────────────────────────────
 SECTION_TEMPLATES = 4        # шаблонов на экране раздела: остальные - из карточки
@@ -852,7 +867,7 @@ async def cb_staff_section(x, arg):
         lines += [f"· {short(as_str(t['title']), 40)}" for t in templates[:SECTION_TEMPLATES]]
         if len(templates) > SECTION_TEMPLATES:
             lines.append("· остальные - из карточки обращения")
-    keyboard = [[btn(f"⚡ {cut_plain(as_str(t['title']), max_api.BUTTON_TEXT - 2)}", f"mystpl:{t['id']}")]
+    keyboard = [[btn(f"⚡ {cut_plain(as_str(t['title']), max_api.BUTTON_TEXT - 3)}", f"mystpl:{t['id']}")]
                 for t in templates[:SECTION_TEMPLATES]]
     if category in CATS:
         keyboard.append([btn("📬 Очередь раздела", f"stafff:{category}")])
@@ -882,9 +897,9 @@ async def cb_section_template(x, arg):
 
 @callback("staffv")
 async def cb_staff_view(x, arg):
-    """Очередь по подменю: ждут ответа, в работе, готовы или все."""
-    return await send_staff_queue(x, "__waiting__" if as_str(arg).strip() == "waiting"
-                                  else as_str(arg).strip())
+    """Старый адрес фильтра остаётся совместимым с сохранёнными сообщениями."""
+    view, page = _staff_view_arg(arg)
+    return await send_staff_queue(x, "__waiting__" if view == "waiting" else view, page)
 
 
 @callback("staffcat")
@@ -900,7 +915,8 @@ async def cb_staff_filter(x, arg):
     """Фильтр очереди: открытые, по статусу или по разделу."""
     if not await admin_of(x):
         return
-    return await send_staff_queue(x, as_str(arg))
+    view, page = _staff_view_arg(arg)
+    return await send_staff_queue(x, view, page)
 
 
 @callback("snew")
@@ -961,14 +977,14 @@ async def _feedback_menu(x: str) -> None:
     разному, попадают в одно подменю, а не в два.
     """
     groups = group_by_position(await repo.list_staff())
-    tail = [[btn("👥 Другой сотрудник", "new:feedback")],
-            [btn("⚠️ Ошибка в боте", "bugreport")],
+    tail = [[btn("⚠️ Ошибка в боте", "bugreport")],
+            [btn("👥 Другой сотрудник", "new:feedback")],
             *BACK_TO_CREATE]
     if not groups:
         await api.send(
             x, "👤 Обратная связь\n\nДолжности ещё не назначены в системе — напишите "
                 "любому сотруднику из общего списка.",
-            [[btn("👥 Выбрать", "new:feedback")], *tail])
+            tail)
         return
     # Руководящих назначают первыми: к ним пишут адресно, и их кнопка не должна
     # уезжать вниз экрана. Остальные - по алфавиту, чтобы порядок не прыгал.
@@ -977,7 +993,8 @@ async def _feedback_menu(x: str) -> None:
     lines = "\n".join(f"· {position_label(code)}: " + ", ".join(
         short(as_str(_row_value(person, "full_name")), 30)
         for person in groups[code]) for code in order)
-    keyboard = [[btn(position_label(code), f"fbrole:{code}")] for code in order]
+    keyboard = [[btn(cut_plain(position_label(code), max_api.BUTTON_TEXT),
+                     f"fbrole:{code}")] for code in order]
     keyboard += tail
     # Руководящих нет - говорим об этом прямо, но должности других не прячем:
     # назначить директора и секретаря можно одним приказом.
@@ -998,7 +1015,7 @@ async def cb_feedback_role(x, arg):
                               [[btn("👥 Выбрать", "new:feedback")], *BACK])
     keyboard = [[btn(staff_pick_label(p), f"pick:feedback:{as_str(p.get('user_id'))}")]
                 for p in people]
-    keyboard += [[btn("👥 Другой сотрудник", "new:feedback")], *BACK]
+    keyboard += BACK_TO_CREATE
     who = "\n".join(f"· {short(as_str(p.get('full_name')), 34)}"
                     + (f" — {short(position_of(p), 24)}" if position_of(p) else "")
                     for p in people)
@@ -1296,32 +1313,39 @@ async def cb_draft_clear(x, arg):
 async def cb_my_tickets(x, arg):
     if not await need_author(x):
         return
-    rows = await repo.recent_student_tickets(x)
-    if not rows:
-        return await api.send(
-            x, "У вас пока нет обращений.",
-            BACK_TO_TICKETS)
-    arch_n = sum(1 for row in rows if is_archived(row))
-    if as_str(arg).strip() == ARCHIVE_VIEW:
-        rows = [row for row in rows if is_archived(row)]
-        title = "🗄 Архив ваших обращений — они закрыты, переписка и история сохранены."
-        switch = btn("📋 Все обращения", "tickets")
+    archived, page = _student_view_arg(arg)
+    offset = (page - 1) * STUDENT_PAGE
+    rows = list(await repo.recent_student_tickets(
+        x, STUDENT_PAGE, archived=archived, offset=offset, with_count=True))
+    total = int(_get(rows[0], "filtered_total", 0)) if rows else 0
+    if page > 1 and not rows:
+        return await cb_my_tickets(x, ARCHIVE_VIEW if archived else "")
+    archive = list(await repo.recent_student_tickets(x, 1, archived=True, with_count=True))
+    arch_n = int(_get(archive[0], "filtered_total", 0)) if archive else 0
+    if not rows and not archived and not arch_n:
+        return await api.send(x, "У вас пока нет обращений.", BACK_TO_TICKETS)
+    lines = ["🗄 Архив ваших обращений" if archived else "📋 Мои обращения"]
+    switch = (btn("📋 Текущие", "tickets") if archived
+              else btn(f"🗄 Архив: {arch_n}", f"tickets:{ARCHIVE_VIEW}"))
+    if rows:
+        lines += [_range_line(offset, len(rows), total),
+                  "Нажмите на обращение, чтобы открыть переписку."]
     else:
-        title = ("📋 Мои обращения (последние 15). "
-                 "Нажмите на обращение, чтобы открыть переписку:")
-        switch = btn(f"🗄 Архив: {arch_n}", f"tickets:{ARCHIVE_VIEW}")
-    # «Назад» возвращает на экран «Обращения», а «Меню» остаётся в
-    # главном меню: из карточки студент выходит сюда «Мои обращения».
-    await api.send(x, title,
-                   [*await ticket_rows_kb(rows), [switch], *BACK_TO_TICKETS])
+        lines.append("Архив пока пуст.")
+    view = ARCHIVE_VIEW if archived else ""
+    keyboard = await ticket_rows_kb(rows)
+    keyboard += _pager("tickets", view, page, STUDENT_PAGE, total)
+    keyboard += [[switch], *BACK_TO_TICKETS]
+    await api.send(x, "\n".join(lines), keyboard)
 
 
 @callback("staff")
 async def cb_staff_tickets(x, arg):
-    """Очередь сотрудника: из меню - без фильтра, с кнопки «Обновить» - с тем же."""
+    """Очередь сотрудника: старые payload без страницы продолжают работать."""
     if not await admin_of(x):
         return
-    return await send_staff_queue(x, as_str(arg))
+    view, page = _staff_view_arg(arg)
+    return await send_staff_queue(x, view, page)
 
 
 @callback("t")
@@ -1397,15 +1421,33 @@ async def cb_forward_to(x, arg):
         return await api.send(x, "Обращение не найдено.", BACK)
     if not target.isdigit():
         return await api.send(x, "Сотрудник не найден.", BACK)
+    # Прямой ввод комментария со старого экрана остаётся рабочим.
     await db.set_state(x, "forward_comment", {"tid": t["ticket_id"], "target": target})
     a = await admin_of(target)
+    target_name = person_label(_row_value(a, "full_name"), target) if a else f"ID {target}"
     await api.send(
         x,
-        f"Передать обращение №{t['ticket_id']} сотруднику {a['full_name'] if a else target}?\n"
-        "Можно добавить комментарий для него или передать сразу.",
+        f"↪️ Передача обращения №{t['ticket_id']}\n"
+        f"Новый ответственный: {target_name}.\n"
+        "Передать сразу или добавить служебный комментарий?",
         [[btn("↪️ Передать", f"fwdok:{t['ticket_id']}:{target}"),
-          btn("💬 Комментом", f"fwdok:{t['ticket_id']}:{target}:ask")],
-         [btn("✖️ Отмена", f"t:{t['ticket_id']}")]],
+          btn("💬 Комментарий", f"fwdask:{t['ticket_id']}:{target}")],
+         [btn("↩️ К обращению", f"t:{t['ticket_id']}")]],
+    )
+
+
+@callback("fwdask")
+async def cb_forward_comment(x, arg):
+    """Видимая кнопка комментария сохраняет состояние для следующего сообщения."""
+    tid, _, target = as_str(arg).partition(":")
+    t, staff_side = await load_ticket(x, to_int(tid))
+    if not t or not staff_side or not target.isdigit():
+        return await api.send(x, "Обращение недоступно.", BACK)
+    await db.set_state(x, "forward_comment", {"tid": t["ticket_id"], "target": target})
+    return await api.send(
+        x, f"Комментарий при передаче обращения №{t['ticket_id']}.\n"
+           "Напишите служебный комментарий одним сообщением или /cancel.",
+        [[btn("↩️ К обращению", f"t:{t['ticket_id']}")]],
     )
 
 
@@ -1424,12 +1466,14 @@ async def st_forward_comment(x, text, p):
 
 @callback("fwdok")
 async def cb_forward_ok(x, arg):
-    """Передача без комментария."""
+    """Передача без комментария; старый суффикс :ask открывает ввод комментария."""
     tid, _, rest = as_str(arg).partition(":")
-    target, _, _ask = rest.partition(":")
+    target, _, legacy_ask = rest.partition(":")
     t, staff_side = await load_ticket(x, to_int(tid))
     if not t or not staff_side:
         return await api.send(x, "Обращение не найдено.", BACK)
+    if legacy_ask == "ask":
+        return await cb_forward_comment(x, f"{tid}:{target}")
     await db.clear_state(x)
     return await _do_forward(x, t, target, "")
 
@@ -1918,11 +1962,11 @@ def _status_change_error(t, status: str) -> str:
     current = as_str(_get(t, "status")).strip()
     if current in ("rejected", "completed"):
         return (
-            f"Заявка №{t['ticket_id']} закрыта. Сначала верните её в работу: "
+            f"Обращение №{t['ticket_id']} закрыто. Сначала верните его в работу: "
             f"нажмите «{STATUS['accepted']}»."
         )
     return (
-        f"Заявка №{t['ticket_id']} нельзя перевести из статуса "
+        f"Обращение №{t['ticket_id']} нельзя перевести из статуса "
         f"«{STATUS.get(current, current)}» в «{STATUS.get(status, status)}»."
     )
 
@@ -1976,7 +2020,7 @@ async def start_ready(x: str, t):
     tid = t["ticket_id"]
     status = as_str(_get(t, "status")).strip()
     if status == "ready":
-        return await api.send(x, f"📄 Заявка №{tid} уже готова — время выдачи: "
+        return await api.send(x, f"📄 Обращение №{tid} уже готово — время выдачи: "
                                  f"{_row_value(t, 'ready_until') or 'не задано'}.",
                               [[btn("📂 Открыть", f"t:{tid}")], *BACK])
     if "ready" not in NEXT_STATUSES.get(status, ()):
@@ -1984,7 +2028,7 @@ async def start_ready(x: str, t):
     staff = (await ticket_people(t))["staff"]
     if not office_of(staff):
         return await _notify_office_required(x, t)
-    await api.send(x, f"📄 Заявка №{tid}: когда студент сможет забрать документ?",
+    await api.send(x, f"📄 Обращение №{tid}: когда студент сможет забрать документ?",
                    [[btn("Сегодня до 18:00", f"rt:{tid}:today")],
                     [btn("Завтра до 18:00", f"rt:{tid}:tomorrow")],
                     [btn("✏️ Ввести своё", f"rt:{tid}:custom")], *BACK])
@@ -2045,7 +2089,7 @@ async def set_ready(x: str, t, ready_until: str):
     staff = (await ticket_people(t))["staff"]
     name = _row_value(staff, "full_name") or "не указан"
     lines = [
-        f"📄 Заявка готова №{tid}",
+        f"📄 Обращение готово №{tid}",
         f"Ответственный: {name}",
         f"Должность: {role_label(staff) or 'не назначена'}",
         f"Когда забрать: {when}",

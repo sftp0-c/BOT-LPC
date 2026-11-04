@@ -214,7 +214,8 @@ async def test_empty_archive_says_so(api):
     await add_staff(STAFF, "Петрова Анна", category="all")
     await press(STAFF, "staff:archive")
     assert "Архив обращений" in api.last(STAFF)[1]
-    assert "Архив пуст" in " ".join(labels(api, STAFF))
+    assert "Архив пока пуст" in api.last(STAFF)[1]
+    assert "noop" not in api.payloads(STAFF)
 
 
 async def test_archive_of_other_staff_is_hidden(api):

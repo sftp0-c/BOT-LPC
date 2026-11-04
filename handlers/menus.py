@@ -45,7 +45,11 @@ async def on_message(x: str, text: str):
             if payload == "sysadm" and not is_super(await admin_of(x)):
                 return  # закрытая команда: молча, как и кнопка сис-админа
             if payload == "staff" and not (await admin_of(x)):
-                return await show_home(x)
+                return await api.send(
+                    x,
+                    "📬 Очередь обращений доступна сотрудникам колледжа.",
+                    [[btn("🏠 Меню", "home")]],
+                )
             # аргумент команды: и после двоеточия (/view:student), и после
             # пробела (/view student) - как в обычных консольных командах
             arg = payload.partition(":")[2]
@@ -362,8 +366,11 @@ async def cb_menu_view(x, arg):
                     f"view:{code}") for code in MENU_VIEWS]
         lines = ["🎭 Режим просмотра — бот показывает меню так, как его видит выбранная роль:", ""]
         lines += [f"— {MENU_VIEWS[code]} — {MENU_VIEW_HINT[code]}" for code in MENU_VIEWS]
-        return await api.send(x, "\n".join(lines),
-                              [rows, [btn("↩ В меню", "home")]])
+        return await api.send(
+            x,
+            "\n".join(lines),
+            [rows[:2], rows[2:], [btn("↩️ В меню", "home")]],
+        )
     if view not in MENU_VIEWS:
         return await show_home(x)
     if view == "admin" and not is_super(await admin_of(x)):
@@ -392,13 +399,13 @@ async def view_switcher(x: str) -> list:
 async def super_menu(user_id: str) -> list:
     """Главное меню сис-админа: три блока и «ещё», чтобы не было простыни кнопок."""
     return [
-        [btn("🔔 Сегодня", "today")],
+        [btn("🔔 Сегодня", "admin_today")],
         [btn("✍️ Создать", "snew")],
         [btn("📋 Обращения", "staff"), btn("👥 Расписания", "view_schedules")],
         [btn("👥 Пользователи", "people"), btn("👥 Сотрудники", "admins")],
         [btn("🗝 Коды", "codes"), btn("👤 Без прав", "nostaff")],
         [btn("⚙️ Ещё", "more")],
-        [btn("↩️ Кабинет сотрудника", "home")],
+        [btn("↩️ Кабинет сотрудника", "view:staff")],
     ]
 
 
@@ -418,7 +425,7 @@ async def cb_ticket_menu(x, arg):
             [btn("📋 Мои обращения", "tickets")],
             # одиночный ряд: подпись ровно 20 ячеек, в паре (предел 16) не влезает
             [btn("✍️ Создать обращение", "ticket_create")],
-            [btn("↩️ Назад", "home"), btn("🏠 Меню", "home")],
+            [btn("↩️ Назад", "home")],
         ],
     )
 
@@ -476,25 +483,35 @@ async def show_home(x: str):
                        + ("" if await repo.get_user(x)
                           else "Профиля студента у вас нет, поэтому расписание и обращения "
                                "покажутся общими списками.\n"),
-                    [*student_menu(), *await view_switcher(x), [btn("↩️ В меню", "home")]])
+                    [*student_menu(), *await view_switcher(x)])
             if view == "staff":
                 return await api.send(
                     x, f"🏫 {MENU_VIEW_HINT['staff']}",
-                    [*staff_menu(a), *await view_switcher(x), [btn("↩️ В меню", "home")]])
+                    [*staff_menu(a), *await view_switcher(x)])
             return await sysadmin_menu(x)      # режим «сис-админ» - свой кабинет
         # обычный сотрудник: кабинет сотрудника, без системных кнопок и без
         # переключателя режима. Если режим был включён раньше - сбрасываем,
         # иначе человек продолжит видеть чужое меню.
         if view != "staff":
             await db.set_setting(f"menu_view:{x}", "staff")
-        return await api.send(x, f"🏫 {MENU_VIEW_HINT['staff']}"
-                              + ("" if staff_position_filled(a) else NO_POSITION_LINE),
-                              [*staff_menu(a), [btn("↩️ В меню", "home")]])
+        return await api.send(
+            x,
+            f"🏫 {MENU_VIEW_HINT['staff']}"
+            + ("" if staff_position_filled(a) else NO_POSITION_LINE),
+            staff_menu(a),
+        )
     if not await repo.is_registered(x):
         return await start(x)
     # приветствие с подстановками имени и группы: тот же механизм, что в
     # шаблонах ответов, но берётся из профиля студента
-    return await api.send(x, await welcome_text(x), student_menu())
+    welcome = await welcome_text(x)
+    if welcome.startswith("🏫 "):
+        welcome = welcome[2:]
+    return await api.send(
+        x,
+        f"🏫 Навигатор ЛПК\n\n{welcome}\n\n🧭 Выберите раздел:",
+        student_menu(),
+    )
 
 
 @state("reg_name")
@@ -690,7 +707,7 @@ async def start(x: str):
         return await show_home(x)
     await api.send(
         x,
-        "Здравствуйте! Это бот колледжа.\nКто вы?",
+        "🏫 Навигатор ЛПК\n\nДобро пожаловать в бот колледжа.\n\n👤 Кто вы?",
         [[btn("🎓 Я студент", "who:student"), btn("👔 Я сотрудник", "who:staff")]],
     )
 
@@ -834,15 +851,18 @@ async def _ask_group(x: str, name: str = "", typed: str = "", suggestions=None) 
     """
     if suggestions is None:
         suggestions = await repo.suggest_groups(typed)
-    keyboard = [[btn(group["code"], f"regpick:{group['code']}")]
-                for group in suggestions[:8] if group.get("active")]
-    похожее_нашлось = bool(keyboard)
-    if typed and not keyboard:
+    choices = [group for group in suggestions[:8] if group.get("active")]
+    похожее_нашлось = bool(choices)
+    if typed and not choices:
         # Ничего похожего нет: показываем весь справочник, чтобы человек выбрал
         # из известного, а не заводил своё.
-        keyboard = [[btn(group["code"], f"regpick:{group['code']}")]
-                    for group in (await repo.list_groups(active_only=True))[:20]]
+        choices = list((await repo.list_groups(active_only=True))[:20])
+    keyboard = [[btn(f"Группа {index}", f"regpick:{group['code']}")]
+                for index, group in enumerate(choices, 1)]
     keyboard.append([btn("🔤 Введу код", "regpick:")])
+    choice_text = "\n".join(
+        f"{index}. {group['code']}" for index, group in enumerate(choices, 1)
+    )
     # Обращение к человеку добавляем только когда имя известно. Раньше в шаблон
     # подставлялось пустое имя, и вопрос начинался с запятой: «, укажите код
     # группы» - это и выглядело как опечатка в тексте.
@@ -860,6 +880,8 @@ async def _ask_group(x: str, name: str = "", typed: str = "", suggestions=None) 
                 "добавить её сам: список ведёт сотрудник. Выберите свою группу "
                 "ниже, а если её здесь не видно — напишите в учебную часть, "
                 "вам добавят группу.")
+    if choice_text:
+        head += f"\n\n{choice_text}"
     await api.send(x, head, [*keyboard, *BACK])
 
 
@@ -1022,7 +1044,7 @@ async def st_req_name(x, text, p):
     name = _clean_fio(text)
     if not _valid_fio(name):
         return await api.send(x, "Укажите ФИО полностью (минимум фамилия и имя).")
-    await db.set_state(x, "req_position", {"name": name})
+    await db.set_state(x, "staff_request_position", {"name": name})
     return await api.send(
         x,
         "Должность: напишите свободным текстом, например «Секретарь учебной части».\n"
@@ -1030,14 +1052,32 @@ async def st_req_name(x, text, p):
     )
 
 
-@state("req_position")
-async def st_req_position(x, text, p):
+@state("staff_request_position")
+async def st_staff_request_position(x, text, p):
     position = _clean_fio(text)[:100]
     if not position:
         return await api.send(x, "Введите должность текстом или «-».")
     name = (p or {}).get("name", "")
     await db.set_state(x, "req_office", {"name": name, "position": "" if position == "-" else position})
     return await api.send(x, "Кабинет (например, 214) или «-», если кабинета нет.")
+
+
+@state("req_position")
+async def st_legacy_req_position(x, text, p):
+    """Старое состояние заявок: направление определяется только формой payload."""
+    payload = p or {}
+    if payload.get("id"):
+        from handlers.admin import st_admin_request_position
+
+        return await st_admin_request_position(x, text, payload)
+    if payload.get("name"):
+        return await st_staff_request_position(x, text, payload)
+    await db.clear_state(x)
+    return await api.send(
+        x,
+        "⚠️ Старая заявка потеряла данные. Начните подачу заново.",
+        [[btn("📥 Подать заявку", "staffreq"), btn("🏠 Меню", "home")]],
+    )
 
 
 @state("req_office")
@@ -1089,7 +1129,7 @@ async def cb_academic(x, arg):
             [btn("📚 Учёба", "topic:academic:study")],
             [btn("🗓 Период обучения", "topic:academic:period")],
             [btn("💼 Вакансии", "topic:academic:vacancies"), btn("✍️ Заявка", "new:academic")],
-            [btn("⬅️ Назад", "back")],
+            [btn("↩️ Назад", "back")],
         ],
     )
 
@@ -1103,7 +1143,7 @@ async def cb_accounting(x, arg):
         "💰 Бухгалтерия\nВыберите тему обращения:",
         [
             [btn("🎓 Стипендия", "topic:accounting:scholarship"), btn("✍️ Заявка", "new:accounting")],
-            [btn("⬅️ Назад", "back")],
+            [btn("↩️ Назад", "back")],
         ],
     )
 
@@ -1377,44 +1417,54 @@ async def st_edit_group(x, text, p):
     return await _save_or_confirm(x, fio, group, lambda: cb_profile(x, ""))
 
 
+async def _legacy_profile_error(x: str) -> None:
+    await api.send(
+        x,
+        "⚠️ Старая кнопка профиля содержит неверные данные. Откройте профиль и повторите изменение.",
+        [[btn("👤 Профиль", "profile"), btn("🏠 Меню", "home")]],
+    )
+
+
+def _legacy_profile_fields(raw: str) -> dict[str, str] | None:
+    if not raw or len(raw) > 300:
+        return None
+    fields: dict[str, str] = {}
+    for item in raw.split(";"):
+        item = item.strip()
+        separators = item.count("=") + item.count(":")
+        if not item or separators != 1:
+            return None
+        separator = "=" if "=" in item else ":"
+        key, value = (part.strip() for part in item.split(separator, 1))
+        canonical = "name" if key.lower() in ("name", "fio") else key.lower()
+        if canonical not in ("name", "group") or canonical in fields or not value:
+            return None
+        fields[canonical] = value
+    return fields or None
+
+
 @callback("savegrp")
 async def cb_savegrp(x, arg):
-    if not arg:
-        return
-    group = arg.split(":", 1)[0]
+    raw = as_str(arg).strip()
+    group = _group_code(raw)
     user = await repo.get_user(x)
-    fio = _row_value(user, "full_name") if user else ""
+    if not user or any(mark in raw for mark in (":", ";", "=")) or not valid_group(group):
+        return await _legacy_profile_error(x)
+    fio = _row_value(user, "full_name")
     return await _save_or_confirm(x, fio, group, lambda: cb_profile(x, ""))
 
 
 @callback("saveprofile")
 async def cb_saveprofile(x, arg):
-    if not arg:
-        return
     user = await repo.get_user(x)
-    if not user:
-        return
-    name = _clean_fio(_row_value(user, "full_name"))
-    group = _group_code(_row_value(user, "group_code"))
-    changed_name = False
-    changed_group = False
-    for item in arg.split(";"):
-        key, separator, value = item.partition("=")
-        if not separator:
-            key, separator, value = item.partition(":")
-        if not separator:
-            continue
-        key = key.strip().lower()
-        if key in ("name", "fio") and _valid_fio(value):
-            name = _clean_fio(value)
-            changed_name = True
-        elif key == "group" and valid_group(_group_code(value)):
-            group = _group_code(value)
-            changed_group = True
-    if not changed_name and not changed_group:
-        return
-    if changed_group and not await _group_allowed(group):
-        # Группы нет в справочнике - сюда ведём разбор, а не сохранение.
+    fields = _legacy_profile_fields(as_str(arg).strip())
+    if not user or not fields:
+        return await _legacy_profile_error(x)
+    name = _clean_fio(fields.get("name", _row_value(user, "full_name")))
+    group = _group_code(fields.get("group", _row_value(user, "group_code")))
+    if not _valid_fio(name) or not valid_group(group):
+        return await _legacy_profile_error(x)
+    if "group" in fields and not await _group_allowed(group):
         await db.set_state(x, "reg_group", {"name": name})
         return await _ask_group(x, name, group)
     await _save_user(x, name, group)
@@ -1448,20 +1498,24 @@ async def cb_view_schedules(x, arg):
     chunk = codes[page * GROUPS_PAGE:(page + 1) * GROUPS_PAGE]
     keyboard = []
     hint = ""
-    for code in chunk:
+    for index, code in enumerate(chunk, page * GROUPS_PAGE + 1):
         label = await _schedule_subscription_label(x, code)
         hint = hint or sub_hint(label)      # смысл кнопки для всех групп один
-        keyboard.append([btn(f"📅 {code}", f"sched:{code}"), btn(label, f"schedsub:{code}")])
+        keyboard.append([btn(f"Группа {index}", f"sched:{code}"),
+                         btn(label, f"schedsub:{code}")])
     nav = []
     if page:
-        nav.append(btn("◀️ Назад", f"view_schedules:{page - 1}"))
+        nav.append(btn("↩️ Назад", f"view_schedules:{page - 1}"))
     if page < pages - 1:
-        nav.append(btn("Вперёд ▶️", f"view_schedules:{page + 1}"))
+        nav.append(btn("Вперёд ➡️", f"view_schedules:{page + 1}"))
     if nav:
         keyboard.append(nav)
-    text = "📅 Выберите группу для расписания:"
+    listed = "\n".join(
+        f"{index}. {code}" for index, code in enumerate(chunk, page * GROUPS_PAGE + 1)
+    )
+    text = f"📅 Выберите группу для расписания:\n\n{listed}"
     if pages > 1:
-        text += f"\nГрупп: {len(codes)}, страница {page + 1} из {pages}."
+        text += f"\n\nГрупп: {len(codes)}, страница {page + 1} из {pages}."
     await api.send(x, f"{text}\n{hint}", [*keyboard, *BACK])
 
 
@@ -1480,6 +1534,24 @@ async def _schedule_group_codes() -> list[str]:
         if code and code not in codes:
             codes.append(code)
     return sorted(codes)
+
+
+@callback("today")
+async def cb_today(x, arg):
+    """Совместимый старый адрес: действие зависит от текущей роли просмотра."""
+    admin = await admin_of(x)
+    if admin and is_super(admin) and await menu_view(x) == "admin":
+        from handlers.admin import cb_admin_today
+
+        return await cb_admin_today(x, arg)
+    user = await repo.get_user(x)
+    if not user:
+        if admin:
+            return await cb_view_schedules(x, "")
+        await need_student(x)
+        return
+    group = _group_code(_row_value(user, "group_code"))
+    return await send_schedule(x, group, view="day")
 
 
 @callback("sched")
@@ -1529,7 +1601,7 @@ async def send_schedule(x: str, group: str, back_to_list: bool = False, view: st
     keyboard: list = []
     tail = [btn(label, f"schedsub:{group}")]
     if back_to_list:
-        tail.append(btn("⬅️ К списку", "view_schedules"))
+        tail.append(btn("↩️ К списку", "view_schedules"))
     else:
         tail.extend(BACK[0])
 
@@ -1545,9 +1617,10 @@ async def send_schedule(x: str, group: str, back_to_list: bool = False, view: st
     today_weekday = clock.now().weekday()
     if view == "day":
         today = schedule.day(today_weekday)
-        text = (tt.format_day(today, tt.day_date(schedule, today_weekday))
-                if today and not today.is_empty
-                else f"📅 На {WEEKDAYS_FULL[today_weekday]} пар нет")
+        day_text = (tt.format_day(today, tt.day_date(schedule, today_weekday))
+                    if today and not today.is_empty
+                    else f"📅 На {WEEKDAYS_FULL[today_weekday]} пар нет")
+        text = f"📚 Группа {group}\n\n{day_text}"
         keyboard = [[btn("📅 Все дни", f"sched:{group}"),
                      btn("⏰ Ближайшие", f"schednext:{group}")]]
     elif view == "next":
@@ -1586,7 +1659,7 @@ async def cb_schedule_day(x, arg):
     label = await _schedule_subscription_label(x, group)
     return await api.send(x, f"{text}\n{sub_hint(label)}", [
         [btn("📅 Все дни", f"sched:{group}"), btn("⏰ Ближайшие", f"schednext:{group}")],
-        [btn(label, f"schedsub:{group}"), btn("⬅️ К списку", "view_schedules")],
+        [btn(label, f"schedsub:{group}"), btn("↩️ К списку", "view_schedules")],
     ])
 
 
@@ -1643,5 +1716,5 @@ async def cb_schedsub(x, arg):
         if setter is not None:
             await setter(x, group)
         text = f"🔔 Вы подписались на обновления расписания группы {group}."
-    keyboard = [[link_btn("Открыть расписание", _row_value(row, "pdf_url"))], [btn("⬅️ К списку", "view_schedules")]]
+    keyboard = [[link_btn("Открыть расписание", _row_value(row, "pdf_url"))], [btn("↩️ К списку", "view_schedules")]]
     await api.send(x, text, keyboard)

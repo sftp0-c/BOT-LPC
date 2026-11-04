@@ -238,7 +238,7 @@ async def test_ready_quick_choice_sets_status_and_notifies(api, fake_repo):
     assert (await db.one("SELECT status FROM tickets WHERE ticket_id=?", (tid,)))["status"] == "ready"
     when = fake_repo.extra[tid]["ready_until"]
     assert "18:00" in when
-    notice = [m for m in api.to(STUDENT) if "Заявка готова" in m[1]][-1]
+    notice = [m for m in api.to(STUDENT) if "Обращение готово" in m[1]][-1]
     assert f"№{tid}" in notice[1] and when in notice[1]
     assert "Петрова Анна" in notice[1] and "Директор" in notice[1] and "Должность" in notice[1]
     assert "каб. 204" in notice[1]
@@ -257,7 +257,7 @@ async def test_ready_custom_time_is_saved(api, fake_repo):
     await say(STAFF, "в четверг после 15:00")
     assert fake_repo.extra[tid]["ready_until"] == "в четверг после 15:00"
     assert (await db.one("SELECT status FROM tickets WHERE ticket_id=?", (tid,)))["status"] == "ready"
-    assert "в четверг после 15:00" in [m for m in api.to(STUDENT) if "Заявка готова" in m[1]][-1][1]
+    assert "в четверг после 15:00" in [m for m in api.to(STUDENT) if "Обращение готово" in m[1]][-1][1]
 
 
 async def test_ready_custom_time_is_truncated(api, fake_repo):
@@ -283,7 +283,7 @@ async def test_ready_pickup_place_falls_back_to_staff_office(api, fake_repo, mon
     await press(STAFF, f"st:{tid}:ready")
     await press(STAFF, f"rt:{tid}:today")
     assert fake_repo.ready_calls[-1][2] == "каб. 204"
-    assert "каб. 204" in [m for m in api.to(STUDENT) if "Заявка готова" in m[1]][-1][1]
+    assert "каб. 204" in [m for m in api.to(STUDENT) if "Обращение готово" in m[1]][-1][1]
 
 
 async def test_ready_without_office_is_blocked(api, fake_repo):
@@ -306,7 +306,7 @@ async def test_ready_adds_document_link(api, fake_repo):
     await press(STAFF, f"st:{tid}:accepted")
     await press(STAFF, f"st:{tid}:ready")
     await press(STAFF, f"rt:{tid}:today")
-    notice = [m for m in api.to(STUDENT) if "Заявка готова" in m[1]][-1]
+    notice = [m for m in api.to(STUDENT) if "Обращение готово" in m[1]][-1]
     assert "https://college.example/doc.pdf" in notice[1]
     assert any(b["type"] == "link" and b["url"] == "https://college.example/doc.pdf"
                for row in (notice[2] or []) for b in row)
@@ -332,8 +332,8 @@ async def test_ready_twice_does_not_notify_again(api, fake_repo):
     await press(STAFF, f"rt:{tid}:today")
     api.sent.clear()
     await press(STAFF, f"st:{tid}:ready")
-    assert "уже готова" in api.last(STAFF)[1]
-    assert not [m for m in api.to(STUDENT) if "Заявка готова" in m[1]]
+    assert "уже готово" in api.last(STAFF)[1]
+    assert not [m for m in api.to(STUDENT) if "Обращение готово" in m[1]]
 
 
 async def test_ready_is_not_offered_for_closed_ticket(api, fake_repo):
@@ -344,7 +344,7 @@ async def test_ready_is_not_offered_for_closed_ticket(api, fake_repo):
     assert f"st:{tid}:accepted" in адреса
 
     await press(STAFF, f"st:{tid}:ready")
-    assert "закрыта" in api.last(STAFF)[1]
+    assert "закрыто" in api.last(STAFF)[1]
     assert not fake_repo.ready_calls
 
 
@@ -382,7 +382,7 @@ async def test_foreign_staff_cannot_manage_ticket(api, fake_repo):
 async def test_student_cannot_press_ready_button(api, fake_repo):
     tid = await make_ticket(api)
     await press(STUDENT, f"st:{tid}:ready")
-    assert "Заявка готова" not in api.last(STUDENT)[1]
+    assert "Обращение готово" not in api.last(STUDENT)[1]
     assert not fake_repo.ready_calls
 
 

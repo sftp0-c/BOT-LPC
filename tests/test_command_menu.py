@@ -63,7 +63,7 @@ async def test_command_opens_schedule(env, api):
     await register(STUDENT, "Иванов Иван Иванович", "24-23")
     await repo.upsert_schedule("24-23", "https://college.example/24-23.pdf")
     await say(STUDENT, "/schedule")
-    assert "sched:24-23" in api.payloads(STUDENT)
+    assert "Расписание группы 24-23" in api.to(STUDENT)[-1][1]
 
 
 async def test_command_today_shows_day_schedule(env, api, monkeypatch):
@@ -123,8 +123,8 @@ async def test_queue_command_is_staff_only(env, api):
 
     await register(STUDENT, "Иванов Иван Иванович", "24-23")
     await say(STUDENT, "/queue")
-    # студент остаётся в своём меню, а не попадает в чужую очередь
-    assert not any("Очередь" in body for _, body, _ in api.to(STUDENT))
+    # студент получает явный отказ, а не тишину и не чужую очередь
+    assert "доступна сотрудникам" in api.to(STUDENT)[-1][1]
 
     await add_staff("200", "Петрова Мария Сергеевна")
     await say("200", "/queue")

@@ -29,16 +29,18 @@ def test_version_looks_like_a_version():
     assert all(part.isdigit() for part in parts), f"в версии есть не числа: {parts}"
 
 
-def test_root_redirects_to_panel_login():
-    """Короткий домен должен вести на форму входа, а не отдавать JSON 404."""
+def test_root_is_public_landing_and_login_stays_available():
+    """Корень — публичная витрина, а рабочий вход остаётся отдельным адресом."""
     from fastapi.testclient import TestClient
 
     from bot import app
 
     with TestClient(app) as client:
-        response = client.get("/", follow_redirects=False)
-    assert response.status_code == 307
-    assert response.headers["location"] == "/panel/login"
+        root = client.get("/", follow_redirects=False)
+        login = client.get("/panel/login")
+    assert root.status_code == 200 and "Студент пишет в MAX" in root.text
+    assert login.status_code == 200 and "Вход для сис-админа" in login.text
+    assert "lpc_panel" not in root.headers.get("set-cookie", "")
 
 
 def test_health_reports_the_same_version():

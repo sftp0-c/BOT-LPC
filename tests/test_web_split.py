@@ -128,9 +128,11 @@ def mounted_routers(routes) -> list:
 
 
 def panel_routes() -> set:
-    """Реально зарегистрированные маршруты панели: /panel/* и открытое /join/*."""
+    """Маршруты модулей web/: панель, приглашения и публичная витрина."""
     found = registered_routes(bot.app.routes)
-    return {item for item in found if item[1].startswith(("/panel", "/join"))}
+    public = {"/", "/robots.txt", "/sitemap.xml"}
+    return {item for item in found
+            if item[1].startswith(("/panel", "/join", "/public/")) or item[1] in public}
 
 
 # ── фасад ─────────────────────────────────────────────────────────────────────

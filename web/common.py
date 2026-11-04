@@ -528,7 +528,7 @@ def page(title: str, body: str, user: str = "", tab: str = "",
             f'<main id="main-content" class="login-shell">{banner}{body}</main>'
             f'<footer class="login-footer">Навигатор ЛПК · Работа с обращениями в MAX · '
             f'версия {esc(version.__version__)}</footer>{scripts}</body></html>',
-            status_code=status_code, headers={"Cache-Control": "no-store"},
+            status_code=status_code, headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow", "Referrer-Policy": "no-referrer"},
         )
     scripts += f'<script>{hotkeys_script(NAV_SECTIONS)}</script>'
     nav = nav_html(tab, _nav_badges.get())
@@ -558,7 +558,7 @@ def page(title: str, body: str, user: str = "", tab: str = "",
 <main id="main-content" tabindex="-1">{head}{banner}{body}</main>
 <footer class="app-footer"><span>Навигатор ЛПК</span><span>Единая очередь · Данные из бота в MAX</span></footer>
 {scripts}
-</body></html>""", status_code=status_code, headers={"Cache-Control": "no-store"},
+</body></html>""", status_code=status_code, headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow", "Referrer-Policy": "no-referrer"},
     )
 
 

@@ -41,8 +41,26 @@ async def get_ticket(ticket_id: int, include_archived: bool = False):
     return result
 
 
-async def recent_student_tickets(user_id: str, limit: int = 15) -> list:
-    return await db.many("SELECT * FROM tickets WHERE student_id=? ORDER BY ticket_id DESC LIMIT ?", (user_id, limit))
+async def recent_student_tickets(user_id: str, limit: int = 15, *, archived: bool | None = None,
+                                 offset: int = 0, with_count: bool = False) -> list:
+    """Обращения студента: фильтр и смещение применяются до LIMIT.
+
+    Старый вызов без archived по-прежнему отдаёт живые и архивные обращения
+    вместе. Бот передаёт archived явно, поэтому старый архив не теряется за
+    первыми пятнадцатью строками.
+    """
+    clauses = ["student_id=?"]
+    params: list = [as_str(user_id)]
+    if archived is True:
+        clauses.append("deleted_at<>''")
+    elif archived is False:
+        clauses.append("deleted_at='' ")
+    total = ", COUNT(*) OVER () filtered_total" if with_count else ""
+    return await db.many(
+        f"SELECT *{total} FROM tickets WHERE {' AND '.join(clauses)} "
+        "ORDER BY ticket_id DESC LIMIT ? OFFSET ?",
+        (*params, max(1, int(limit)), max(0, int(offset))),
+    )
 
 
 def ticket_filter_dates(date_from: str = "", date_to: str = "") -> tuple[str, str]:
@@ -72,7 +90,8 @@ def _ticket_time_ms(value) -> int | None:
 async def admin_tickets(admin_id: Optional[str], limit: int = 20,
                         archived: bool = False, date_from: str = "", date_to: str = "", *,
                         status: str = "", category: str = "", q: str = "", scope: str = "",
-                        with_counts: bool = False, overdue_hours: int = 24) -> list:
+                        with_counts: bool = False, overdue_hours: int = 24,
+                        offset: int = 0) -> list:
     """Единая SQL-выборка панели и MAX; прежние аргументы и порядок сохранены.
 
     Все условия, в том числе поиск и ожидание, действуют ДО LIMIT. Последнее
@@ -142,11 +161,12 @@ async def admin_tickets(admin_id: Optional[str], limit: int = 20,
         "WHERE " + " AND ".join(clauses) + ") "
         f"SELECT matched.*{totals} FROM matched {scope_sql} "
         "ORDER BY (status IN ('ready','completed','rejected')), "
-        "CASE WHEN status='ready' THEN 0 ELSE 1 END, ticket_id DESC LIMIT ?"
+        "CASE WHEN status='ready' THEN 0 ELSE 1 END, ticket_id DESC LIMIT ? OFFSET ?"
     )
     async with db._conn() as conn:
         await conn.create_function("ticket_time_ms", 1, _ticket_time_ms, deterministic=True)
-        cursor = await conn.execute(query, (cutoff, *params, limit))
+        cursor = await conn.execute(
+            query, (cutoff, *params, max(1, int(limit)), max(0, int(offset))))
         return await cursor.fetchall()
 
 

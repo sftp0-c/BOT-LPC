@@ -157,7 +157,10 @@ async def _join_page_html(title: str, message: str, code: str, body: str) -> HTM
 {join_button}
 <p class="small mut">Бот колледжа: Лангепасский политехнический колледж, ул. Ленина, 52,
 приёмная директора +7 (34669) 2-26-50, учебная часть +7 (34669) 2-71-33.</p>
-</main></body></html>""", status_code=200)
+</main></body></html>""", status_code=200, headers={
+        "Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow",
+        "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY",
+    })
 
 
 @router.post("/access/code")

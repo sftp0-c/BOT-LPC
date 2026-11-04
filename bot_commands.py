@@ -10,7 +10,7 @@ from handlers.registry import CALLBACKS
 # (имя команды, описание для меню MAX) -> payload существующего обработчика
 BOT_COMMANDS: list[tuple[str, str, str]] = [
     ("menu", "Главное меню", "home"),
-    ("schedule", "Моё расписание", "view_schedules"),
+    ("schedule", "Моё расписание", "sched"),
     ("today", "Пары на сегодня", "today"),
     ("tickets", "Мои обращения", "tickets"),
     ("new_request", "Новое обращение", "new:feedback"),

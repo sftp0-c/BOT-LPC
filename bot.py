@@ -424,7 +424,7 @@ async def lifespan(app: FastAPI):
         await shutdown(poller)
 
 
-app = FastAPI(title="College MAX bot", lifespan=lifespan)
+app = FastAPI(title="College MAX bot", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 app.include_router(panel_router)
 app.include_router(panel_open_router)      # /join/<код>: открыто без входа в панель
 

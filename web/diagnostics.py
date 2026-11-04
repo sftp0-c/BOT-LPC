@@ -152,7 +152,8 @@ async def api_requests(request: Request, status: str = "new"):
 
 @router.get("/api/health")
 async def api_health(request: Request):
-    """Диагностика без авторизации: только состояние, без данных."""
+    """Диагностика панели доступна только вошедшему сис-админу."""
+    await require_user(request)
     try:
         await db.one("SELECT 1")
         database_ok = True
@@ -164,7 +165,5 @@ async def api_health(request: Request):
         "ok": database_ok and not missing,
         "panel_enabled": panel_enabled(),
         "mode": "webhook" if config.WEBHOOK_URL else "polling",
-        "log_file": config.LOG_FILE,
-        "sysadmins": len(config.SYSADMIN_IDS),
         "missing_schema": missing,
     })

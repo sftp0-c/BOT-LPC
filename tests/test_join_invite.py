@@ -27,6 +27,14 @@ async def test_join_page_needs_no_login(panel_client):
     assert panel_client.get("/join/ABC123").status_code == 200
 
 
+async def test_join_page_is_private_to_browsers(panel_client):
+    await repo.create_invite("ABC123", created_by=SYS, ttl_hours=24)
+    response = panel_client.get("/join/ABC123")
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-robots-tag"] == "noindex, nofollow"
+    assert response.headers["referrer-policy"] == "no-referrer"
+
+
 async def test_join_page_explains_unknown_code(panel_client):
     body = panel_client.get("/join/НЕТТАКОГО").text
     assert "Код не найден" in body

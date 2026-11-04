@@ -1,4 +1,4 @@
-"""Управление базой данных из панели: состояние, сжатие, копии, восстановление, чистка."""
+﻿"""Управление базой данных из панели: состояние, сжатие, копии, восстановление, чистка."""
 import pytest
 import os
 
@@ -214,6 +214,8 @@ async def test_bot_asks_user_to_contact_admin_when_schema_is_broken(panel, api):
 
 
 async def test_health_reports_schema_state(panel):
+    assert panel.get("/panel/api/health", follow_redirects=False).status_code == 303
+    assert login(panel)
     health = panel.get("/panel/api/health").json()
     assert health["ok"] is True and health["missing_schema"] == []
     await db.run("DROP TABLE tickets")

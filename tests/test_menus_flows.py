@@ -454,12 +454,12 @@ async def test_profile_group_change_saves_known_group(flow):
     assert repo.saved, "существующая группа не сохранилась"
 
 
-async def test_saveprofile_without_fields_is_a_noop(flow):
+async def test_saveprofile_without_fields_is_rejected_visibly(flow):
     api, repo, _ = flow
     await menus.cb_saveprofile(USER, "")
 
     assert repo.saved == []
-    assert api.sent == []
+    assert "Старая кнопка профиля" in api.last(USER)[1]
 
 
 async def test_hidden_group_is_not_a_way_in(flow):

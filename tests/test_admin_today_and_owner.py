@@ -52,18 +52,19 @@ async def test_admin_today_counts_requests_and_codes(api):
 
 async def test_sysadmin_menu_has_today_button(api):
     await press(SYS, "sysadm")
-    assert "today" in api.payloads(SYS)
-    await press(SYS, "today")
+    assert "admin_today" in api.payloads(SYS)
+    await press(SYS, "admin_today")
     text = api.last(SYS)[1]
     assert "Что сделать сегодня" in text
     assert "Среднее время ответа" in text
 
 
-async def test_today_is_closed_for_outsiders(api):
+async def test_today_is_student_schedule_for_outsiders(api):
     await register(STUDENT)
     api.sent.clear()
     await press(STUDENT, "today")
-    assert not api.to(STUDENT)
+    assert api.to(STUDENT)
+    assert "Что сделать сегодня" not in api.last(STUDENT)[1]
 
 
 async def test_clean_dialogs_removes_stuck_states(api):
@@ -169,7 +170,7 @@ async def test_owner_sees_admin_panel_and_actions(api, monkeypatch):
     monkeypatch.setattr(config, "ROOT_IDS", [OWNER])
     await db.init_db()
     await press(OWNER, "sysadm")
-    assert "today" in api.payloads(OWNER)
+    assert "admin_today" in api.payloads(OWNER)
     await press(OWNER, "people")
     assert "Пользователи бота" in api.last(OWNER)[1]
 

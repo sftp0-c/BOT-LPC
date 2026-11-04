@@ -5,6 +5,8 @@ from logging.handlers import RotatingFileHandler
 
 import pytest
 
+import max_api
+
 import bot
 import clock
 import config
@@ -19,17 +21,21 @@ _click_seq = count(1)
 
 
 class FakeAPI:
-    """Подмена MaxAPI: запоминает исходящие сообщения."""
+    """Подмена MaxAPI: отдельно хранит исходную и видимую клавиатуру."""
 
     def __init__(self):
         self.sent = []
+        self.raw_sent = []
         self.answers = []
         self.blocked = set()
 
     async def send(self, user_id, text, keyboard=None):
         if str(user_id) in self.blocked:
             raise RuntimeError("user blocked the bot")
-        self.sent.append((str(user_id), text, keyboard))
+        raw = keyboard
+        visible = max_api.fit_keyboard(raw)
+        self.raw_sent.append((str(user_id), text, raw))
+        self.sent.append((str(user_id), text, visible))
         return {}
 
     async def answer(self, callback_id, notification=None):
@@ -235,8 +241,21 @@ async def say(user, text):
     await bot.process(msg(user, text))
 
 
-async def press(user, payload):
+async def press_crafted(user, payload):
+    """Нажимает произвольный payload: для проверок старых кнопок и защиты."""
     await bot.process(click(user, payload))
+
+
+async def press_visible(api, user, payload):
+    """Нажимает только кнопку, которая действительно видна в последнем сообщении."""
+    visible = api.payloads(user)
+    assert payload in visible, f"Кнопки {payload!r} нет на экране; видны {visible}"
+    await press_crafted(user, payload)
+
+
+async def press(user, payload):
+    """Старое имя означает намеренно собранное нажатие; новые E2E используют press_visible."""
+    await press_crafted(user, payload)
 
 
 async def register(user, name="Иванов Иван Иванович", group="ис-21"):
@@ -305,8 +324,9 @@ async def card_more(api, user, ticket_id) -> tuple[set, set]:
 
     Возвращает (адреса, подписи). Последним сообщением остаётся «Ещё».
     """
-    await press(user, f"t:{ticket_id}")
+    await press_crafted(user, f"t:{ticket_id}")
     адреса, подписи = _кнопки_сообщения(api, user)
-    await press(user, f"tmore:{ticket_id}")
+    assert f"tmore:{ticket_id}" in адреса, "Кнопка «Ещё» должна быть видна на карточке"
+    await press_visible(api, user, f"tmore:{ticket_id}")
     ещё_адреса, ещё_подписи = _кнопки_сообщения(api, user)
     return адреса | ещё_адреса, подписи | ещё_подписи
