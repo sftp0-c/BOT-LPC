@@ -29,6 +29,18 @@ def test_version_looks_like_a_version():
     assert all(part.isdigit() for part in parts), f"в версии есть не числа: {parts}"
 
 
+def test_root_redirects_to_panel_login():
+    """Короткий домен должен вести на форму входа, а не отдавать JSON 404."""
+    from fastapi.testclient import TestClient
+
+    from bot import app
+
+    with TestClient(app) as client:
+        response = client.get("/", follow_redirects=False)
+    assert response.status_code == 307
+    assert response.headers["location"] == "/panel/login"
+
+
 def test_health_reports_the_same_version():
     """По /health видно, какая версия в контейнере."""
     from fastapi.testclient import TestClient

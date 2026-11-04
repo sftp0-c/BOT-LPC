@@ -22,7 +22,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 import config
 import version
@@ -427,6 +427,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="College MAX bot", lifespan=lifespan)
 app.include_router(panel_router)
 app.include_router(panel_open_router)      # /join/<код>: открыто без входа в панель
+
+
+@app.get("/", include_in_schema=False)
+async def root_redirect():
+    """Главный адрес сайта сразу открывает вход в панель."""
+    return RedirectResponse("/panel/login", status_code=307)
 
 
 @app.exception_handler(sqlite3.OperationalError)
