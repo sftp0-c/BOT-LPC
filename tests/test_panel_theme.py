@@ -21,7 +21,7 @@ import panel_theme as theme                        # noqa: E402  (путь за�
 REQUIRED_SECTIONS = ("home", "activity", "tickets", "analytics", "people", "user-off",
                      "college", "students", "staff", "access", "link", "templates",
                      "groups", "schedules", "broadcasts", "database", "archive",
-                     "check", "settings", "logs", "audit")
+                     "check", "settings", "logs", "audit", "reply")
 # Иконки действий, которые бот и панель рисуют рядом с текстом.
 REQUIRED_ACTIONS = ("archive", "reply", "delete", "edit", "search", "chevron-down",
                     "chevron-right", "chevron-left", "close", "plus", "check",

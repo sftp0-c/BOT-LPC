@@ -74,7 +74,19 @@ def test_every_post_route_has_csrf_guard():
             if not posts or node.name == "login_submit":
                 continue
             source = "\n".join(lines[node.lineno - 1:node.end_lineno])
-            if "require_form(" not in source and "require_owner_form(" not in source:
+            if path.name == "feedback.py" and node.name == "public_feedback_submit":
+                # У анонимной формы своя cookie, не сессия панели. Проверяем сам
+                # guard, а поведение при подделке — в test_public_feedback.py.
+                guard = next((item for item in ast.walk(node) if isinstance(item, ast.If)
+                              and isinstance(item.test, ast.UnaryOp)
+                              and isinstance(item.test.op, ast.Not)
+                              and isinstance(item.test.operand, ast.Call)
+                              and isinstance(item.test.operand.func, ast.Attribute)
+                              and item.test.operand.func.attr == "compare_digest"), None)
+                if guard is None or "_csrf(secret, cookie)" not in ast.unparse(guard.test) \
+                        or not any(isinstance(item, ast.Raise) for item in ast.walk(guard)):
+                    broken.append(f"{path.name}:{node.name}")
+            elif "require_form(" not in source and "require_owner_form(" not in source:
                 broken.append(f"{path.name}:{node.name}")
     assert not broken, "POST без CSRF-проверки: " + ", ".join(broken)
 

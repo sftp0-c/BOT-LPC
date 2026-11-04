@@ -136,26 +136,24 @@ TOKENS: dict[str, str] = {
     "dark.decor-line": "rgba(130,224,200,.16)",
     "dark.brand-shadow": "0 10px 38px -14px rgba(26,216,169,.28)",
 
-    # ── светлая тема: та же геометрия, тёплые поверхности ─────────────────
-    # Бумажный подтон (#f4f2ee) вместо прежнего холодного сине-серого: рядом
-    # с белыми карточками он даёт заметный, но не кричащий контраст, и текст
-    # на фоне остаётся выше 4.9:1. Акцент глубже, чем в тёмной теме, - на
-    # белом светлый мятный нечитаем.
-    "light.bg": "#f4f2ee",
-    "light.bg-deep": "#e9e6e0",
+    # ── светлая тема: белые поверхности и официальный синий акцент ────────
+    # Геометрия и тёмная тема прежние. Насыщенный синий читается на белом;
+    # зелёный, красный и янтарный оставлены для смысловых состояний.
+    "light.bg": "#f5f8ff",
+    "light.bg-deep": "#e8effa",
     "light.surface": "#ffffff",
-    "light.surface-raised": "#faf9f6",
-    "light.surface-sunken": "#f1efea",
-    "light.line": "#ddd9d1",
-    "light.line-soft": "#eae7e1",
-    "light.line-strong": "#bdb7ab",
-    "light.ink": "#1a1f26",
-    "light.ink-soft": "#3c4450",
-    "light.mut": "#5a6a7d",               # тёмный текст, а не блёклый синий
-    "light.acc": "#0b6a58",
+    "light.surface-raised": "#f8faff",
+    "light.surface-sunken": "#eef3fb",
+    "light.line": "#d4dff0",
+    "light.line-soft": "#e4ebf5",
+    "light.line-strong": "#a8bad6",
+    "light.ink": "#172c49",
+    "light.ink-soft": "#344d6c",
+    "light.mut": "#516783",               # тёмный текст, а не блёклый синий
+    "light.acc": "#1d4ed8",
     "light.acc-ink": "#ffffff",
-    "light.acc-soft": "#e2f3ee",
-    "light.acc-line": "#9fd6c6",
+    "light.acc-soft": "#eaf1ff",
+    "light.acc-line": "#afc5f4",
     "light.ok": "#0f6b31",
     "light.ok-ink": "#ffffff",
     "light.ok-soft": "#e4f4ea",
@@ -168,45 +166,45 @@ TOKENS: dict[str, str] = {
     "light.warn-ink": "#ffffff",
     "light.warn-soft": "#fbf1d9",
     "light.warn-line": "#e3c88f",
-    "light.surface-head": "#f7f5f1",
-    "light.head-ink": "#1a1f26",
-    "light.head-mut": "#5a6a7d",
-    "light.head-field": "rgba(26,31,38,.05)",
-    "light.head-line": "#ddd9d1",
+    "light.surface-head": "#ffffff",
+    "light.head-ink": "#172c49",
+    "light.head-mut": "#516783",
+    "light.head-field": "rgba(29,78,216,.05)",
+    "light.head-line": "#d4dff0",
     "light.code-bg": "#171b21",
     "light.code-ink": "#d7e2ee",
-    "light.chart-a": "#0b6a58",
+    "light.chart-a": "#1d4ed8",
     "light.chart-b": "#0f6b31",
     "light.chart-c": "#7a5003",
     "light.chart-d": "#a72f26",
     "light.chart-e": "#6d43c4",
     "light.chart-f": "#0b6a72",
     "light.chart-g": "#b02a63",
-    "light.chart-h": "#5a6a7d",
-    "light.chart-grid": "#e3e0d9",
-    "light.chart-axis": "#5a6a7d",
-    "light.chart-track": "#e5e2db",
-    "light.skel-a": "#e9e6e0",
-    "light.skel-b": "#f7f5f1",
-    "light.sel-bg": "#9fd6c6",
-    "light.glow": "rgba(11,106,88,.14)",
-    "light.overlay": "rgba(30,34,40,.46)",
-    "light.shadow-sm": "0 1px 2px rgba(26,31,38,.08)",
-    "light.shadow-md": "0 1px 2px rgba(26,31,38,.06),0 8px 22px -14px rgba(26,31,38,.22)",
-    "light.shadow-lg": "0 2px 6px rgba(26,31,38,.07),0 20px 40px -20px rgba(26,31,38,.28)",
-    "light.shadow-focus": "0 0 0 3px rgba(11,106,88,.18)",
-    "light.canvas-a": "rgba(13,143,108,.085)",
-    "light.canvas-b": "rgba(71,121,183,.06)",
-    "light.shell-glass": "rgba(251,253,252,.90)",
-    "light.nav-glass": "rgba(247,250,248,.95)",
-    "light.hero-start": "#0e5144",
-    "light.hero-end": "#193a42",
-    "light.hero-line": "#47766b",
-    "light.hero-ink": "#f1fff9",
-    "light.hero-muted": "#bee2d8",
-    "light.gradient-end": "#0a765d",
-    "light.decor-line": "rgba(130,224,200,.22)",
-    "light.brand-shadow": "0 10px 36px -16px rgba(11,106,88,.24)",
+    "light.chart-h": "#516783",
+    "light.chart-grid": "#dce6f4",
+    "light.chart-axis": "#516783",
+    "light.chart-track": "#e4ecf8",
+    "light.skel-a": "#e8effa",
+    "light.skel-b": "#f8faff",
+    "light.sel-bg": "#afc5f4",
+    "light.glow": "rgba(29,78,216,.14)",
+    "light.overlay": "rgba(17,38,70,.46)",
+    "light.shadow-sm": "0 1px 2px rgba(23,44,73,.08)",
+    "light.shadow-md": "0 1px 2px rgba(23,44,73,.06),0 8px 22px -14px rgba(23,44,73,.22)",
+    "light.shadow-lg": "0 2px 6px rgba(23,44,73,.07),0 20px 40px -20px rgba(23,44,73,.28)",
+    "light.shadow-focus": "0 0 0 3px rgba(29,78,216,.18)",
+    "light.canvas-a": "rgba(29,78,216,.045)",
+    "light.canvas-b": "rgba(45,114,201,.035)",
+    "light.shell-glass": "rgba(255,255,255,.94)",
+    "light.nav-glass": "rgba(248,250,255,.96)",
+    "light.hero-start": "#173b85",
+    "light.hero-end": "#1e4f99",
+    "light.hero-line": "#587ec1",
+    "light.hero-ink": "#ffffff",
+    "light.hero-muted": "#d9e7ff",
+    "light.gradient-end": "#245fb3",
+    "light.decor-line": "rgba(171,201,247,.22)",
+    "light.brand-shadow": "0 10px 36px -16px rgba(29,78,216,.22)",
 
     # ── независимые от темы значения ──────────────────────────────────────
     # радиусы: три ступени, никаких «своих» значений по месту
@@ -497,6 +495,7 @@ ICON_NAMES_BY_PATH: dict[str, str] = {
     "/test": "check",
     "/logs": "logs",
     "/audit": "audit",
+    "/feedback": "reply",
 }
 
 
@@ -1555,6 +1554,12 @@ pre{max-height:560px;margin:0;padding:var(--space-lg);overflow:auto;
             text-decoration-color:var(--line-strong);
             transition:color var(--motion-fast) var(--ease-standard)}
 .foot-ver a:hover{color:var(--acc)}
+.panel-beta{display:inline-flex;align-items:center;gap:var(--space-xs);padding:1px 7px;
+            border:1px solid var(--acc-line);border-radius:var(--radius-pill);
+            background:var(--acc-soft);color:var(--acc);font-size:var(--text-xs);
+            font-weight:var(--weight-semi);line-height:1.5;white-space:nowrap}
+.panel-beta .ico{width:14px;height:14px}
+.feedback-body{overflow-wrap:anywhere;line-height:1.7;padding:var(--space-md) 0;margin-bottom:var(--space-md)}
 @media (max-width:1000px){.foot-ver{margin-left:0;padding:10px 12px 0}}
 @media print{.foot-ver{display:none}}
 
@@ -2024,6 +2029,115 @@ def hotkeys_script(groups: Iterable[Sequence[Sequence[str]]] = ()) -> str:
             .replace("/*RESULT_ICONS*/", json.dumps(
                 {name: icon(name, 18) for name in ("tickets", "people", "staff", "groups")},
                 ensure_ascii=False).replace("<", "\\u003c")))
+
+
+# ── положение меню: отдельно от прокрутки документа и скрипта форм ──────────
+_NAV_SCROLL_SCRIPT = """
+(function () {
+  var nav = document.querySelector(".app-nav");
+  var user = document.body && document.body.dataset.panelUser;
+  if (!nav || typeof user !== "string" || !user.trim()) { return; }
+  var KEY = "panel-nav-scroll:" + user.trim();
+  var positions = {};
+  var mode = layoutMode();
+  var geometry = null;
+  var saveFrame = null;
+
+  function layoutMode() { return window.innerWidth > 1000 ? "desktop" : "mobile"; }
+  function finite(value) { return typeof value === "number" && Number.isFinite(value); }
+  function clamp(value, maximum) { return Math.min(Math.max(0, value), maximum); }
+  function read() {
+    try {
+      var saved = JSON.parse(sessionStorage.getItem(KEY) || "{}");
+      if (!saved || typeof saved !== "object" || Array.isArray(saved)) { return; }
+      ["desktop", "mobile"].forEach(function (axis) {
+        if (finite(saved[axis])) { positions[axis] = Math.max(0, saved[axis]); }
+      });
+    } catch (err) {}
+  }
+  function write() {
+    try { sessionStorage.setItem(KEY, JSON.stringify(positions)); } catch (err) {}
+  }
+  function measure() {
+    var vertical = mode === "desktop";
+    var size = vertical ? nav.clientHeight : nav.clientWidth;
+    var extent = vertical ? nav.scrollHeight : nav.scrollWidth;
+    if (!finite(size) || !finite(extent) || size <= 0) { return null; }
+    return {property: vertical ? "scrollTop" : "scrollLeft", size: size,
+            maximum: Math.max(0, extent - size), vertical: vertical};
+  }
+  function remember() {
+    /* CSS уже мог сменить ось и обнулить старую до события resize. */
+    if (layoutMode() !== mode) { return; }
+    var box = measure();
+    if (!box || box.maximum <= 0 || !geometry ||
+        box.size !== geometry.size || box.maximum !== geometry.maximum) { return; }
+    var value = nav[box.property];
+    if (finite(value)) { positions[mode] = clamp(value, box.maximum); }
+  }
+  function revealActive(box) {
+    var active = nav.querySelector('a[aria-current="page"], a.on');
+    if (!active) { return; }
+    var frame = nav.getBoundingClientRect();
+    var link = active.getBoundingClientRect();
+    var start = box.vertical ? frame.top + nav.clientTop : frame.left + nav.clientLeft;
+    var end = start + box.size;
+    var first = box.vertical ? link.top : link.left;
+    var last = box.vertical ? link.bottom : link.right;
+    if (![start, end, first, last].every(finite)) { return; }
+    var delta = 0;
+    /* Ближайший край; пункт шире окна уже может занимать всё видимое меню. */
+    if (first < start && last <= end) { delta = Math.max(first - start, last - end); }
+    else if (last > end && first >= start) { delta = Math.min(first - start, last - end); }
+    var value = nav[box.property] + delta;
+    if (delta && finite(value)) { nav[box.property] = clamp(value, box.maximum); }
+  }
+  function restore() {
+    mode = layoutMode();
+    /* Измерение вызывает layout: позиция возвращается до первого кадра. */
+    var box = measure();
+    if (!box) { return; }
+    geometry = box;
+    if (finite(positions[mode])) {
+      nav[box.property] = clamp(positions[mode], box.maximum);
+    }
+    revealActive(box);
+    remember();
+  }
+  function flush() {
+    if (layoutMode() !== mode) { restore(); }
+    remember();
+    if (saveFrame !== null) { window.cancelAnimationFrame(saveFrame); saveFrame = null; }
+    write();
+  }
+  read();
+  restore();
+  nav.addEventListener("scroll", function () {
+    if (layoutMode() !== mode) { return; }
+    /* Число снимаем сразу: к следующему кадру другая ось может стать нулевой. */
+    remember();
+    if (saveFrame === null) {
+      saveFrame = window.requestAnimationFrame(function () { saveFrame = null; write(); });
+    }
+  }, {passive: true});
+  nav.addEventListener("click", flush, true);
+  window.addEventListener("pagehide", flush);
+  window.addEventListener("resize", restore);
+  window.addEventListener("pageshow", function (event) {
+    if (event.persisted) { read(); restore(); }
+  });
+}());
+"""
+
+
+def nav_scroll_script() -> str:
+    """Автономный JS в конце body: положение .app-nav, без прокрутки страницы.
+
+    body[data-panel-user] содержит стабильный ID, а sessionStorage хранит
+    desktop/scrollTop и mobile/scrollLeft раздельно под panel-nav-scroll:<ID>.
+    Скрипт не зависит от форм; без меню или ID ничего не делает.
+    """
+    return _NAV_SCROLL_SCRIPT
 
 
 # ── копирование по клику и сохранённые фильтры ───────────────────────────────

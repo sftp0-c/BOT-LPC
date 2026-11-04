@@ -73,10 +73,11 @@ async def on_message(x: str, text: str):
     # Не нашли - не выдумываем, а показываем меню и кнопку частых вопросов.
     if await faq.ask_enabled() and (await faq.find_answer(x, text))[0]:
         return await faq.answer_text(x, text)
-    await api.send(x, "Используйте кнопки меню. Команды: /start, /cancel, /id\n"
-                      "Вопрос можно задать голосом текстом - ответы ищутся в частых вопросах.",
-                   [[btn("❓ Частые вопросы", "faq")]])
-    return await show_home(x)
+    return await api.send(
+        x, "Не удалось подобрать ответ. Откройте частые вопросы или вернитесь в меню, "
+           "чтобы написать сотруднику через «Обращения».",
+        [[btn("❓ Частые вопросы", "faq")], [btn("↩️ В меню", "home")]],
+    )
 
 
 def student_menu():

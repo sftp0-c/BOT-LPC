@@ -81,7 +81,7 @@ CONFIRM_WORD = "удалить"
 # Таблицы, где строку нельзя удалять сырым DELETE: у человека и у обращения
 # есть правила проекта, и они живут в функциях репозитория.
 GUARDED_TABLES = ("users", "admins", "tickets")
-READ_ONLY_TABLES = ("admin_log", "audit_log")
+READ_ONLY_TABLES = ("admin_log", "audit_log", "public_feedback", "public_feedback_rate_buckets")
 # Таблицы, где строка - это человек.
 PERSON_TABLES = ("users", "admins", "contacts")
 
@@ -180,6 +180,8 @@ async def table_columns(name: str) -> list:
         # не ищем и не выгружаем их; содержимое базы при этом не меняется.
         safe = {"id", "created_at", "user_id", "role", "action", "target_type", "target_id", "result"}
         rows = [row for row in rows if row["name"] in safe]
+    if name == "public_feedback":
+        rows = [row for row in rows if row["name"] != "submission_nonce"]
     return [{"name": as_str(row["name"]), "type": as_str(row["type"]),
              "notnull": bool(row["notnull"]), "default": as_str(row["dflt_value"]),
              "pk": bool(row["pk"]), "time": is_time_column(row["name"])}

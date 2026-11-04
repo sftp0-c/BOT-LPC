@@ -36,8 +36,8 @@ WORKDIR /app
 
 # Зависимости ставятся до кода: правка бота не заставляет пересобирать pip.
 COPY requirements.txt .
-COPY VERSION ./
 RUN pip install -r requirements.txt
+COPY VERSION ./
 
 # Модули верхнего уровня. Список полный: bot.py импортирует webpanel, а тот -
 # repository, timetable, charts, handlers. Забытый здесь модуль = падение на старте.

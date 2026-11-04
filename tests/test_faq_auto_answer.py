@@ -1,6 +1,6 @@
 ﻿"""Бот отвечает на частый вопрос сам, а не заставляет читать меню."""
 import college
-from conftest import register, say
+from conftest import press_visible, register, say
 from handlers import faq
 
 STUDENT = "100"
@@ -24,8 +24,13 @@ async def test_plain_question_gets_an_answer(api):
 async def test_unrelated_text_falls_back_to_menu(api):
     await register(STUDENT)
     await seeded()
+    before = len(api.to(STUDENT))
     await say(STUDENT, "ааааа")
-    assert "Используйте кнопки меню" in api.to(STUDENT)[-2][1]
+    assert len(api.to(STUDENT)) == before + 1
+    assert "Не удалось подобрать ответ" in api.last(STUDENT)[1]
+    assert api.payloads(STUDENT) == ["faq", "home"]
+    assert all("…" not in button["text"] for row in api.last(STUDENT)[2] for button in row)
+    await press_visible(api, STUDENT, "home")
     assert "ticket_menu" in api.payloads(STUDENT)
 
 
@@ -74,3 +79,20 @@ async def test_contacts_answer_mentions_site(api):
     await say(STUDENT, "телефон приемной директора")
     site = college.SITE.split("//")[-1].strip("/")
     assert site in " ".join(api.to(STUDENT)[-1][1]) or "2-26" in api.to(STUDENT)[-1][1]
+
+
+async def test_default_welcome_is_concise_and_keeps_custom_text(api):
+    import database as db
+    from handlers import menus
+
+    await register(STUDENT)
+    await db.run("DELETE FROM settings WHERE key='welcome_text'")
+    await menus.show_home(STUDENT)
+    text = api.last(STUDENT)[1]
+    assert text.count("Навигатор ЛПК") == 1
+    assert "Группа:" in text and "Иван" in text
+    assert "в двух нажатиях" not in text and "жалоба" not in text
+    assert api.payloads(STUDENT) == ["ticket_menu", "sched", "profile", "help"]
+    await db.set_setting("welcome_text", "Особый текст колледжа: {группа}")
+    await menus.show_home(STUDENT)
+    assert "Особый текст колледжа:" in api.last(STUDENT)[1]

@@ -27,6 +27,9 @@ from store import (  # noqa: F401 - фасад переэкспортирует 
     # store.common
     ADMIN_ROLES_SQL, STAFF_ROLES_SQL, TOPIC_SOURCES, _CONTACT_SELECT, _code, _code_forms,
     _contact_filter, _parse_day, _row_dict, _row_value, canonical_group,
+    # store.feedback
+    PUBLIC_FEEDBACK_KINDS, PUBLIC_FEEDBACK_STATUSES, count_public_feedback, get_public_feedback,
+    list_public_feedback, prune_public_feedback_rates, set_public_feedback_status, submit_public_feedback,
     # store.groups
     _group_dict, add_group_aliases, delete_group, find_group, get_group, group_aliases, groups,
     known_groups, list_groups, rename_group, resolve_group, set_group_active, suggest_groups,

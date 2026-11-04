@@ -22,7 +22,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse
 
 import config
 import version
@@ -291,11 +291,12 @@ async def backup_loop():
 
 
 async def audit_cleanup_loop() -> None:
-    """Раз в сутки удерживает только 30 дней безопасного полного аудита."""
+    """Раз в сутки чистит 30-дневный аудит и истёкшие лимиты публичной формы."""
     while True:
         await asyncio.sleep(24 * 60 * 60)
         try:
             removed = await repo.prune_audit(30)
+            await repo.prune_public_feedback_rates(int(time.time()))
             if removed:
                 log.info("полный аудит: удалено старых записей — %s", removed)
         except Exception as exc:  # noqa: BLE001 — обслуживание не роняет бота
@@ -427,12 +428,6 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="College MAX bot", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 app.include_router(panel_router)
 app.include_router(panel_open_router)      # /join/<код>: открыто без входа в панель
-
-
-@app.get("/", include_in_schema=False)
-async def root_redirect():
-    """Главный адрес сайта сразу открывает вход в панель."""
-    return RedirectResponse("/panel/login", status_code=307)
 
 
 @app.exception_handler(sqlite3.OperationalError)

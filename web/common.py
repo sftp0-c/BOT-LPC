@@ -27,7 +27,7 @@ import charts
 import database as db
 import repository as repo
 from panel_theme import (ICON_NAMES_BY_PATH, STYLESHEET, actions_script, hotkeys_script, icon,
-                          panel_toast_js, theme_boot_script, theme_script)
+                          nav_scroll_script, panel_toast_js, theme_boot_script, theme_script)
 from utils import as_str, cut_plain, norm_code, person_label, short_name, to_int
 
 from .router import router
@@ -403,7 +403,8 @@ NAV_GROUPS: tuple[tuple[str, tuple[tuple[str, str, str, str], ...]], ...] = (
                  ("/data", "Данные", "archive", "Владельцу"),
                  ("/test", "Тест", "check", "Владельцу"),
                  ("/logs", "Технический журнал", "logs", ""),
-                 ("/audit", "Полный аудит", "audit", ""))),
+                 ("/audit", "Полный аудит", "audit", ""),
+                 ("/feedback", "Отзывы о бета-версии", "reply", ""))),
 )
 
 
@@ -527,10 +528,10 @@ def page(title: str, body: str, user: str = "", tab: str = "",
             f'<button class="theme-toggle login-theme" type="button" aria-label="Сменить тему"></button>'
             f'<main id="main-content" class="login-shell">{banner}{body}</main>'
             f'<footer class="login-footer">Навигатор ЛПК · Работа с обращениями в MAX · '
-            f'версия {esc(version.__version__)}</footer>{scripts}</body></html>',
+            f'Бета-тестирование · версия {esc(version.__version__)}</footer>{scripts}</body></html>',
             status_code=status_code, headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow", "Referrer-Policy": "no-referrer"},
         )
-    scripts += f'<script>{hotkeys_script(NAV_SECTIONS)}</script>'
+    scripts += f'<script>{nav_scroll_script()}</script><script>{hotkeys_script(NAV_SECTIONS)}</script>'
     nav = nav_html(tab, _nav_badges.get())
     section = next((group for group, items in NAV_GROUPS
                     if any(item[0] == tab for item in items)), "Рабочее пространство")
@@ -539,11 +540,11 @@ def page(title: str, body: str, user: str = "", tab: str = "",
             f'<div class="page-actions">{actions}</div></div>')
     return HTMLResponse(
         f"""<!doctype html><html lang="ru" data-theme="dark"><head><meta charset="utf-8">
-{css_head}</head><body class="panel-app" data-tab="{esc(tab)}">
+{css_head}</head><body class="panel-app" data-tab="{esc(tab)}" data-panel-user="{esc(user)}">
 <a class="skip-link" href="#main-content">Перейти к содержимому</a>
 <header class="app-header">
   <div class="brand"><span class="logo">{icon("navigator", 24)}</span><span>
-    <b>Навигатор <em>ЛПК</em></b><small>панель сис-админа</small></span></div>
+    <b>Навигатор <em>ЛПК</em></b><small><span class="panel-beta">Бета-тестирование</span></small></span></div>
   <button class="gsearch palette-trigger" type="button" data-palette-open aria-label="Поиск по панели">
     {icon("search", 18)}<span>Найти обращение, человека, группу</span><kbd>Ctrl K</kbd>
   </button>
@@ -553,7 +554,7 @@ def page(title: str, body: str, user: str = "", tab: str = "",
   </div>
 </header>
 <nav class="app-nav" aria-label="Разделы панели"><div class="nav-caption">Рабочее пространство</div>{nav}</nav>
-<footer class="foot-ver"><span>{icon("college", 14)} Панель колледжа</span><span>версия {esc(version.__version__)}</span>
+<footer class="foot-ver"><span>{icon("college", 14)} Панель колледжа</span><span>версия {esc(version.__version__)}</span><span class="panel-beta">Бета-тестирование</span>
 <a href="/panel/api/health">{icon("activity", 14)} состояние</a></footer>
 <main id="main-content" tabindex="-1">{head}{banner}{body}</main>
 <footer class="app-footer"><span>Навигатор ЛПК</span><span>Единая очередь · Данные из бота в MAX</span></footer>

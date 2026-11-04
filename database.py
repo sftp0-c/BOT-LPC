@@ -214,6 +214,25 @@ CREATE TABLE IF NOT EXISTS audit_log(
 CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_log_user    ON audit_log(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_log_action  ON audit_log(action);
+CREATE TABLE IF NOT EXISTS public_feedback(
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind             TEXT NOT NULL CHECK(kind IN ('bug', 'suggestion')),
+    body             TEXT NOT NULL CHECK(length(body) BETWEEN 10 AND 4000),
+    status           TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new', 'in_progress', 'closed')),
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    handled_by       TEXT,
+    submission_nonce TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_public_feedback_status ON public_feedback(status, id DESC);
+-- Только короткоживущие HMAC-ключи; адресов, браузеров и текста обращений здесь нет.
+CREATE TABLE IF NOT EXISTS public_feedback_rate_buckets(
+    bucket_key TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    attempts   INTEGER NOT NULL CHECK(attempts > 0),
+    PRIMARY KEY(bucket_key, expires_at)
+);
+CREATE INDEX IF NOT EXISTS idx_public_feedback_rate_expiry ON public_feedback_rate_buckets(expires_at);
 """
 
 # Колонки, добавленные после первой публикации бота: таблицы, созданные старой
@@ -478,6 +497,8 @@ async def init_db() -> None:
     async with _conn() as c:
         await c.execute("PRAGMA journal_mode=WAL")
         await c.executescript(SCHEMA)
+        await c.execute("DELETE FROM public_feedback_rate_buckets "
+                        "WHERE expires_at <= CAST(strftime('%s', 'now') AS INTEGER)")
         for table, columns in COLUMN_UPGRADES.items():
             await _add_missing_columns(c, table, columns)
         # Переход со старой конвенции (UTC) на локальное время: один раз за всю

@@ -47,7 +47,8 @@ class AuditRoute(APIRoute):
             return
         target_type = target_id = ""
         for key, kind in (("ticket_id", "ticket"), ("user_id", "user"),
-                          ("template_id", "template"), ("faq_id", "faq"), ("rowid", "row")):
+                          ("template_id", "template"), ("faq_id", "faq"), ("rowid", "row"),
+                          ("feedback_id", "public_feedback")):
             raw = str(request.path_params.get(key, ""))
             if re.fullmatch(r"[0-9]{1,20}", raw):
                 target_type, target_id = kind, raw

@@ -132,7 +132,7 @@ def panel_routes() -> set:
     found = registered_routes(bot.app.routes)
     public = {"/", "/robots.txt", "/sitemap.xml"}
     return {item for item in found
-            if item[1].startswith(("/panel", "/join", "/public/")) or item[1] in public}
+            if item[1].startswith(("/panel", "/join", "/public/", "/feedback")) or item[1] in public}
 
 
 # ── фасад ─────────────────────────────────────────────────────────────────────

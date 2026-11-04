@@ -133,7 +133,7 @@ def _audit_id(value, limit: int = 20) -> str:
 
 
 def _audit_target(kind: str, value) -> str:
-    if kind in ("ticket", "user", "template", "faq", "row"):
+    if kind in ("ticket", "user", "template", "faq", "row", "public_feedback"):
         return _audit_id(value)
     if kind == "callback":
         return _audit_code(value, fallback="")
@@ -148,7 +148,7 @@ async def log_audit(user_id: str = "", role: str = "", action: str = "",
     """Структурированный аудит без переписки, значений полей и кодов приглашений."""
     safe_role = as_str(role).strip().lower()
     safe_role = safe_role if safe_role in _AUDIT_ROLES else "unknown"
-    safe_target = target_type if target_type in ("ticket", "user", "template", "faq", "row", "callback", "session", "invite") else ""
+    safe_target = target_type if target_type in ("ticket", "user", "template", "faq", "row", "callback", "session", "invite", "public_feedback") else ""
     safe_result = as_str(result).strip().lower()
     safe_result = safe_result if safe_result in _AUDIT_RESULTS else "failed"
     # Код приглашения является секретом вне зависимости от имени вызывающего кода.
