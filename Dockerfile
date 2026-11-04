@@ -56,6 +56,10 @@ COPY web ./web
 # Проверяем импорты на этапе сборки: без неё забытый модуль всплыл бы только
 # при первом запуске контейнера - в 3 часа ночи.
 RUN python -c "import config, database, max_api, repository, updates, utils, college, timetable, charts, schedule_import, schedule_watch, attachments, panel_theme, tunnel, clock, bot_commands, maxapp, version, webpanel, bot, handlers, store, web; print('импорты в порядке')"
+# Git на сервере может хранить часть исходников с закрытым umask. COPY переносит
+# эти права в образ, и непривилегированный app не сможет даже импортировать bot.py.
+# Данные не раскрываем: /app/data ниже перекрывается отдельным Docker-томом.
+RUN chmod -R a+rX /app
 # .dockerignore уже исключает тесты, но папка с данными может быть смонтирована
 # в образ при локальной сборке - создаём заранее, чтобы права были верными.
 RUN useradd --system --uid 10001 --home-dir /app app \
