@@ -69,4 +69,13 @@ contact_kind, delete_user, get_user, give_consent, is_registered,
     log_ticket_event, open_tickets_count, recent_student_tickets, restore_ticket,
     set_ticket_ready, set_ticket_status, status_counts, ticket_events, ticket_thread,
     transition_ticket_status, update_ticket,
+    # store.web_access
+    WEB_PERMISSIONS, WEB_WORK_PERMISSIONS, WEB_PERMISSION_PRESETS, get_staff_web_access,
+    list_staff_web_access, set_staff_web_access, revoke_staff_web_sessions, staff_web_principal,
+    staff_web_principal_in_tx, normalize_staff_web_permissions, normalize_staff_web_id,
+    staff_web_secret, staff_web_hash, staff_web_session_hash, request_staff_web_code,
+    verify_staff_web_code, cancel_staff_web_challenge, revoke_staff_web_session,
+    # store.workspace
+    workspace_list, workspace_ticket, workspace_apply, workspace_attachment,
+    workspace_template_preview, workspace_can_attach, workspace_attach_file,
 )

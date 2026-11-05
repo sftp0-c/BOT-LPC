@@ -1244,6 +1244,9 @@ async def st_attach_file(x, text, p):
 
 async def on_attachment(x: str, files: list) -> bool:
     """Файл пришёл в личный диалог. True - событие обработано, больше не отвечать."""
+    from attachments import attachments_dir, download_attachment, safe_name
+    from store.workspace import workspace_attach_file, workspace_can_attach
+
     item = (files or [{}])[0]
     st = await db.get_state(x)
     if not st or st["state"] != "attach_file":
@@ -1251,39 +1254,62 @@ async def on_attachment(x: str, files: list) -> bool:
                           "«📎 Прикрепить файл» в самом обращении.", BACK)
         return True
     tid = to_int(st["payload"].get("tid"))
-    t = await repo.get_ticket(tid)
-    if not t:
+    permitted = await workspace_can_attach(x, tid)
+    if permitted["result"] != "ok":
         await db.clear_state(x)
-        return await api.send(x, "Обращение не найдено — файл не прикреплён.", BACK) or True
-    existing = [name for name in await attached_names(tid)]
-    if len(existing) >= ATTACH_MAX:
-        await db.clear_state(x)
-        return await api.send(x, f"К обращению уже прикреплено {ATTACH_MAX} файла.", attach_kb(tid)) or True
-    try:
-        from attachments import download_attachment
+        text = (permitted["message"] if permitted["result"] == "conflict"
+                else "Обращение не найдено — файл не прикреплён.")
+        await api.send(x, text, BACK)
+        return True
+    folder = attachments_dir()
+    before = set(os.listdir(folder)) if os.path.isdir(folder) else set()
+    path, name = "", ""
 
-        path, name = await download_attachment(item.get("url", ""), item.get("name", ""))
-    except Exception as exc:  # noqa: BLE001 - студенту нужна причина, а не трассировка
+    async def discard_new_file():
+        # Удаляем только собственный новый файл, не старый хеш/чужую ассоциацию.
+        if (path and name not in before and os.path.basename(path) == name
+                and os.path.dirname(os.path.realpath(path)) == os.path.realpath(folder)
+                and not os.path.islink(path) and os.path.isfile(path)):
+            from store.workspace import _PrivateText
+
+            linked = await db.one("SELECT id FROM ticket_files WHERE storage_name=?", (_PrivateText(name),))
+            if not linked:
+                os.remove(path)
+
+    try:
+        path, name = await download_attachment(item.get("url", ""), item.get("name", ""), unique=True)
+        size = os.path.getsize(path)  # Недоверенный size из MAX не заменяет размер записанных байтов.
+        display_name = safe_name(item.get("name", "") or name)
+        saved = await workspace_attach_file(x, tid, storage_name=name, display_name=display_name, size=size)
+        if saved["result"] != "ok":
+            await discard_new_file()
+            await db.clear_state(x)
+            await api.send(x, saved["message"] + " Файл не прикреплён.", BACK)
+            return True
+    except Exception as exc:  # noqa: BLE001 - без текста файлов и токенов в журнале
+        await discard_new_file()
         log.warning("не удалось сохранить вложение обращения №%s (%s)", tid, type(exc).__name__)
-        return await api.send(x, f"⚠️ Файл не сохранился: {exc}\nПришлите другой или напишите текстом.",
-                              attach_kb(tid)) or True
-    size = item.get("size") or os.path.getsize(path)
-    line = f"📎 Файл: {name} ({size // 1024} КБ)"
-    await repo.add_ticket_message(tid, x, "student", line)
-    await notify(t["target_admin_id"], f"📎 Файл к обращению №{tid}: {name}", ticket_kb(t, True))
+        reason = str(exc) if isinstance(exc, ValueError) else "не удалось записать файл"
+        await api.send(x, f"Файл не сохранился: {reason}. Пришлите другой или напишите текстом.", attach_kb(tid))
+        return True
+    except BaseException:
+        # Отмена обработчика не оставляет бесхозный файл; уже связанную запись
+        # проверка discard_new_file не удаляет, даже если отменён сам commit.
+        await discard_new_file()
+        raise
+    t = saved["ticket"]
+    await notify(t["target_admin_id"], f"📎 Файл к обращению №{tid}: {display_name}", ticket_kb(t, True))
     await db.clear_state(x)
-    await api.send(x, f"✅ Файл прикреплён к обращению №{tid}.", attach_kb(tid))
+    await api.send(x, f"Файл прикреплён к обращению №{tid}.", attach_kb(tid))
     return True
 
 
 async def attached_names(ticket_id: int) -> list[str]:
-    """Имена файлов, прикреплённых к обращению: по строкам «📎 Файл: …»."""
-    names = []
-    for row in await repo.ticket_thread(ticket_id, 100):
-        text = as_str(row["text"])
-        if text.startswith("📎 Файл: "):
-            names.append(text[len("📎 Файл: "):].split(" (")[0])
-    return names
+    """Имена только из доверенной связи. Текстовые маркеры не доказывают наличие файла."""
+    rows = await db.many("SELECT f.display_name FROM ticket_files f "
+                        "JOIN ticket_messages m ON m.id=f.message_id AND m.ticket_id=f.ticket_id "
+                        "WHERE f.ticket_id=? ORDER BY f.id", (int(ticket_id),))
+    return [row["display_name"] for row in rows]
 
 
 @callback("ticketsend")

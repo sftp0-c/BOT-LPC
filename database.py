@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 from contextlib import asynccontextmanager
 
 import aiosqlite
@@ -54,7 +55,8 @@ CREATE TABLE IF NOT EXISTS tickets(
     deleted_at      TEXT NOT NULL DEFAULT '',           -- мягкое удаление: пусто = живое обращение
     deleted_by      TEXT NOT NULL DEFAULT '',           -- кто убрал в архив
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    workspace_revision INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_tickets_student ON tickets(student_id);
 CREATE INDEX IF NOT EXISTS idx_tickets_admin   ON tickets(target_admin_id);
@@ -233,6 +235,72 @@ CREATE TABLE IF NOT EXISTS public_feedback_rate_buckets(
     PRIMARY KEY(bucket_key, expires_at)
 );
 CREATE INDEX IF NOT EXISTS idx_public_feedback_rate_expiry ON public_feedback_rate_buckets(expires_at);
+-- Отдельный кабинет сотрудников. Строка доступа переживает удаление сотрудника.
+CREATE TABLE IF NOT EXISTS staff_web_access(
+    user_id      TEXT PRIMARY KEY,
+    enabled      INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+    permissions  TEXT NOT NULL DEFAULT '[]',
+    auth_version INTEGER NOT NULL DEFAULT 1,
+    created_at   INTEGER NOT NULL DEFAULT 0,
+    updated_at   INTEGER NOT NULL DEFAULT 0,
+    updated_by   TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS staff_web_sessions(
+    token_hash   TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL,
+    auth_version INTEGER NOT NULL,
+    expires_at   INTEGER NOT NULL,
+    revoked_at   INTEGER NOT NULL DEFAULT 0,
+    created_at   INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_staff_web_sessions_user ON staff_web_sessions(user_id, revoked_at);
+CREATE INDEX IF NOT EXISTS idx_staff_web_sessions_expiry ON staff_web_sessions(expires_at);
+CREATE TABLE IF NOT EXISTS staff_web_login_challenges(
+    challenge_hash TEXT PRIMARY KEY,
+    browser_hash   TEXT NOT NULL,
+    id_hash        TEXT NOT NULL,
+    user_id        TEXT NOT NULL DEFAULT '',
+    code_hash      TEXT NOT NULL,
+    auth_version   INTEGER NOT NULL DEFAULT 0,
+    expires_at     INTEGER NOT NULL,
+    attempts       INTEGER NOT NULL DEFAULT 0,
+    consumed_at    INTEGER NOT NULL DEFAULT 0,
+    created_at     INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_staff_web_challenges_user ON staff_web_login_challenges(user_id);
+CREATE INDEX IF NOT EXISTS idx_staff_web_challenges_browser ON staff_web_login_challenges(browser_hash);
+CREATE INDEX IF NOT EXISTS idx_staff_web_challenges_expiry ON staff_web_login_challenges(expires_at);
+CREATE TABLE IF NOT EXISTS staff_web_rate_buckets(
+    bucket_key TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    attempts   INTEGER NOT NULL CHECK(attempts > 0),
+    PRIMARY KEY(bucket_key, expires_at)
+);
+CREATE INDEX IF NOT EXISTS idx_staff_web_rates_expiry ON staff_web_rate_buckets(expires_at);
+CREATE TABLE IF NOT EXISTS ticket_files(
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_id    INTEGER NOT NULL REFERENCES tickets(ticket_id) ON DELETE CASCADE,
+    message_id   INTEGER NOT NULL REFERENCES ticket_messages(id) ON DELETE CASCADE,
+    storage_name TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    size         INTEGER NOT NULL CHECK(size>=0),
+    created_at   TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_ticket_files_ticket ON ticket_files(ticket_id, message_id);
+CREATE TABLE IF NOT EXISTS workspace_operations(
+    actor_id     TEXT NOT NULL,
+    audience     TEXT NOT NULL,
+    operation_key TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    ticket_id    INTEGER NOT NULL REFERENCES tickets(ticket_id) ON DELETE CASCADE,
+    action       TEXT NOT NULL,
+    revision     INTEGER NOT NULL,
+    message_id   INTEGER NOT NULL DEFAULT 0,
+    event_ids    TEXT NOT NULL DEFAULT '[]',
+    created_at   TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(actor_id, audience, operation_key)
+);
+CREATE INDEX IF NOT EXISTS idx_workspace_operations_ticket ON workspace_operations(ticket_id);
 """
 
 # Колонки, добавленные после первой публикации бота: таблицы, созданные старой
@@ -262,6 +330,7 @@ COLUMN_UPGRADES: dict[str, dict[str, str]] = {
         "consent_version": "TEXT NOT NULL DEFAULT ''",   # какая редакция текста
     },
     "tickets": {
+        "workspace_revision": "INTEGER NOT NULL DEFAULT 0",
         "topic": "TEXT NOT NULL DEFAULT ''",
         "ready_until": "TEXT NOT NULL DEFAULT ''",
         "doc_url": "TEXT NOT NULL DEFAULT ''",
@@ -291,6 +360,50 @@ COLUMN_UPGRADES: dict[str, dict[str, str]] = {
         "result": "TEXT NOT NULL DEFAULT 'ok'",
     },
 }
+
+# Триггеры создаются после ALTER TABLE: старые копии ещё не знают новых колонок.
+_WORKSPACE_REVOKE_SQL = """
+    INSERT INTO staff_web_access(user_id, enabled, permissions, auth_version, created_at, updated_at)
+    VALUES(OLD.user_id, 0, '[]', 1, CAST(strftime('%s','now') AS INTEGER), CAST(strftime('%s','now') AS INTEGER))
+    ON CONFLICT(user_id) DO UPDATE SET enabled=0, permissions='[]',
+        auth_version=staff_web_access.auth_version+1, updated_at=excluded.updated_at;
+    UPDATE staff_web_sessions SET revoked_at=MAX(1, CAST(strftime('%s','now') AS INTEGER))
+        WHERE user_id=OLD.user_id AND revoked_at=0;
+    UPDATE staff_web_login_challenges SET consumed_at=MAX(1, CAST(strftime('%s','now') AS INTEGER))
+        WHERE user_id=OLD.user_id AND consumed_at=0;
+"""
+WORKSPACE_TRIGGERS = (
+    # INSERT OR REPLACE тоже вставляет заново, даже если SQLite не вызвал DELETE-триггер.
+    "CREATE TRIGGER IF NOT EXISTS staff_web_admin_recreated AFTER INSERT ON admins "
+    "WHEN EXISTS(SELECT 1 FROM staff_web_access WHERE user_id=NEW.user_id) BEGIN "
+    + _WORKSPACE_REVOKE_SQL.replace("OLD.user_id", "NEW.user_id") + " END;",
+    "CREATE TRIGGER IF NOT EXISTS staff_web_admin_changed "
+    "AFTER UPDATE OF user_id, role_type, is_test ON admins "
+    "WHEN OLD.user_id IS NOT NEW.user_id OR OLD.role_type IS NOT NEW.role_type "
+    "OR OLD.is_test IS NOT NEW.is_test BEGIN " + _WORKSPACE_REVOKE_SQL + " END;",
+    "CREATE TRIGGER IF NOT EXISTS staff_web_admin_deleted "
+    "BEFORE DELETE ON admins BEGIN " + _WORKSPACE_REVOKE_SQL + " END;",
+    "CREATE TRIGGER IF NOT EXISTS workspace_ticket_revision AFTER UPDATE ON tickets "
+    "WHEN NEW.workspace_revision=OLD.workspace_revision BEGIN "
+    "UPDATE tickets SET workspace_revision=OLD.workspace_revision+1 "
+    "WHERE ticket_id=NEW.ticket_id; END;",
+    "CREATE TRIGGER IF NOT EXISTS workspace_ticket_files_link_insert "
+    "BEFORE INSERT ON ticket_files WHEN NOT EXISTS(SELECT 1 FROM ticket_messages "
+    "WHERE id=NEW.message_id AND ticket_id=NEW.ticket_id) "
+    "BEGIN SELECT RAISE(ABORT, 'Несовместимая связь файла'); END;",
+    "CREATE TRIGGER IF NOT EXISTS workspace_ticket_files_link_update "
+    "BEFORE UPDATE OF ticket_id, message_id ON ticket_files "
+    "WHEN NOT EXISTS(SELECT 1 FROM ticket_messages "
+    "WHERE id=NEW.message_id AND ticket_id=NEW.ticket_id) "
+    "BEGIN SELECT RAISE(ABORT, 'Несовместимая связь файла'); END;",
+) + tuple(
+    f"CREATE TRIGGER IF NOT EXISTS workspace_{table}_{event.lower()} "
+    f"AFTER {event} ON {table} BEGIN UPDATE tickets SET workspace_revision=workspace_revision+1 "
+    f"WHERE ticket_id IN ({references}); END;"
+    for table in ("ticket_messages", "ticket_events", "ticket_files")
+    for event, references in (("INSERT", "NEW.ticket_id"), ("DELETE", "OLD.ticket_id"),
+                              ("UPDATE", "OLD.ticket_id,NEW.ticket_id"))
+)
 
 # Таблицы, из которых справочник групп наполняется кодами, уже встречающимися в данных.
 GROUP_SOURCES: tuple[str, ...] = ("users", "schedules")
@@ -501,6 +614,14 @@ async def init_db() -> None:
                         "WHERE expires_at <= CAST(strftime('%s', 'now') AS INTEGER)")
         for table, columns in COLUMN_UPGRADES.items():
             await _add_missing_columns(c, table, columns)
+        for statement in WORKSPACE_TRIGGERS:
+            await c.execute(statement)
+        await c.execute("DELETE FROM staff_web_rate_buckets "
+                        "WHERE expires_at <= CAST(strftime('%s', 'now') AS INTEGER)")
+        await c.execute("DELETE FROM staff_web_login_challenges "
+                        "WHERE expires_at <= CAST(strftime('%s', 'now') AS INTEGER)")
+        await c.execute("DELETE FROM staff_web_sessions "
+                        "WHERE expires_at <= CAST(strftime('%s', 'now') AS INTEGER)")
         # Переход со старой конвенции (UTC) на локальное время: один раз за всю
         # жизнь базы, дальше запись в settings останавливает повторный сдвиг.
         # Идёт до наполнения: всё, что init_db пишет сам, уже локальное.
@@ -740,6 +861,8 @@ async def table_counts() -> list[tuple[str, int]]:
 # вести вручную: удалённая таблица или потерянная колонка обнаруживаются сразу.
 EXPECTED_TABLES: tuple[str, ...] = tuple(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", SCHEMA))
 EXPECTED_INDEXES: tuple[str, ...] = tuple(re.findall(r"CREATE INDEX IF NOT EXISTS (\w+)", SCHEMA))
+EXPECTED_TRIGGERS: tuple[str, ...] = tuple(
+    re.search(r"CREATE TRIGGER IF NOT EXISTS (\w+)", sql)[1] for sql in WORKSPACE_TRIGGERS)
 
 
 async def missing_objects() -> list[str]:
@@ -757,6 +880,7 @@ async def missing_objects() -> list[str]:
         present = {(as_str(row["type"]), as_str(row["name"])) for row in rows}
         missing += [f"таблица {name}" for name in EXPECTED_TABLES if ("table", name) not in present]
         missing += [f"индекс {name}" for name in EXPECTED_INDEXES if ("index", name) not in present]
+        missing += [f"триггер {name}" for name in EXPECTED_TRIGGERS if ("trigger", name) not in present]
         for table, columns in COLUMN_UPGRADES.items():
             if ("table", table) not in present:
                 continue  # таблицы нет в списке выше, колонки ей не нужны
@@ -910,12 +1034,26 @@ async def restore_from(name: str) -> tuple[bool, str]:
         return False, verdict
     path = backup_path(name)
     safety = await backup_to(_unique_path(backups_folder(), f"bot-before-restore-{backup_name()}"))
-    async with _conn() as live:
-        await live.commit()
-        async with aiosqlite.connect(path) as source:
-            # backup(target) копирует ЭТУ базу В target: источник — копия, цель — живой файл
-            await source.backup(live)
-        await live.commit()
+    # Сначала обезвреживаем авторизацию в отдельной копии. Очистка после backup
+    # оставляла бы окно, в котором отозванная сессия снова принималась запросом.
+    # Исходный снимок и страховочная копия не меняются даже при сбое подготовки.
+    with tempfile.TemporaryDirectory(prefix="lpc-restore-") as temporary:
+        prepared_path = os.path.join(temporary, "prepared.db")
+        async with aiosqlite.connect(prepared_path) as prepared:
+            async with aiosqlite.connect(path) as source:
+                await source.backup(prepared)
+            tables = {row[0] for row in await (await prepared.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")).fetchall()}
+            for table in ("staff_web_sessions", "staff_web_login_challenges"):
+                if table in tables:
+                    await prepared.execute(f'DELETE FROM "{table}"')
+            if "staff_web_access" in tables and await column_exists(prepared, "staff_web_access", "auth_version"):
+                await prepared.execute("UPDATE staff_web_access SET auth_version=auth_version+1")
+            await prepared.commit()
+            async with _conn() as live:
+                await live.commit()
+                await prepared.backup(live)
+                await live.commit()
     await checkpoint()
     await init_db()  # схема из копии могла быть старее текущей
     return True, os.path.basename(safety)

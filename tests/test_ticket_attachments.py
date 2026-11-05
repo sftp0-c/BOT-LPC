@@ -1,9 +1,10 @@
-"""Файлы в обращениях: приём вложения, показ в панели, защита доступа."""
+﻿"""Файлы в обращениях: приём вложения, показ в панели, защита доступа."""
 import os
 
 import pytest
 
 import attachments
+import database as db
 import repository as repo
 from conftest import add_staff, login_panel, press, register
 
@@ -28,7 +29,7 @@ def folder():
 
 @pytest.fixture
 def stored_file(monkeypatch, folder):
-    async def fake_download(url, name=""):
+    async def fake_download(url, name="", **kwargs):
         target = attachments.safe_name(name or "file.pdf")
         full = os.path.join(folder, target)
         with open(full, "wb") as handle:
@@ -113,8 +114,11 @@ async def test_panel_shows_file_link(ticket_id, panel_client, env, stored_file):
         {"type": "file", "url": FILE_URL, "name": "справка.pdf", "size": 100}])
     assert login_panel(panel_client)
     body = panel_client.get(f"/panel/tickets?t={ticket_id}").text
-    assert "/panel/attachments/" in body
-    assert "справка.pdf" in body
+    stored = await db.one("SELECT id FROM ticket_files WHERE ticket_id=?", (ticket_id,))
+    link = f"/panel/tickets/{ticket_id}/files/{stored['id']}"
+    assert link in body and "справка.pdf" in body
+    response = panel_client.get(link)
+    assert response.status_code == 200 and response.content.startswith(b"%PDF")
 
 
 def test_attachment_download_requires_login(panel_client, env, stored_file):

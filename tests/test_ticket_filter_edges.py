@@ -28,7 +28,7 @@ async def owner_client(panel_client, monkeypatch, env):
 
 
 class Document(HTMLParser):
-    """Проверяем фактические значения HTML-атрибутов, а не их кодировку в строке."""
+    """Читаем ссылки и реальные значения полей, включая выбранные пункты select."""
 
     def __init__(self, body):
         super().__init__()
@@ -38,6 +38,8 @@ class Document(HTMLParser):
         self.age_text = []
         self._link = None
         self._form = None
+        self._select = None
+        self._option = None
         self._age = None
         self.feed(body)
 
@@ -48,24 +50,40 @@ class Document(HTMLParser):
             self.links.append(self._link)
         if tag == "form":
             assert self._form is None, "Вложенная форма ломает CSRF, action и return в браузере"
-            self._form = {**attrs, "fields": {}}
+            self._form = {**attrs, "fields": {}, "selects": {}}
             self.forms.append(self._form)
         if tag == "input" and self._form is not None and attrs.get("name"):
             self._form["fields"].setdefault(attrs["name"], []).append(attrs.get("value", ""))
+        if tag == "select" and self._form is not None and attrs.get("name"):
+            self._select = {**attrs, "options": []}
+            self._form["selects"][attrs["name"]] = self._select
+        if tag == "option" and self._select is not None:
+            self._option = {**attrs, "text": ""}
+            self._select["options"].append(self._option)
         if "live-age" in attrs.get("class", "").split():
             self.timers.append(attrs)
-        if tag == "span" and "wb-age" in attrs.get("class", "").split():
+        if tag == "span" and "ws-age" in attrs.get("class", "").split():
             self._age = ""
 
     def handle_data(self, text):
         if self._link is not None:
             self._link["text"] += text
+        if self._option is not None:
+            self._option["text"] += text
         if self._age is not None:
             self._age += text
 
     def handle_endtag(self, tag):
         if tag == "a":
             self._link = None
+        if tag == "option":
+            self._option = None
+        if tag == "select" and self._select is not None:
+            options = self._select["options"]
+            selected = [option for option in options if "selected" in option] or options[:1]
+            self._form["fields"].setdefault(self._select["name"], []).extend(
+                option.get("value", option["text"]) for option in selected)
+            self._select = None
         if tag == "form":
             self._form = None
         if tag == "span" and self._age is not None:
@@ -77,7 +95,16 @@ class Document(HTMLParser):
 
     def queue(self, ticket_id):
         return next(link["href"] for link in self.links
-                    if query(link["href"]).get("t") == str(ticket_id))
+                    if "data-ws-ticket-link" in link and query(link["href"]).get("t") == str(ticket_id))
+
+    def ticket_ids(self):
+        return {int(query(link["href"])["t"]) for link in self.links if "data-ws-ticket-link" in link}
+
+    def filter_form(self):
+        form = next(form for form in self.forms if "data-ws-filter-form" in form)
+        assert form["method"] == "get"
+        assert all(len(values) == 1 for values in form["fields"].values()), "Поля фильтров не должны повторяться"
+        return form, {key: values[0] for key, values in form["fields"].items()}
 
 
 def query(url):
@@ -122,25 +149,41 @@ async def test_links_round_trip_and_switch_one_filter(owner_client, monkeypatch)
     response = owner_client.get("/panel/tickets", params=params)
     assert response.status_code == 200
     doc = Document(response.text)
-    assert query(doc.queue(tid)) == params | {"t": str(tid)}
-    assert query(doc.link("Выгрузить в CSV")) == params
-    assert query(doc.link("Только ждут ответа")) == params | {"scope": "waiting"}
-    assert query(doc.link("Дольше суток")) == params
-    assert query(doc.link("Все обращения")) == params | {"mine": "0"}
-    assert query(doc.link("В работе")) == {key: val for key, val in params.items() if key != "view"}
-    assert query(doc.link("Архив:")) == params
-    assert f"Обращение №{tid}" in owner_client.get(doc.queue(tid)).text
-    assert [int(row[0]) for row in csv_rows(owner_client.get(doc.link("Выгрузить в CSV")))[1:]] == [tid]
+    canonical = params | {"tab": "closed"}
+    assert query(doc.queue(tid)) == canonical | {"page": "1", "t": str(tid)}
+    assert query(doc.link("Выгрузить CSV")) == canonical
+    assert [int(row[0]) for row in csv_rows(owner_client.get(doc.link("Выгрузить CSV")))[1:]] == [tid]
+
+    # Вкладка меняет вид целиком; остальные фильтры остаются без потерь.
+    for tab in ("open", "waiting", "closed"):
+        link = next(link for link in doc.links if link.get("data-ws-tab") == tab)
+        expected = {key: val for key, val in params.items() if key not in ("status", "scope", "view")}
+        assert query(link["href"]) == expected | {"tab": tab, "page": "1"}
+    without_scope = {key: val for key, val in canonical.items() if key != "scope"}
+    assert query(doc.link("Все сроки")) == without_scope | {"page": "1"}
+    response = owner_client.get(doc.link("Все сроки"))
+    assert response.status_code == 200
+    assert query(Document(response.text).link("Дольше суток")) == canonical | {"page": "1"}
+
+    card = owner_client.get(doc.queue(tid))
+    assert card.status_code == 200
+    assert f'id="ws-ticket-title">Обращение <span>№ {tid}</span>' in card.text
+    form, controls = doc.filter_form()
+    assert form.get("data-filters")
+    assert controls == canonical | {"page": "1"}
+
+    # Исполнитель и даты теперь задаются формой, а не отдельными ссылками.
+    changed_mine = owner_client.get(form["action"], params=controls | {"mine": ""})
+    assert changed_mine.status_code == 200
+    assert query(Document(changed_mine.text).link("Выгрузить CSV")) == canonical | {"mine": "0"}
     for days in (7, 14, 30):
-        expected = params | {"date_from": (clock.today() - timedelta(days=days - 1)).isoformat(),
-                             "date_to": "2026-11-04"}
-        assert query(doc.link(f"За {days} дней")) == expected
-    filter_form = next(form for form in doc.forms if form.get("data-filters"))
-    assert filter_form["fields"]["mine"] == ["1"]
-    assert filter_form["fields"]["q"] == [needle]
-    for form in doc.forms:
-        if form.get("method") == "post" and "/panel/tickets" in form.get("action", ""):
-            assert query(form["fields"]["return"][0]) == params
+        dates = {"date_from": (clock.today() - timedelta(days=days - 1)).isoformat(), "date_to": "2026-11-04"}
+        changed_dates = owner_client.get(form["action"], params=controls | dates)
+        assert changed_dates.status_code == 200
+        updated = Document(changed_dates.text)
+        assert query(updated.link("Выгрузить CSV")) == canonical | dates
+        assert updated.filter_form()[1] == controls | dates
+        assert [int(row[0]) for row in csv_rows(owner_client.get(updated.link("Выгрузить CSV")))[1:]] == [tid]
 
 
 @pytest.mark.parametrize(("mine", "expected"), [("1", "1"), ("true", "1"), (" on ", "1"),
@@ -148,20 +191,33 @@ async def test_links_round_trip_and_switch_one_filter(owner_client, monkeypatch)
 async def test_mine_normalizes_and_toggle_changes_only_mine(owner_client, mine, expected):
     own = await seed("Моё")
     other = await seed("Чужое", admin=STAFF)
-    doc = Document(owner_client.get("/panel/tickets", params={"mine": mine}).text)
-    assert query(doc.link("Выгрузить в CSV")) == {"mine": expected}
-    toggle = doc.link("Все обращения" if expected == "1" else "Только мои")
-    assert query(toggle) == {"mine": "0" if expected == "1" else "1"}
+    response = owner_client.get("/panel/tickets", params={"mine": mine})
+    assert response.status_code == 200
+    doc = Document(response.text)
+    canonical = {"tab": "open", "view": "open", "mine": expected}
+    assert query(doc.link("Выгрузить CSV")) == canonical
+    visible = {own} if expected == "1" else {own, other}
+    assert doc.ticket_ids() == visible
+    assert {int(row[0]) for row in csv_rows(owner_client.get(doc.link("Выгрузить CSV")))[1:]} == visible
+    form, controls = doc.filter_form()
+    assert controls["mine"] == ("1" if expected == "1" else "")
+    assert {option["value"] for option in form["selects"]["mine"]["options"]} == {"", "1"}
+    toggled = "0" if expected == "1" else "1"
+    response = owner_client.get(form["action"], params=controls | {"mine": "" if toggled == "0" else "1"})
+    assert response.status_code == 200
+    switched = Document(response.text)
+    assert query(switched.link("Выгрузить CSV")) == canonical | {"mine": toggled}
+    assert switched.ticket_ids() == ({own} if toggled == "1" else {own, other})
     rows, *_ = await filter_tickets(mine=mine, actor_id=OWNER)
-    assert {row["ticket_id"] for row in rows} == ({own} if expected == "1" else {own, other})
+    assert {row["ticket_id"] for row in rows} == visible
 
 
-async def test_duplicate_legacy_mine_is_canonicalized(owner_client):
+async def test_duplicate_legacy_mine_is_rejected_as_ambiguous(owner_client):
     await seed()
-    doc = Document(owner_client.get("/panel/tickets?mine=1&mine=").text)
-    assert query(doc.link("Выгрузить в CSV")) == {"mine": "0"}
-    for link in doc.links:
-        query(link["href"])
+    for path in ("/panel/tickets", "/panel/tickets.csv"):
+        response = owner_client.get(path + "?mine=1&mine=")
+        assert response.status_code == 400
+        assert "повторяется" in response.json()["detail"]
 
 
 @pytest.mark.parametrize("params", [{"date_from": "2026-02-30"}, {"date_to": "2026-13-01"},
@@ -243,12 +299,19 @@ async def test_counts_cover_filtered_rows_before_limit(owner_client, monkeypatch
     assert (waiting, overdue) == (5, 4)
     scoped, _, waiting, overdue = await filter_tickets(scope="overdue", mine="1", actor_id=OWNER, limit=1)
     assert scoped[0]["filtered_total"] == waiting == overdue == 4
-    page = owner_client.get("/panel/tickets", params={"mine": "1"}).text
-    assert "Очередь · 6" in page
-    assert "В работе: 4" in page
-    assert "Только ждут ответа: 5" in page
-    assert "Дольше суток: 4" in page
-    assert len(csv_rows(owner_client.get("/panel/tickets.csv", params={"mine": "1"}))) == 7
+    response = owner_client.get("/panel/tickets", params={"mine": "1"})
+    assert response.status_code == 200
+    page = response.text
+    assert '<span class="ws-range">1–6 из 6</span>' in page
+    for label, count in (("Открытые", 6), ("Ждут ответа", 5), ("Закрытые", 0)):
+        assert f'<span>{label}</span><span class="ws-count">{count}</span>' in page
+    assert 'Дольше суток<span class="ws-count">4</span>' in page
+    doc = Document(page)
+    assert len(doc.ticket_ids()) == 6
+    in_progress = owner_client.get("/panel/tickets", params={"mine": "1", "status": "in_progress"})
+    assert in_progress.status_code == 200
+    assert '<span class="ws-range">1–4 из 4</span>' in in_progress.text
+    assert len(csv_rows(owner_client.get(doc.link("Выгрузить CSV")))) == 7
 
 
 async def test_admin_api_preserves_max_defaults_and_batches_joins(monkeypatch):
@@ -316,15 +379,47 @@ async def test_untrusted_return_cannot_leave_panel(owner_client, target):
 async def test_card_forms_keep_filters_without_nested_forms(owner_client, archived):
     tid = await seed(archived=archived)
     params = {"mine": "1", "date_from": "2026-11-01", "date_to": "2026-11-04",
-              "scope": "waiting", "q": "справка", "t": str(tid)}
+              "scope": "waiting", "status": "new", "category": "feedback", "q": "справка", "t": str(tid)}
     if archived:
         params["view"] = "archive"
-    doc = Document(owner_client.get("/panel/tickets", params=params).text)
+    canonical = params | {"tab": "closed" if archived else "waiting",
+                          "view": "archive" if archived else "waiting", "page": "1"}
+    response = owner_client.get("/panel/tickets", params=params)
+    assert response.status_code == 200
+    doc = Document(response.text)
     actions = [form for form in doc.forms if f"/tickets/{tid}/" in form.get("action", "")]
-    assert {form["action"].rsplit("/", 1)[1] for form in actions} >= {"edit", "reply", "restore" if archived else "archive"}
-    for form in actions:
-        assert form["fields"]["csrf"][0]
-        assert query(form["fields"]["return"][0]) == params
+    assert 'name="as_staff"' not in response.text
+    if archived:
+        assert actions == [], "Архив в рабочем месте доступен только для чтения"
+        assert "Для этого обращения доступны просмотр и история" in response.text
+    else:
+        assert {form.get("data-draft-mode") for form in actions} >= {"reply", "note", "status", "forward"}
+        for form in actions:
+            assert form["action"] == f"/panel/tickets/{tid}/action"
+            assert len(form["fields"]["csrf"]) == 1 and form["fields"]["csrf"][0]
+            assert form["fields"]["operation_key"][0]
+            assert urlsplit(form["fields"]["return"][0]).path == "/panel/tickets"
+            assert query(form["fields"]["return"][0]) == canonical
+
+    # Редактирование и ответ за сотрудника остались на отдельной админ-странице.
+    admin_link = doc.link("Администрирование обращения")
+    without_ticket = {key: val for key, val in canonical.items() if key != "t"}
+    assert urlsplit(admin_link).path == f"/panel/tickets/{tid}/admin"
+    assert query(admin_link) == without_ticket
+    admin_response = owner_client.get(admin_link)
+    assert admin_response.status_code == 200
+    admin_doc = Document(admin_response.text)
+    admin_actions = [form for form in admin_doc.forms if f"/tickets/{tid}/" in form.get("action", "")]
+    assert {form["action"].rsplit("/", 1)[1] for form in admin_actions} >= {"edit", "reply", "restore" if archived else "archive"}
+    reply = next(form for form in admin_actions if form["action"].endswith("/reply"))
+    assert "as_staff" in reply["selects"]
+    for form in admin_actions:
+        assert len(form["fields"]["csrf"]) == 1 and form["fields"]["csrf"][0]
+        assert urlsplit(form["fields"]["return"][0]).path == "/panel/tickets"
+        assert query(form["fields"]["return"][0]) == canonical
+    back = admin_doc.link("К рабочему месту")
+    assert urlsplit(back).path == f"/panel/tickets/{tid}"
+    assert query(back) == without_ticket
 
 
 async def test_reply_validation_keeps_return(owner_client):
@@ -406,7 +501,7 @@ async def test_legacy_in_progress_has_no_invented_time(owner_client, legacy):
         await repo.log_ticket_event(tid, OWNER, "ready", "Выдача")
     doc = Document(owner_client.get("/panel/tickets", params={"t": tid}).text)
     assert doc.timers == []
-    assert doc.age_text.count("в работе · время начала неизвестно") == 2
+    assert doc.age_text.count("в работе · время не указано") == 2
 
 
 @pytest.mark.parametrize("status", ["ready", "completed", "rejected", "closed"])

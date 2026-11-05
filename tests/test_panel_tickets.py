@@ -1,4 +1,4 @@
-﻿"""Рабочее место: архив открывает обращение, быстрый ответ работает.
+﻿"""Рабочее место открывает архив; административный быстрый ответ работает.
 
 Две поломки, которые видны сотруднику сразу, и обе проверяются через настоящий
 HTTP: не по строкам кода, а по странице, которую он получает.
@@ -9,7 +9,7 @@ HTTP: не по строкам кода, а по странице, котору�
 архивного обращения нет, поэтому ``selected`` оставался пустым. Проверка идёт по
 самой ссылке со страницы архива - так же, как кликает человек.
 
-Быстрый ответ. В карточке есть список шаблонов, и выбор в нём не делал ничего:
+Быстрый ответ на отдельной админ-странице. Выбор шаблона раньше не делал ничего:
 обработчик читал только поле ответа, а подстановки {ФИО} и остальные в панели не
 подставлялись вовсе. Теперь ответ уходит по шаблону с подставленными данными
 обращения, свой текст важнее шаблона, удалённый шаблон не отправляет пустоту, а
@@ -33,7 +33,7 @@ FIO = "Иванов Иван Иванович"
 GROUP = "24-23"
 TPL_TITLE = "Справка готова"
 TPL_TEXT = "Здравствуйте, {ФИО}! Справка по обращению №{номер} готова, группа {группа}."
-CARD_STUB = "Выберите обращение в очереди слева"
+CARD_STUB = "Выберите обращение"
 
 
 # ── фикстуры ──────────────────────────────────────────────────────────────────
@@ -82,25 +82,25 @@ async def staff_messages(ticket_id: int) -> list:
 
 # ── помощники разбора страницы ───────────────────────────────────────────────
 def queue_item(body: str, ticket_id: int) -> str:
-    """Разметка пункта очереди по номеру обращения - как его видит человек."""
-    items = re.findall(r'<label class="wb-item.*?</label>', body, re.S)
-    wanted = [item for item in items if f'value="{ticket_id}"' in item]
+    """Реальная ссылка новой очереди, без прежней обёртки массового выбора."""
+    items = re.findall(r'<a\b[^>]*\bdata-ws-ticket-link\b[^>]*>.*?</a>', body, re.S)
+    wanted = [item for item in items if f'aria-label="Обращение №{ticket_id},' in item]
     assert wanted, f"в очереди нет обращения {ticket_id}"
     return wanted[0]
 
 
 def queue_link(body: str, ticket_id: int) -> str:
     """Ссылка пункта очереди на карточку обращения."""
-    match = re.search(r'<a href="([^"]+)"', queue_item(body, ticket_id))
+    match = re.search(r'<a\b[^>]*href="([^"]+)"', queue_item(body, ticket_id))
     assert match, "в пункте очереди нет ссылки на обращение"
     return unescape(match.group(1))
 
 
-def copied_link(body: str) -> str:
-    """Ссылка на обращение из кнопки «скопировать» в карточке."""
-    found = re.findall(r'data-copy="([^"]*/panel/tickets\?t=\d+[^"]*)"', body)
-    assert found, "в карточке нет копируемой ссылки на обращение"
-    return found[0].replace("&amp;", "&")
+def standalone_link(body: str) -> str:
+    """Ссылка «Отдельная карточка» сохраняет вид архива и фильтры рабочего места."""
+    match = re.search(r'<a\b[^>]*class="[^"]*\bws-open-full\b[^"]*"[^>]*href="([^"]+)"', body)
+    assert match, "в карточке нет ссылки на отдельное обращение"
+    return unescape(match.group(1))
 
 
 def toast_of(body: str) -> str:
@@ -154,10 +154,14 @@ async def test_archive_link_really_opens_the_card(panel_client, env):
     ticket_id = await archived("Нужна справка для военной части")
     assert login_panel(panel_client)
     link = queue_link(panel_client.get("/panel/tickets?view=archive").text, ticket_id)
-    card = panel_client.get(link).text
-    assert f"Обращение №{ticket_id}" in card
+    response = panel_client.get(link)
+    assert response.status_code == 200
+    card = response.text
+    assert f'id="ws-ticket-title">Обращение <span>№ {ticket_id}</span>' in card
     assert CARD_STUB not in card, "карточка не открылась: справа заглушка"
-    assert "Быстрый ответ" in card
+    assert "Переписка и история" in card
+    assert "Для этого обращения доступны просмотр и история" in card
+    assert f'action="/panel/tickets/{ticket_id}/action"' not in card
 
 
 async def test_archive_link_keeps_filters(panel_client, env):
@@ -171,15 +175,25 @@ async def test_archive_link_keeps_filters(panel_client, env):
     values = parse_qs(urlsplit(link).query)
     for name, value in filters.items():
         assert values.get(name) == [value], f"В ссылке изменился фильтр {name}: {link}"
-    assert f"Обращение №{ticket_id}" in panel_client.get(link).text
+    response = panel_client.get(link)
+    assert response.status_code == 200
+    assert f'id="ws-ticket-title">Обращение <span>№ {ticket_id}</span>' in response.text
 
 
 async def test_card_link_of_archived_ticket_keeps_the_archive(panel_client, env):
-    """Скопированная ссылка на архивное обращение тоже ведёт в архив."""
+    """Переход в отдельную карточку не теряет архив и не разрешает ответ из него."""
     ticket_id = await archived()
     assert login_panel(panel_client)
     body = panel_client.get(f"/panel/tickets?view=archive&t={ticket_id}").text
-    assert copied_link(body).endswith(f"/tickets?t={ticket_id}&view=archive")
+    link = standalone_link(body)
+    assert urlsplit(link).path == f"/panel/tickets/{ticket_id}"
+    assert parse_qs(urlsplit(link).query) == {"tab": ["closed"], "view": ["archive"], "mine": ["0"], "page": ["1"]}
+    response = panel_client.get(link, follow_redirects=False)
+    assert response.status_code == 200
+    assert f'id="ws-ticket-title">Обращение <span>№ {ticket_id}</span>' in response.text
+    assert "В архиве" in response.text
+    assert "Для этого обращения доступны просмотр и история" in response.text
+    assert '<aside class="ws-queue"' not in response.text
 
 
 async def test_live_queue_link_has_no_archive(panel_client, env):
@@ -189,7 +203,9 @@ async def test_live_queue_link_has_no_archive(panel_client, env):
     body = panel_client.get("/panel/tickets").text
     link = queue_link(body, ticket_id)
     assert "view=archive" not in link
-    assert f"Обращение №{ticket_id}" in panel_client.get(link).text
+    response = panel_client.get(link)
+    assert response.status_code == 200
+    assert f'id="ws-ticket-title">Обращение <span>№ {ticket_id}</span>' in response.text
 
 
 # ── быстрый ответ: шаблон с подстановками ────────────────────────────────────
@@ -198,7 +214,7 @@ async def test_reply_form_carries_the_template_text(panel_client, env, clear_tem
     template_id = await template()
     ticket_id = await ticket()
     assert login_panel(panel_client)
-    block = reply_block(panel_client.get(f"/panel/tickets?t={ticket_id}").text)
+    block = reply_block(panel_client.get(f"/panel/tickets/{ticket_id}/admin").text)
     choice = re.search(r'<select name="template">.*?</select>', block, re.S)
     assert choice, "в форме ответа нет списка шаблонов"
     option = re.search(r'<option value="%d"[^>]*>' % template_id, choice.group(0))
@@ -221,7 +237,7 @@ async def test_template_can_be_chosen_without_typing(panel_client, env,
     template_id = await template()
     ticket_id = await ticket()
     assert login_panel(panel_client)
-    block = reply_block(panel_client.get(f"/panel/tickets?t={ticket_id}").text)
+    block = reply_block(panel_client.get(f"/panel/tickets/{ticket_id}/admin").text)
     assert not re.search(r'<textarea name="text"[^>]*required', block), \
         "браузер не отправит пустой ответ, а шаблон без текста - это половина работы"
     post_form(panel_client, f"/panel/tickets/{ticket_id}/reply",
@@ -339,7 +355,7 @@ async def test_hint_tells_what_substitutes_itself(panel_client, env, clear_templ
     await template()
     ticket_id = await ticket()
     assert login_panel(panel_client)
-    hint = reply_hint(panel_client.get(f"/panel/tickets?t={ticket_id}").text)
+    hint = reply_hint(panel_client.get(f"/panel/tickets/{ticket_id}/admin").text)
     assert "подставятся сами" in hint, f"подсказка молчит про подстановки: {hint}"
     # имена берём у бота: панель и бот должны знать один и тот же набор
     for name in ("ФИО", "группа", "кабинет", "дата"):
@@ -355,7 +371,7 @@ async def test_hint_lists_unknown_placeholders(panel_client, env, clear_template
     await template(text="Причина: {причина}")
     ticket_id = await ticket()
     assert login_panel(panel_client)
-    hint = reply_hint(panel_client.get(f"/panel/tickets?t={ticket_id}").text)
+    hint = reply_hint(panel_client.get(f"/panel/tickets/{ticket_id}/admin").text)
     assert "Непонятно" in hint and "{причина}" in hint, f"неизвестные не перечислены: {hint}"
 
 

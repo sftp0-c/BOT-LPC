@@ -69,6 +69,18 @@ def listed_row(body: str, name: str) -> str:
     return match.group(0)
 
 
+def protected_workspace_tables(names) -> set[str]:
+    """Права, сеансы, операции и доверенные файлы скрыты намеренно, не произвольно."""
+    required = {
+        "staff_web_access", "staff_web_sessions", "staff_web_login_challenges",
+        "staff_web_rate_buckets", "workspace_operations", "ticket_files",
+    }
+    assert required <= set(names), "в базе нет обязательных таблиц рабочего места"
+    return {name for name in names if name.startswith("staff_web_")} | {
+        "workspace_operations", "ticket_files",
+    }
+
+
 # ── фикстуры ─────────────────────────────────────────────────────────────────
 @pytest.fixture
 async def owner_client(panel_client, monkeypatch, env):
@@ -148,8 +160,13 @@ async def test_table_list_shows_every_table_with_counts(owner_client, env):
     body = owner_client.get("/panel/data").text
     names = {row["name"] for row in await db.many(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+    protected = protected_workspace_tables(names)
+    assert {row[0] for row in data_rows(body)} == names - protected
     for name in sorted(names):
-        assert f"<code>{name}</code>" in body, f"в списке нет таблицы {name}"
+        if name in protected:
+            assert name not in body, f"служебная таблица {name} раскрыта в списке"
+        else:
+            assert f"<code>{name}</code>" in body, f"в списке нет таблицы {name}"
     counts = dict(await db.table_counts())
     assert f"<td>{counts['users']}</td>" in listed_row(body, "users")
     assert f"<td>{counts['tickets']}</td>" in listed_row(body, "tickets")
@@ -230,12 +247,12 @@ async def test_table_view_shows_schema_and_column_types(owner_client, env):
 
 
 async def test_every_table_and_its_row_open(owner_client, env):
-    """Все таблицы открываются, но журналы нельзя менять через сырой редактор.
+    """Обычные таблицы открываются, журналы доступны только для чтения.
 
-    Таблицы в базе заводятся и меняются руками (а ещё и миграциями), поэтому
-    проверка берёт список из sqlite_master, а не список из теста. Для журналов
-    проверяются и страницы, и POST с настоящим CSRF: ответ 404 должен идти от
-    правила только для чтения, а не случайно от защиты формы.
+    Список берём из sqlite_master: произвольное исчезновение таблицы — ошибка.
+    Таблицы веб-доступа, операций и доверенных файлов сознательно закрыты даже
+    владельцу сырого редактора. Проверяем 404 для страниц, CSV и POST с настоящим
+    CSRF: отказ должен идти от правила доступа, а не случайно от защиты формы.
     """
     await seed()
     names = [row["name"] for row in await db.many(
@@ -246,7 +263,27 @@ async def test_every_table_and_its_row_open(owner_client, env):
     read_only = set(data_section.READ_ONLY_TABLES)
     assert required_read_only <= read_only
     assert read_only <= set(names)
+    protected = protected_workspace_tables(names)
+    assert not protected & read_only, "скрытые таблицы не являются доступными журналами"
     for name in names:
+        if name in protected:
+            base = f"/panel/data/table/{name}"
+            row = await db.one(f'SELECT rowid rid FROM "{name}" LIMIT 1')
+            row_path = f"{base}/row/{row['rid'] if row else 1}"
+            for path in (base, f"{base}/row/new", row_path):
+                response = owner_client.get(path, follow_redirects=False)
+                assert response.status_code == 404, path
+                assert name not in response.text, path
+            response = owner_client.get("/panel/data/table.csv", params={"name": name})
+            assert response.status_code == 404, name
+            assert name not in response.text, name
+            for path, data in ((f"{base}/row", {"action": "подмена"}),
+                               (row_path, {"action": "подмена"}),
+                               (f"{row_path}/delete", {"word": name})):
+                response = post_form(owner_client, path, data)
+                assert response.status_code == 404, path
+                assert name not in response.text, path
+            continue
         table_page = owner_client.get(f"/panel/data/table/{name}")
         assert table_page.status_code == 200, name
         assert owner_client.get("/panel/data/table.csv", params={"name": name}
@@ -273,6 +310,29 @@ async def test_every_table_and_its_row_open(owner_client, env):
             page = owner_client.get(f"/panel/data/table/{name}/row/{row['rid']}")
             assert page.status_code == 200, name
             assert "Опасные действия" in page.text, name
+
+
+async def test_ticket_workspace_revision_is_hidden_and_not_editable(owner_client, env):
+    """Ревизия — внутреннее состояние, не поле просмотра, формы или CSV."""
+    ticket = await seed()
+    revision = (await repo.get_ticket(ticket))["workspace_revision"]
+    base = "/panel/data/table/tickets"
+    table = owner_client.get(base)
+    assert table.status_code == 200
+    assert "workspace_revision" not in table_blocks(table.text)[0].split("</table>", 1)[0]
+    assert '<option value="workspace_revision"' not in table.text
+    assert "<code>workspace_revision</code>" not in table.text
+    for path in (f"{base}/row/new", f"{base}/row/{ticket}"):
+        form = owner_client.get(path)
+        assert form.status_code == 200, path
+        assert "workspace_revision" not in form.text, path
+    csv = owner_client.get("/panel/data/table.csv", params={"name": "tickets"})
+    assert csv.status_code == 200
+    assert "workspace_revision" not in csv.text
+    # Поддельное поле не меняет ревизию, даже с настоящим CSRF владельца.
+    assert post_form(owner_client, f"{base}/row/{ticket}",
+                     {"workspace_revision": str(revision + 100)}).status_code == 303
+    assert (await repo.get_ticket(ticket))["workspace_revision"] == revision
 
 
 async def test_unknown_table_is_404(owner_client, env):

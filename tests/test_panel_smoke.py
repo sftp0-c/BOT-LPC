@@ -86,7 +86,16 @@ def test_every_post_route_has_csrf_guard():
                 if guard is None or "_csrf(secret, cookie)" not in ast.unparse(guard.test) \
                         or not any(isinstance(item, ast.Raise) for item in ast.walk(guard)):
                     broken.append(f"{path.name}:{node.name}")
-            elif "require_form(" not in source and "require_owner_form(" not in source:
+            elif any(guard in source for guard in ("require_form(", "require_owner_form(", "require_staff_form(")):
+                continue
+            elif path.name == "workspace_auth.py" and node.name in ("workspace_login_request", "workspace_login_verify"):
+                helper = next(item for item in tree.body if isinstance(item, ast.AsyncFunctionDef) and item.name == "_login_form")
+                assert "_login_form(" in source
+                assert "compare_digest" in ast.unparse(helper) and "_browser_csrf(cookie)" in ast.unparse(helper)
+            elif path.name == "workspace.py" and node.name == "admin_ticket_action":
+                helper = next(item for item in tree.body if isinstance(item, ast.AsyncFunctionDef) and item.name == "admin_principal")
+                assert "form=True" in source and "require_form(request)" in ast.unparse(helper)
+            else:
                 broken.append(f"{path.name}:{node.name}")
     assert not broken, "POST без CSRF-проверки: " + ", ".join(broken)
 

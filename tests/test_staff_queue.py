@@ -1,4 +1,6 @@
 ﻿"""Очередь сотрудника: фильтры, счётчики и «ждёт ответа»."""
+import re
+
 import pytest
 
 import database as db
@@ -170,17 +172,23 @@ async def test_panel_filters(panel_client):
     await set_status(second, "completed")
 
     assert login_panel(panel_client)
-    everything = panel_client.get("/panel/tickets").text
-    assert f"№{first}" in everything and f"№{second}" in everything
+    default_open = panel_client.get("/panel/tickets").text
+    assert f"№ {first}" in default_open and f"№ {second}" not in default_open
 
-    only_done = panel_client.get("/panel/tickets", params={"status": "completed"}).text
-    assert f"№{second}" in only_done and f"№{first}" not in only_done
+    only_done = panel_client.get(
+        "/panel/tickets", params={"tab": "closed", "status": "completed"}
+    ).text
+    assert f"№ {second}" in only_done and f"№ {first}" not in only_done
 
-    only_certs = panel_client.get("/panel/tickets", params={"category": "certificates"}).text
-    assert f"№{second}" in only_certs and f"№{first}" not in only_certs
+    only_certs = panel_client.get(
+        "/panel/tickets", params={"tab": "closed", "category": "certificates"}
+    ).text
+    assert f"№ {second}" in only_certs and f"№ {first}" not in only_certs
 
-    only_open = panel_client.get("/panel/tickets", params={"status": "open"}).text
-    assert f"№{first}" in only_open and f"№{second}" not in only_open
+    only_open = panel_client.get(
+        "/panel/tickets", params={"tab": "open", "status": "open"}
+    ).text
+    assert f"№ {first}" in only_open and f"№ {second}" not in only_open
 
 
 async def test_panel_waiting_filter(panel_client):
@@ -188,9 +196,12 @@ async def test_panel_waiting_filter(panel_client):
     await ticket()
     await ticket()
     assert login_panel(panel_client)
-    body = panel_client.get("/panel/tickets", params={"scope": "waiting"}).text
-    assert "Только ждут ответа: 2" in body
-    assert "№1" in body and "№2" in body
+    body = panel_client.get("/panel/tickets", params={"tab": "waiting"}).text
+    assert re.search(
+        r'data-ws-tab="waiting"[^>]*><span>Ждут ответа</span><span class="ws-count">2</span>',
+        body,
+    )
+    assert "№ 1" in body and "№ 2" in body
 
 
 async def test_panel_waiting_filter_drops_answered(panel_client):
@@ -198,18 +209,27 @@ async def test_panel_waiting_filter_drops_answered(panel_client):
     await press(STAFF, f"rp:{ticket_id}")
     await say(STAFF, "Ответили")
     assert login_panel(panel_client)
-    body = panel_client.get("/panel/tickets", params={"scope": "waiting"}).text
-    assert "Только ждут ответа: 0" in body
-    assert f"№{ticket_id}" not in body
+    body = panel_client.get("/panel/tickets", params={"tab": "waiting"}).text
+    assert re.search(
+        r'data-ws-tab="waiting"[^>]*><span>Ждут ответа</span><span class="ws-count">0</span>',
+        body,
+    )
+    assert f"№ {ticket_id}" not in body
 
 
-@pytest.mark.parametrize("params", [
-    {"status": "нет такого"}, {"category": "нет"}, {"q": "‹скрипт›"},
-    {"scope": "waiting", "status": "open", "category": "feedback"},
+@pytest.mark.parametrize(("params", "expected"), [
+    ({"status": "нет такого"}, 400),
+    ({"category": "нет"}, 400),
+    ({"q": "<скрипт>"}, 200),
+    ({"scope": "waiting", "status": "open", "category": "feedback"}, 200),
 ])
-async def test_panel_filters_never_crash(panel_client, params):
+async def test_panel_filters_never_crash(panel_client, params, expected):
+    """Справочники проверяются строго, а свободный поиск остаётся безопасным."""
     assert login_panel(panel_client)
-    assert panel_client.get("/panel/tickets", params=params).status_code == 200
+    response = panel_client.get("/panel/tickets", params=params)
+    assert response.status_code == expected
+    if "q" in params:
+        assert "&lt;скрипт&gt;" in response.text and "<скрипт>" not in response.text
 
 
 async def test_status_counts_unchanged_by_filters(api):

@@ -35,7 +35,7 @@ from web.database import schema_broken_page
 from web.mailer import BROADCASTS_PAGE
 from web.overview import ACTIVITY_PAGE
 from web.people import PEOPLE_PAGE, STUDENTS_PAGE
-from web.router import open_router, router
+from web.router import open_router, router, workspace_router
 from web.schedules import COLLEGE_SCHEDULE_PAGE
 from web.settings import HUMAN_SETTINGS, HUMAN_SETTING_KEYS
 from web.tickets import (CERT_PICKUP, TEMPLATES_PAGE, is_certificate, pickup_hint,
@@ -50,7 +50,7 @@ __all__ = [
     "_csrf", "_flashes", "_join_page_html", "_sessions",
     "actions_script", "hotkeys_script", "is_certificate", "is_sysadmin", "nice_max",
     "open_router", "page", "panel_link", "person_label", "pickup_hint", "pickup_options",
-    "probe_pdf_url", "router", "run_broadcast", "schedule_import", "schema_broken_page",
+    "probe_pdf_url", "router", "workspace_router", "run_broadcast", "schedule_import", "schema_broken_page",
 ]
 
 

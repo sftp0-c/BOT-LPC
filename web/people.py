@@ -546,7 +546,15 @@ async def staff_list(request: Request, q: str = "", cat_ask: str = ""):
   применятся ко всем. Тех, кто уже есть в списке, добавлять не нужно: пропустим и покажем кого.
   Тех, кто писал боту, но прав ещё не имеет, видно на вкладке <a href="/panel/nostaff">Без прав</a>.</p></div>
 </div>"""
-    return page("Сотрудники", body_all, user, "/staff")
+    from .tickets import _tickets_access
+
+    bot_access = await _tickets_access(request, "/panel/staff", q=q)
+    body_all += ('<details id="bot-ticket-access"><summary>Права в MAX: чужие обращения</summary>'
+                 '<p>Эти настройки действуют в боте и не выдают веб-доступ. '
+                 'Права на сайте настраиваются в разделе «Доступ сотрудников».</p>' + bot_access + '</details>')
+    return page("Сотрудники", body_all, user, "/staff",
+                actions='<a class="btn" href="/panel/staff-access">'
+                        + icon("lock", 18) + ' Права на сайте</a>')
 
 
 @router.post("/staff/{user_id}/quick")

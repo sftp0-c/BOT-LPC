@@ -99,13 +99,13 @@ async def test_115_не_перетирает_указанный_кабинет(p
 
 # ── интерфейс ─────────────────────────────────────────────────────────────────
 async def test_в_карточке_подсказка_разная(panel_client, env):
-    # сравниваем сам текст подсказки: «115» встречается ещё и в градиентах CSS
+    # Подсказка живёт в административной карточке; «115» есть ещё и в градиентах CSS.
     assert login_panel(panel_client)
     справка = await ticket(category="certificates", topic="Справка", text="Нужна справка")
     assert wp.pickup_hint(_row(category="certificates")) in panel_client.get(
-        f"/panel/tickets?t={справка}").text
+        f"/panel/tickets/{справка}/admin").text
     зачёт = await ticket(category="session", topic="Когда сдавать зачётку")
-    body = panel_client.get(f"/panel/tickets?t={зачёт}").text
+    body = panel_client.get(f"/panel/tickets/{зачёт}/admin").text
     assert "кабинет ответственного сотрудника" in body
     assert "справка - 115" not in body
 

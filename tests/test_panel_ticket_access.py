@@ -1,4 +1,4 @@
-"""Тесты настройки «видит все обращения» в панели."""
+﻿"""Права MAX и отдельный веб-доступ: настройка вынесена из рабочего места."""
 import pytest
 
 import repository as repo
@@ -15,11 +15,25 @@ async def env(env):
     return env
 
 
-async def test_toggle_is_visible_on_the_page(panel_client, env):
+async def test_access_settings_are_separate_from_workbench(panel_client, env):
     assert login_panel(panel_client)
-    body = panel_client.get("/panel/tickets").text
-    assert "Кто видит чужие обращения" in body
-    assert STAFF in body and OTHER in body
+    response = panel_client.get("/panel/tickets")
+    assert response.status_code == 200
+    body = response.text
+    assert "Кто видит чужие обращения" not in body
+    assert 'action="/panel/tickets/see-all"' not in body
+    assert 'href="/panel/staff-access"' in body
+    settings = panel_client.get("/panel/staff-access")
+    assert settings.status_code == 200
+    assert "Веб-доступ сотрудников" in settings.text
+    assert "Существующие сотрудники не получают веб-доступ автоматически" in settings.text
+    for user_id in (STAFF, OTHER):
+        assert f'href="/panel/staff-access/{user_id}"' in settings.text
+    employee = panel_client.get(f"/panel/staff-access/{STAFF}")
+    assert employee.status_code == 200
+    assert "Право MAX «видеть все» не выдаёт веб-права" in employee.text
+    assert f'action="/panel/staff-access/{STAFF}"' in employee.text
+    assert 'name="csrf"' in employee.text
 
 
 async def test_toggle_grants_and_revokes_access(panel_client, env):

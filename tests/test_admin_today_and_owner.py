@@ -115,15 +115,20 @@ async def test_panel_archives_ticket(panel, api):
     """В панели удаление мягкое: обращение уходит в архив и возвращается."""
     await make_ticket()
     assert login(panel)
-    body = panel.get("/panel/tickets?t=1").text
+    page = panel.get("/panel/tickets/1/admin", follow_redirects=False)
+    assert page.status_code == 200
+    body = page.text
     assert "Обращение №1" in body and "В архив" in body
+    assert 'action="/panel/tickets/1/archive"' in body
 
     api.sent.clear()
     assert post(panel, "/panel/tickets/1/archive").status_code == 303
     assert await db.one("SELECT 1 FROM tickets WHERE ticket_id=1") is not None
     assert "убрано в архив" in "\n".join(text for _, text, _ in api.to(STUDENT))
-    assert 'class="wb-item' not in panel.get("/panel/tickets").text
-    assert 'class="wb-item' in panel.get("/panel/tickets?view=archive").text
+    assert 'data-ws-ticket-link' not in panel.get("/panel/tickets").text
+    archive = panel.get("/panel/tickets?view=archive").text
+    assert 'data-ws-ticket-link' in archive
+    assert 'aria-label="Обращение №1, ' in archive
 
     assert post(panel, "/panel/tickets/1/restore").status_code == 303
     assert not (await repo.get_ticket(1, include_archived=True))["deleted_at"]

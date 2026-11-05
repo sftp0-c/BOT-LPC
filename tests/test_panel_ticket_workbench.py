@@ -1,4 +1,4 @@
-"""Панель: рабочее место с обращениями (очередь, карточка, массы, архив)."""
+﻿"""Панель: рабочее место с обращениями (очередь, карточка, массы, архив)."""
 import pytest
 
 # Веб-панель: поднимает TestClient, поэтому медленнее обычного экрана.
@@ -27,28 +27,44 @@ async def ticket(admin=STAFF, text="Нужна справка") -> int:
 async def test_queue_shows_tickets(panel_client, env):
     await ticket()
     assert login_panel(panel_client)
-    body = panel_client.get("/panel/tickets").text
+    response = panel_client.get("/panel/tickets")
+    assert response.status_code == 200
+    body = response.text
     assert "Очередь" in body and "Нужна справка" in body
-    assert "workbench" in body
+    assert 'data-workspace' in body and 'data-ws-ticket-link' in body
+    assert '<aside class="ws-queue"' in body
 
 
 async def test_card_opens_next_to_queue(panel_client, env):
     ticket_id = await ticket()
     assert login_panel(panel_client)
-    body = panel_client.get(f"/panel/tickets?t={ticket_id}").text
-    assert f"Обращение №{ticket_id}" in body
-    assert "Быстрый ответ" in body
-    assert "История изменений" in body
+    response = panel_client.get(f"/panel/tickets?t={ticket_id}")
+    assert response.status_code == 200
+    body = response.text
+    assert f'id="ws-ticket-title">Обращение <span>№ {ticket_id}</span>' in body
+    assert "Ответ студенту" in body and "Ответить и закрыть" in body
+    assert "Переписка и история" in body
     assert "Иванов Иван Иванович" in body
-    # очередь осталась на экране рядом с карточкой
-    assert "workbench" in body and "Очередь" in body
+    assert f'action="/panel/tickets/{ticket_id}/action"' in body
+    assert 'name="as_staff"' not in body
+    assert f'href="/panel/tickets/{ticket_id}/admin?' in body
+    # Очередь остаётся рядом; редкие административные операции вынесены отдельно.
+    assert 'class="ws-workbench ws-has-detail"' in body
+    assert '<aside class="ws-queue"' in body
 
 
-async def test_old_card_link_redirects_to_workbench(panel_client, env):
+async def test_direct_card_link_opens_standalone_workbench(panel_client, env):
+    ticket_id = await ticket()
     assert login_panel(panel_client)
-    response = panel_client.get("/panel/tickets/1", follow_redirects=False)
-    assert response.status_code == 303
-    assert "/panel/tickets?t=1" in response.headers["location"]
+    response = panel_client.get(f"/panel/tickets/{ticket_id}", follow_redirects=False)
+    assert response.status_code == 200
+    assert "location" not in response.headers
+    body = response.text
+    assert 'class="ws-workbench ws-has-detail ws-standalone"' in body
+    assert f'id="ws-ticket-title">Обращение <span>№ {ticket_id}</span>' in body
+    assert "Ответ студенту" in body and "К очереди" in body
+    assert '<aside class="ws-queue"' not in body
+    assert panel_client.get(f"/panel/tickets/{ticket_id + 1000}", follow_redirects=False).status_code == 404
 
 
 async def test_filters_narrow_the_queue(panel_client, env):

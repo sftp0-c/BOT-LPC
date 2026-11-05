@@ -98,7 +98,14 @@ async def test_dossier_shows_staff_rights_and_load(panel_client):
     assert login_panel(panel_client)
     body = panel_client.get(f"/panel/people/{STAFF}/dossier").text
     assert "Петрова Анна" in body
-    rights = body.split("Права", 1)[1].split("</table>", 1)[0]
+    # Заголовок карточки ровно «Права»: ссылка меню называется «Права на сайте».
+    found = re.search(
+        r'<div class="card"><h2>(?:<svg\b.*?</svg>\s*)?Права</h2>(.*?)</table>',
+        body,
+        re.S,
+    )
+    assert found, "нет карточки прав сотрудника"
+    rights = found.group(1)
     assert "сотрудник" in rights
     assert "204" in rights                      # кабинет из карточки сотрудника
     assert "Справки" in rights                   # раздел обращений

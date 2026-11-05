@@ -6,8 +6,8 @@
 """
 from . import (access, audit, common, data, database, diagnostics, directory, dossier,
                feedback, mailer, overview, people, public, router, schedules, settings, staff_bulk, student_card,
-               test_lab, tickets)
+               test_lab, tickets, staff_access, workspace_auth, workspace_view, workspace)
 
 __all__ = ["access", "audit", "common", "data", "database", "diagnostics", "directory", "dossier", "feedback", "mailer",
            "overview", "people", "public", "router", "schedules", "settings", "staff_bulk", "student_card",
-           "test_lab", "tickets"]
+           "test_lab", "tickets", "staff_access", "workspace_auth", "workspace_view", "workspace"]

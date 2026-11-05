@@ -277,15 +277,26 @@ async def test_tickets_page_queries_do_not_grow_with_staff(panel_client, monkeyp
 
 
 async def test_tickets_access_still_shows_every_flag(panel_client):
-    """Массовая выборка не теряет галочки: право выдано - оно видно, и наоборот."""
+    """MAX-права перенесены к сотрудникам: выданная и снятая галочки различаются."""
     await add_staff("200", "Петрова Анна", position="Секретарь")
     await add_staff("201", "Сидоров Пётр", position="Кассир")
     await repo.set_staff_see_all("201", True)
     assert login_panel(panel_client)
-    body = panel_client.get("/panel/tickets").text
-    block = body.split("Кто видит чужие обращения", 1)[1]
-    forms = re.findall(r'name="user_id" value="(\d+)">(.*?)</form>', block, re.S)
-    states = {uid: "checked" in rest for uid, rest in forms}
+    response = panel_client.get("/panel/staff")
+    assert response.status_code == 200
+    container = re.search(r'<details\b[^>]*\bid="bot-ticket-access"[^>]*>(.*?)</details>', response.text, re.S)
+    assert container, "на странице сотрудников нет блока прав в MAX"
+    forms = re.findall(r'<form\b[^>]*action="/panel/tickets/see-all"[^>]*>(.*?)</form>',
+                       container.group(1), re.S)
+    states = {}
+    for form in forms:
+        uid = re.search(r'name="user_id" value="(\d+)"', form)
+        assert uid and uid.group(1) not in states
+        checkbox = re.search(r'<input\b(?=[^>]*type="checkbox")(?=[^>]*name="value")[^>]*>', form)
+        assert checkbox, "нет галочки MAX-доступа"
+        states[uid.group(1)] = bool(re.search(r"\bchecked\b", checkbox.group(0)))
+        assert 'name="return" value="/panel/staff"' in form
+        assert re.search(r'name="csrf" value="[^"]+"', form)
     assert states == {"200": False, "201": True}
 
 

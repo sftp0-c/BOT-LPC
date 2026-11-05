@@ -59,7 +59,17 @@ def last_sent(api, user: str) -> str:
 async def test_reply_form_offers_to_answer_as_someone(owner_client, ticket_to_test_staff):
     """В форме ответа есть выбор «Отвечает как» и там есть тестовый."""
     tid, test_id = ticket_to_test_staff
-    body = owner_client.get(f"/panel/tickets?t={tid}").text
+    # Ежедневная форма и отдельная карточка не предлагают ответ за другого.
+    for path in (f"/panel/tickets?t={tid}", f"/panel/tickets/{tid}"):
+        page = owner_client.get(path, follow_redirects=False)
+        assert page.status_code == 200, path
+        assert 'name="as_staff"' not in page.text, path
+        assert "Быстрый ответ" not in page.text, path
+        assert f'href="/panel/tickets/{tid}/admin' in page.text, path
+    page = owner_client.get(f"/panel/tickets/{tid}/admin", follow_redirects=False)
+    assert page.status_code == 200
+    body = page.text
+    assert f'action="/panel/tickets/{tid}/reply"' in body
     assert 'name="as_staff"' in body, "в форме ответа нет выбора отвечающего"
     assert "Отвечает как" in body
     assert f'value="{test_id}"' in body, "тестового сотрудника нет в выборе"
@@ -69,7 +79,10 @@ async def test_reply_form_offers_to_answer_as_someone(owner_client, ticket_to_te
 async def test_form_says_answer_goes_from_the_staff_name(owner_client, ticket_to_test_staff):
     """Подсказка объясняет, что ответ уходит от имени сотрудника."""
     tid, _test_id = ticket_to_test_staff
-    body = owner_client.get(f"/panel/tickets?t={tid}").text
+    page = owner_client.get(f"/panel/tickets/{tid}/admin", follow_redirects=False)
+    assert page.status_code == 200
+    body = page.text
+    assert "Быстрый ответ" in body
     assert "ОТ ИМЕНИ" in body, "подсказка не говорит, от чьего имени ответ"
 
 

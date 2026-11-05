@@ -29,7 +29,7 @@ FACADE = ROOT / "webpanel.py"
 PACKAGE = ROOT / "web"
 
 # Префиксы роутеров панели: те же, что были в webpanel.py до разбиения.
-PREFIXES = {"router": "/panel", "open_router": ""}
+PREFIXES = {"router": "/panel", "open_router": "", "workspace_router": "/workspace"}
 HTTP_METHODS = ("get", "post", "put", "patch", "delete")
 
 # Модули пакета, которые можно импортировать по одному.
@@ -132,7 +132,7 @@ def panel_routes() -> set:
     found = registered_routes(bot.app.routes)
     public = {"/", "/robots.txt", "/sitemap.xml"}
     return {item for item in found
-            if item[1].startswith(("/panel", "/join", "/public/", "/feedback")) or item[1] in public}
+            if item[1].startswith(("/panel", "/join", "/public/", "/feedback", "/workspace")) or item[1] in public}
 
 
 # ── фасад ─────────────────────────────────────────────────────────────────────

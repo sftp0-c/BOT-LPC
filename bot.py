@@ -36,7 +36,7 @@ from schedule_watch import start_watcher, stop_watcher  # слежение за 
 from updates import (callback_id, callback_payload, is_dialog, message_attachments, message_text,
                     profile_of, sender_id, start_payload, update_key)
 from utils import UserLocks, as_str, short
-from webpanel import open_router as panel_open_router, router as panel_router
+from webpanel import open_router as panel_open_router, router as panel_router, workspace_router
 import webpanel
 
 
@@ -427,6 +427,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="College MAX bot", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 app.include_router(panel_router)
+app.include_router(workspace_router)
 app.include_router(panel_open_router)      # /join/<код>: открыто без входа в панель
 
 

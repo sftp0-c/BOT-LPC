@@ -272,10 +272,13 @@ async def tickets_csv(request: Request, status: str = "", category: str = "",
     пустоту, а из списка с поиском - не то, что человек видит на экране.
     """
     user = await require_user(request)  # CSRF-токен не нужен: это скачивание
-    rows, _latest, _waiting, _overdue = await filter_tickets(
-        status, category, q, scope, view, limit=2000, mine=mine, actor_id=user,
-        date_from=date_from, date_to=date_to,
-    )
+    from .workspace import _check_result, workspace_filters
+    from store.workspace import workspace_list
+
+    filters, _shown, _page = workspace_filters(request.query_params)
+    result = await workspace_list(user, admin=True, filters=filters, for_export=True, page_size=2000)
+    _check_result(result)
+    rows = result["rows"]
     # Имена уже присоединены к каждой строке: не зависят от окна списка людей.
     buffer = io.StringIO()
     writer = csv.writer(buffer, delimiter=";", quoting=csv.QUOTE_MINIMAL)
@@ -396,69 +399,11 @@ async def filter_tickets(status: str = "", category: str = "", q: str = "",
 async def tickets_list(request: Request, status: str = "", q: str = "", category: str = "",
                        scope: str = "", t: int = 0, view: str = "", mine: str = "",
                        date_from: str = "", date_to: str = ""):
-    """Рабочее место: очередь слева, выбранное обращение справа.
+    """Обновлённая очередь: настоящая пагинация и общий интерфейс без выдачи прав."""
+    from .workspace import admin_principal, render_workspace
 
-    Отдельная страница карточки больше не нужна - рутина идёт без переходов,
-    а старые ссылки из отчётов ведут сюда же.
-    """
-    user = await require_user(request)
-    params = _filter_params(status, category, q, scope, view, mine, date_from, date_to)
-    archived = params["view"] == "archive"
-    mine_enabled = params["mine"] == "1"
-    rows, latest, waiting, overdue = await filter_tickets(**params, actor_id=user)
-    selected = next((row for row in rows if int(row["ticket_id"]) == int(t or 0)), None)
-    counts = {code: int(rows[0][f"filtered_{code}"]) if rows else 0 for code in STATUS}
-    if archived:
-        archived_n = int(rows[0]["filtered_total"]) if rows else 0
-    else:
-        archive_rows, *_ = await filter_tickets(**(params | {"view": "archive"}), actor_id=user, limit=1)
-        archived_n = int(archive_rows[0]["filtered_total"]) if archive_rows else 0
-
-    options = {"": "все статусы", "open": "🔓 открытые"}
-    options |= {code: label for code, label in STATUS.items()}
-    cat_options = {"": "все разделы", **{code: label for code, label in CATS.items()}}
-    live_query = _filter_query(params)
-    fresh = "" if request.query_params else ' data-filters-saved="1"'
-    today = clock.today()
-    presets = " ".join(
-        f'<a class="btn btn-grey" data-period-days="{days}" '
-        f'href="{esc(_tickets_url(params, date_from=(today - timedelta(days=days - 1)).isoformat(), date_to=today.isoformat()))}">'
-        f'За {days} дней</a>' for days in (7, 14, 30))
-    create_link = "/panel/tickets/new?" + urlencode({"return": _tickets_url(params)})
-    filters = f"""
-<form method="get" action="/panel/tickets" class="grid wb-filters" style="margin-bottom:10px"
- data-filters="{','.join(TICKET_FILTERS)}" data-filter-key="tickets:{esc(user)}"{fresh}>
-<input type="hidden" name="scope" value="{esc(params['scope'])}"><input type="hidden" name="view" value="{esc(params['view'])}">
-<input type="hidden" name="mine" value="{params['mine']}">
-<div>{select("status", options, params['status'], label="Статус")}</div>
-<div>{select("category", cat_options, params['category'], label="Раздел")}</div>
-<div><label>Поиск: номер, ФИО, текст, тема или MAX ID</label>
-<input name="q" value="{esc(params['q'])}" placeholder="номер, фамилия, текст или MAX ID"></div>
-<div><label>С даты</label><input name="date_from" type="date" value="{esc(params['date_from'])}"></div>
-<div><label>По дату</label><input name="date_to" type="date" value="{esc(params['date_to'])}"></div>
-<div><button>{icon("search", 16)} Найти</button></div></form>
-<p class="small mut wb-tools">Период: {presets}</p>
-<p class="small mut wb-tools">
-<a class="btn{' btn-grey' if scope != 'waiting' else ''}" href="{esc(_tickets_url(params, scope='waiting'))}">{icon("clock", 16)} Только ждут ответа: {waiting}</a>
-<a class="btn{' btn-bad' if scope == 'overdue' else ' btn-grey'}" href="{esc(_tickets_url(params, scope='overdue'))}">{icon("warning", 16)} Дольше суток: {overdue}</a>
-<a class="btn{' btn-ok' if mine_enabled else ' btn-grey'}" href="{esc(_tickets_url(params, mine='0' if mine_enabled else '1'))}">{icon("user", 16)} {'Все обращения' if mine_enabled else 'Только мои'}</a>
-<a class="btn{' btn-grey' if not archived else ''}" href="{esc(_tickets_url(params, view=''))}">{icon("inbox", 16)} В работе</a>
-<a class="btn{' btn-grey' if not archived else ' btn-ok'}" href="{esc(_tickets_url(params, view='archive'))}">{icon("archive", 16)} Архив: {archived_n}</a>
-<a class="btn" href="{esc(create_link)}">{icon("plus", 16)} Создать обращение</a>
-<a class="btn btn-grey" href="/panel/tickets" data-filters-reset>{icon("close", 16)} Сбросить фильтры</a></p>"""
-    summary = " · ".join(f"{plain(STATUS.get(c, c))}: {counts[c]}" for c in STATUS)
-    bot = await bot_open_link()
-    access = await _tickets_access(request, _tickets_url(params, t=t) if t else _tickets_url(params))
-    queue = _tickets_queue(request, rows, latest, live_query, selected, archived)
-    card = await _ticket_workbench(request, selected, bot, view, live_query) if selected else (
-        '<div class="card mut">Выберите обращение в очереди слева — здесь появятся переписка, '
-        'правки и быстрые ответы. Клавиши: j и k — по очереди, Enter — открыть, '
-        'a — в архив, ? — все клавиши.</div>')
-    body = f"""<div class="card"><p class="small mut">{esc(summary)}</p>{filters}</div>
-<div class="workbench"><div class="wb-queue">{queue}</div><div class="wb-card">{card}{access}</div></div>"""
-    title = "Архив обращений" if archived else "Обращения"
-    return page(title, body, user, "/tickets",
-                actions=_tickets_actions(live_query, selected, bot))
+    actor = await admin_principal(request)
+    return await render_workspace(request, actor, selected=t)
 
 
 def print_btn(label: str = "Печать") -> str:
@@ -519,7 +464,7 @@ async def tickets_see_all(request: Request):
     return redirect(safe_return(data))
 
 
-async def _tickets_access(request: Request, return_to: str = "/panel/tickets") -> str:
+async def _tickets_access(request: Request, return_to: str = "/panel/tickets", q: str = "") -> str:
     """Кто видит чужие обращения: галочка рядом с именем сотрудника.
 
     Права читает staff_sees_all_bulk(): раньше на каждого сотрудника уходил
@@ -527,7 +472,14 @@ async def _tickets_access(request: Request, return_to: str = "/panel/tickets") -
     столько же, сколько сотрудников, - открыть «Обращения» подтормаживало тем
     сильнее, чем больше людей работало.
     """
-    rows = [row for row in await repo.list_staff()]
+    rows = [dict(row) for row in await repo.list_staff()]
+    needle = as_str(q).strip().lower()
+    if needle:
+        rows = [row for row in rows if needle in " ".join((
+            as_str(row.get("user_id")), as_str(row.get("full_name")),
+            as_str(row.get("position")), as_str(row.get("department")),
+            as_str(row.get("office")),
+        )).lower()]
     if not rows:
         return ""
     sees_all_by_id = await repo.staff_sees_all_bulk()
@@ -549,8 +501,8 @@ async def _tickets_access(request: Request, return_to: str = "/panel/tickets") -
 <span class="wb-access-pos">{esc(position)}</span></span></label>
 </form>""")
     return f"""<div class="card"><h2>Кто видит чужие обращения</h2>
-<p class="small mut">Сотрудник без галочки видит только свои обращения. Системные права
-в список не попадают - они и так видят всё.</p>{''.join(items)}</div>"""
+<p class="small mut">В MAX сотрудник без галочки видит только свои обращения. Галочка разрешает
+всю очередь, а не только отдел. Системные права в список не попадают. Веб-доступ выдаётся отдельно.</p>{''.join(items)}</div>"""
 
 
 @router.get("/attachments/{name}")
@@ -721,9 +673,38 @@ async def ticket_restore(request: Request, ticket_id: int):
 
 @router.get("/tickets/{ticket_id}")
 async def ticket_card(request: Request, ticket_id: int):
-    """Старая ссылка на карточку ведёт в рабочее место - отдельной страницы нет."""
-    await require_user(request)
-    return redirect(f"/panel/tickets?t={ticket_id}")
+    """Полная карточка для телефона, закладки и прямого перехода."""
+    from .workspace import admin_principal, render_workspace
+
+    actor = await admin_principal(request)
+    return await render_workspace(request, actor, selected=ticket_id, standalone=True)
+
+
+@router.get("/tickets/{ticket_id}/admin")
+async def ticket_administration(request: Request, ticket_id: int):
+    """Редкие операции сис-админа вне ежедневного поля ответа."""
+    user = await require_user(request)
+    ticket = await repo.get_ticket(ticket_id, include_archived=True)
+    if ticket is None:
+        raise HTTPException(404, "Обращение не найдено")
+    data = dict(ticket)
+    student = await repo.get_user(data["student_id"])
+    employee = await repo.get_admin(data["target_admin_id"])
+    data.update(student_name=as_str(student["full_name"]) if student else "",
+                student_group=as_str(student["group_code"]) if student else "",
+                staff_name=as_str(employee["full_name"]) if employee else "")
+    from .workspace import workspace_filters
+
+    _query, filters, _page = workspace_filters(request.query_params)
+    view = "archive" if data.get("deleted_at") else ""
+    if view:
+        filters["view"] = view
+    live_query = _filter_query(filters)
+    back = f"/panel/tickets/{ticket_id}?{live_query}"
+    body = (f'<p><a class="btn btn-grey" href="{esc(back)}">'
+            + icon("chevron-left", 18) + ' К рабочему месту</a></p>')
+    body += await _ticket_workbench(request, data, await bot_open_link(), view, live_query)
+    return page(f"Администрирование обращения №{ticket_id}", body, user, "/tickets")
 
 
 @router.post("/tickets/{ticket_id}/delete")

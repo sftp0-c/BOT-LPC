@@ -1,4 +1,4 @@
-"""Репозиторий разложен по пакетам: проверяем, что публичный слой не пострадал.
+﻿"""Репозиторий разложен по пакетам: проверяем, что публичный слой не пострадал.
 
 Когда `repository.py` разложили на `store/`, главный страх был один: импорт
 `import repository as repo` у `bot.py`, всех `handlers/*` и веб-панели должен
@@ -238,7 +238,8 @@ def test_every_module_imports_standalone():
 
 def test_store_does_not_depend_on_the_rest_of_the_project():
     """Раздел тянет только стандартную библиотеку, database, clock, config, utils и соседей."""
-    allowed = {"clock", "config", "database", "datetime", "typing", "utils", ""}
+    allowed = {"clock", "config", "database", "datetime", "typing", "utils", "",
+               "contextlib", "hashlib", "hmac", "json", "os", "re", "secrets", "time"}
     for path in store_modules():
         for node in ast.walk(tree_of(path)):
             if isinstance(node, ast.Import):

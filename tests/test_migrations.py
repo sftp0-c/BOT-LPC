@@ -191,15 +191,27 @@ async def test_init_db_adds_only_missing_objects(legacy):
     new_tables = {("table", name) for name in ("groups", "contacts", "ticket_events", "staff_invites",
                                               "staff_requests", "login_attempts", "lessons", "admin_log", "group_aliases",
                                               "reply_templates", "faq", "audit_log", "public_feedback",
-                                              "public_feedback_rate_buckets")}
+                                              "public_feedback_rate_buckets", "staff_web_access", "staff_web_sessions",
+                                              "staff_web_login_challenges", "staff_web_rate_buckets", "ticket_files",
+                                              "workspace_operations")}
     new_indexes = {("index", name) for name in ("idx_contacts_last_seen", "idx_ticket_events",
                                                "idx_login_attempts", "idx_lessons_group", "idx_admin_log",
                                                "idx_group_aliases_group", "idx_faq_active",
                                                "idx_audit_log_created", "idx_audit_log_user",
                                                "idx_audit_log_action", "idx_public_feedback_status",
-                                               "idx_public_feedback_rate_expiry")}
+                                               "idx_public_feedback_rate_expiry", "idx_staff_web_sessions_user",
+                                               "idx_staff_web_sessions_expiry", "idx_staff_web_challenges_user",
+                                               "idx_staff_web_challenges_browser", "idx_staff_web_challenges_expiry",
+                                               "idx_staff_web_rates_expiry", "idx_ticket_files_ticket",
+                                               "idx_workspace_operations_ticket")}
+    new_triggers = {("trigger", name) for name in (
+        "staff_web_admin_recreated", "staff_web_admin_changed", "staff_web_admin_deleted",
+        "workspace_ticket_revision", "workspace_ticket_files_link_insert", "workspace_ticket_files_link_update",
+        *[f"workspace_{table}_{event}" for table in ("ticket_messages", "ticket_events", "ticket_files")
+          for event in ("insert", "update", "delete")],
+    )}
     added = {item for item in set(after) - set(before) if not item[1].startswith("sqlite_autoindex_")}
-    assert added == new_tables | new_indexes
+    assert added == new_tables | new_indexes | new_triggers
     assert set(before) <= set(after)
     for name, cols in before_cols.items():
         # прежние колонки не изменились, добавиться могла только новая
@@ -208,7 +220,7 @@ async def test_init_db_adds_only_missing_objects(legacy):
             "admins": {"role", "office", "position", "department", "see_all_tickets",
                        "vacation_until", "is_test"},
             "tickets": {"topic", "ready_until", "doc_url", "pickup_place",
-                        "deleted_at", "deleted_by"},
+                        "deleted_at", "deleted_by", "workspace_revision"},
             "broadcasts": {"sender_name", "sender_role"},
             "user_states": {"created_at"},
             "users": {"consent_at", "consent_version"},

@@ -1,4 +1,4 @@
-"""Панель показывает ФИО целиком - там, где человек ищут в записи.
+﻿"""Панель показывает ФИО целиком - там, где человек ищут в записи.
 
 Сотрудник приёмной комиссии сверяет обращение с человеком по журналу, поэтому
 обрезанное имя («Ковалевский Ко…») для такой работы бесполезно. Проверяем
@@ -13,6 +13,7 @@
   или ``cut_plain()`` по ФИО: иначе проблема вернётся через месяц.
 """
 import ast
+from html import unescape
 import re
 from pathlib import Path
 
@@ -42,23 +43,26 @@ async def env(env):
 
 
 def queue_item(body: str, ticket_id: int) -> str:
-    """Разметка одного пункта очереди - по номеру обращения."""
-    items = re.findall(r'<label class="wb-item.*?</label>', body, re.S)
-    wanted = [item for item in items if f'value="{ticket_id}"' in item]
-    assert wanted, f"в очереди нет обращения {ticket_id}"
+    """Настоящая ссылка новой очереди по номеру обращения, без старых wb-обёрток."""
+    items = re.findall(r'<a\b[^>]*\bdata-ws-ticket-link\b[^>]*>.*?</a>', body, re.S)
+    wanted = [item for item in items if f'aria-label="Обращение №{ticket_id},' in item]
+    assert len(wanted) == 1, f"в очереди должна быть ровно одна ссылка на обращение {ticket_id}"
     return wanted[0]
 
 
 def text_of(html: str) -> str:
-    """Текст без разметки: так проверяем, что видит человек, а не что в коде."""
-    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html)).strip()
+    """Видимый текст без разметки, с декодированными HTML-сущностями."""
+    return re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", " ", html))).strip()
 
 
 def fio_of(html: str) -> str:
-    """Видимый текст блока .wb-fio - полное ФИО, как его рисует страница."""
-    block = re.search(r'<span class="wb-fio">(.*?)</span>', html, re.S)
-    assert block, "в разметке нет блока с ФИО (.wb-fio)"
-    return text_of(block.group(1))
+    """Видимый текст имени в очереди или карточке, без соседней группы."""
+    block = re.search(r'<strong class="ws-person-name">(.*?)</strong>', html, re.S)
+    if block is None:
+        block = re.search(r'<p class="ws-detail-person">(.*?)</p>', html, re.S)
+    assert block, "в разметке нет видимого блока с ФИО"
+    name = re.sub(r'<span class="ws-detail-group">.*?</span>', "", block.group(1), flags=re.S)
+    return text_of(name)
 
 
 # ── очередь рабочего места ───────────────────────────────────────────────────
@@ -76,12 +80,14 @@ async def test_queue_separates_fio_from_group(panel_client, env):
     ticket_id = await repo.create_ticket(STUDENT, STAFF, "feedback", "Нужна справка", "Справка")
     assert login_panel(panel_client)
     item = queue_item(panel_client.get("/panel/tickets").text, ticket_id)
-    group = re.search(r'<span class="wb-group">(.*?)</span>', item, re.S)
-    assert group, "у пункта очереди нет отдельного блока с группой"
+    group = re.search(r'<span class="ws-queue-group">(.*?)</span>', item, re.S)
+    assert group, "у пункта очереди нет группы в строке метаданных"
     assert text_of(group.group(1)) == "24-23"
+    assert fio_of(item) == LONG_FIO
     assert f"{LONG_FIO}24-23" not in item          # склейки больше нет
-    # текст обращения - отдельной строкой, имя его не делит
-    assert 'class="wb-text"' in item
+    # Текст обращения и строка метаданных отделены от имени.
+    assert 'class="ws-ticket-category"' in item
+    assert 'class="ws-preview"' in item
     assert "Нужна справка" in text_of(item)
 
 
@@ -92,7 +98,7 @@ async def test_queue_keeps_fio_when_group_is_missing(panel_client, env):
     assert login_panel(panel_client)
     item = queue_item(panel_client.get("/panel/tickets").text, ticket_id)
     assert fio_of(item) == LONG_FIO
-    assert "wb-group" not in item
+    assert "ws-meta-dot" not in item
 
 
 async def test_queue_without_fio_shows_max_id(panel_client, env):
@@ -102,7 +108,14 @@ async def test_queue_without_fio_shows_max_id(panel_client, env):
     assert login_panel(panel_client)
     item = queue_item(panel_client.get("/panel/tickets").text, ticket_id)
     assert fio_of(item) == "ID 301"
-    assert webpanel.person_label("", "301") == "ID 301"      # тот же путь, что в панели
+    assert webpanel.person_label("", "301") == "ID 301"
+    # Пустое ФИО не превращается в «Автор обращения» и после открытия карточки.
+    for path in (f"/panel/tickets?t={ticket_id}", f"/panel/tickets/{ticket_id}"):
+        response = panel_client.get(path)
+        assert response.status_code == 200
+        head = re.search(r'<p class="ws-detail-person">.*?</p>', response.text, re.S)
+        assert head, "в карточке нет видимой подписи автора"
+        assert fio_of(head.group(0)) == "ID 301"
 
 
 # ── карточка обращения ────────────────────────────────────────────────────────
@@ -110,7 +123,7 @@ async def test_ticket_card_shows_the_whole_fio(panel_client, env):
     ticket_id = await repo.create_ticket(STUDENT, STAFF, "feedback", "Нужна справка", "Справка")
     assert login_panel(panel_client)
     body = panel_client.get(f"/panel/tickets?t={ticket_id}").text
-    head = re.search(r'<p class="wb-who">.*?</p>', body, re.S)
+    head = re.search(r'<p class="ws-detail-person">.*?</p>', body, re.S)
     assert head, "в карточке обращения нет шапки с ФИО"
     assert fio_of(head.group(0)) == LONG_FIO
 
@@ -120,26 +133,29 @@ async def test_ticket_card_keeps_group_apart_from_fio(panel_client, env):
     ticket_id = await repo.create_ticket(STUDENT, STAFF, "feedback", "Нужна справка", "Справка")
     assert login_panel(panel_client)
     body = panel_client.get(f"/panel/tickets?t={ticket_id}").text
-    head = re.search(r'<p class="wb-who">.*?</p>', body, re.S)
-    assert head and '<span class="wb-group">24-23</span>' in head.group(0)
+    head = re.search(r'<p class="ws-detail-person">.*?</p>', body, re.S)
+    assert head and '<span class="ws-detail-group">24-23</span>' in head.group(0)
+    assert fio_of(head.group(0)) == LONG_FIO
     assert f"{LONG_FIO}24-23" not in head.group(0)
 
 
 # ── списки выбора сотрудника ─────────────────────────────────────────────────
 async def test_staff_choice_keeps_fio_and_moves_position_to_hint(panel_client, env):
-    """В выпадающем списке ФИО целиком, должность - в подсказке пункта."""
+    """На админ-странице ФИО исполнителя целиком, должность — в подсказке пункта."""
     ticket_id = await repo.create_ticket(STUDENT, STAFF, "feedback", "Нужна справка", "Справка")
     assert login_panel(panel_client)
-    body = panel_client.get(f"/panel/tickets?t={ticket_id}").text
-    block = re.search(r'<select name="target_admin_id">.*?</select>', body, re.S)
-    assert block, "в карточке обращения нет списка исполнителя"
+    response = panel_client.get(f"/panel/tickets/{ticket_id}/admin")
+    assert response.status_code == 200
+    block = re.search(r'<select name="target_admin_id">.*?</select>', response.text, re.S)
+    assert block, "в администрировании обращения нет списка исполнителя"
     option = re.search(r'<option value="%s".*?</option>' % OTHER, block.group(0), re.S)
     assert option, "в списке исполнителей нет сотрудника"
     text = option.group(0)
-    assert LONG_FIO in text
+    assert text_of(text) == LONG_FIO
     assert f'title="{LONG_POSITION}"' in text
-    # должность - в подсказке, а не в самом пункте: там важнее имя
-    assert LONG_POSITION not in text.split("</option>")[0].split(">")[-1]
+    # Полное имя находится в видимой подписи, а не только в атрибуте title.
+    assert LONG_POSITION not in text_of(text)
+    assert "…" not in text_of(text)
 
 
 async def test_staff_picker_on_new_ticket_keeps_fio(panel_client, env):
@@ -148,22 +164,26 @@ async def test_staff_picker_on_new_ticket_keeps_fio(panel_client, env):
     block = re.search(r'<select name="target_admin_id">.*?</select>', body, re.S)
     assert block
     option = re.search(r'<option value="%s".*?</option>' % OTHER, block.group(0), re.S)
-    assert option and LONG_FIO in option.group(0)
+    assert option and text_of(option.group(0)) == LONG_FIO
 
 
 async def test_access_list_shows_fio_above_position(panel_client, env):
-    """Список «кто видит чужие обращения»: ФИО и должность двумя строками."""
+    """MAX-права на странице сотрудников: ФИО и должность остаются раздельными."""
     assert login_panel(panel_client)
-    body = panel_client.get("/panel/tickets").text
-    block = body.split("Кто видит чужие обращения", 1)[1]
+    response = panel_client.get("/panel/staff")
+    assert response.status_code == 200
+    container = re.search(r'<details\b[^>]*\bid="bot-ticket-access"[^>]*>(.*?)</details>', response.text, re.S)
+    assert container, "на странице сотрудников нет блока прав в MAX"
     forms = re.findall(r'<form method="post" action="/panel/tickets/see-all".*?</form>',
-                       block, re.S)
+                       container.group(1), re.S)
     item = [form for form in forms if f'name="user_id" value="{OTHER}"' in form]
-    assert item, "в списке доступа нет сотрудника"
-    name_block = re.search(r'<span class="wb-access-name">(.*?)\n', item[0], re.S)
-    assert name_block, "в списке доступа нет отдельного блока с именем"
+    assert len(item) == 1, "в списке MAX-доступа должна быть одна форма сотрудника"
+    name_block = re.search(r'<span class="wb-access-name">(.*?)<span class="wb-access-pos">', item[0], re.S)
+    assert name_block, "в списке MAX-доступа нет отдельного блока с именем"
     assert text_of(name_block.group(1)) == LONG_FIO
     assert f'<span class="wb-access-pos">{LONG_POSITION}</span>' in item[0]
+    assert 'name="return" value="/panel/staff"' in item[0]
+    assert re.search(r'name="csrf" value="[^"]+"', item[0])
 
 
 # ── карточка человека и реестр людей ─────────────────────────────────────────
@@ -188,17 +208,50 @@ async def test_people_list_shows_fio_whole(panel_client, env):
 
 
 # ── печатная версия ──────────────────────────────────────────────────────────
-def print_css() -> str:
-    """Все блоки @media print вместе: правил с этим условием несколько."""
+def workspace_css() -> str:
+    """Настоящий отдельный CSS рабочего места, подключённый страницей."""
+    path = Path(__file__).resolve().parents[1] / "web" / "static" / "workspace.css"
+    return path.read_text(encoding="utf-8-sig")
+
+
+def print_css(source: str | None = None) -> str:
+    """Все блоки @media print выбранной темы, включая её вложенные правила."""
+    source = webpanel.STYLE if source is None else source
     blocks = []
-    for match in re.finditer(r"@media print\s*\{", webpanel.STYLE):
+    for match in re.finditer(r"@media print\s*\{", source):
         depth, index = 1, match.end()
-        while index < len(webpanel.STYLE) and depth:
-            depth += (webpanel.STYLE[index] == "{") - (webpanel.STYLE[index] == "}")
+        while index < len(source) and depth:
+            depth += (source[index] == "{") - (source[index] == "}")
             index += 1
-        blocks.append(webpanel.STYLE[match.end():index - 1])
+        blocks.append(source[match.end():index - 1])
     assert blocks, "в теме нет @media print"
     return "\n".join(blocks)
+
+
+def fio_style_rules(source: str, selector: str) -> list[str]:
+    """Правила самого элемента ФИО во всех media, не правила соседнего превью."""
+    source = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+    rules = [body for selectors, body in re.findall(r"([^{}]+)\{([^{}]*)\}", source)
+             if any(item.strip() == selector or item.strip().endswith(" " + selector)
+                    for item in selectors.split(","))]
+    assert rules, f"в CSS нет правила для {selector}"
+    return rules
+
+
+def assert_fio_not_clipped(source: str, selector: str):
+    """Нормальные браузерные defaults допустимы, ограничения имени — нет."""
+    for rule in fio_style_rules(source, selector):
+        properties = dict(part.strip().split(":", 1) for part in rule.split(";") if ":" in part)
+        properties = {key.strip(): value.replace("!important", "").strip().lower()
+                      for key, value in properties.items()}
+        assert properties.get("white-space", "normal") == "normal", selector
+        assert properties.get("text-overflow", "clip") == "clip", selector
+        for key in ("overflow", "overflow-x", "overflow-y"):
+            assert properties.get(key, "visible") == "visible", (selector, key)
+        assert properties.get("height", "auto") == "auto", selector
+        assert properties.get("max-height", "none") == "none", selector
+        for key in ("line-clamp", "-webkit-line-clamp"):
+            assert properties.get(key, "none") == "none", (selector, key)
 
 
 def test_print_does_not_truncate_fio():
@@ -212,26 +265,40 @@ def test_print_does_not_truncate_fio():
         assert selector in rules, f"в @media print нет правила для {selector}"
     assert "text-overflow:clip" in rules
     assert re.search(r"\.wb-fio[^{}]*\{[^}]*white-space:normal", rules)
+    workspace = workspace_css()
+    for selector in (".ws-detail-person", ".ws-message-author"):
+        # Правила без media продолжают действовать при печати; многоточий в них нет.
+        assert_fio_not_clipped(workspace, selector)
+    printed = print_css(workspace)
+    history = " ".join(fio_style_rules(printed, ".ws-history-scroll"))
+    assert re.search(r"max-height\s*:\s*none", history)
+    assert re.search(r"overflow\s*:\s*visible", history)
+    assert_fio_not_clipped(printed, ".ws-detail-main")
 
 
 def test_queue_styles_allow_fio_to_wrap():
-    """На экране ФИО переносится по словам, а не уезжает в многоточие."""
-    rule = re.search(r"\.wb-fio\{[^}]*\}", webpanel.STYLE)
-    assert rule, "в теме нет правила для .wb-fio"
-    body = rule.group(0)
-    assert "text-overflow:ellipsis" not in body
-    assert "white-space:normal" in body
-    assert "overflow-wrap:anywhere" in body
+    """Новое ФИО переносится на экране; старые wb-правила это больше не проверяют."""
+    source = workspace_css()
+    for selector in (".ws-person-name", ".ws-detail-person", ".ws-handler span"):
+        assert_fio_not_clipped(source, selector)
+        rules = " ".join(fio_style_rules(source, selector))
+        assert re.search(r"overflow-wrap\s*:\s*anywhere", rules), selector
+    for selector in (".ws-workbench", ".ws-ticket-row", ".ws-detail-heading", ".ws-message-author"):
+        assert_fio_not_clipped(source, selector)
 
 
 async def test_printed_card_contains_the_whole_fio(panel_client, env):
-    """Печатается та же карточка, что и на экране: имя в ней целиком."""
+    """В обычной и отдельной печатной карточке ФИО не теряется и не сокращается."""
     ticket_id = await repo.create_ticket(STUDENT, STAFF, "feedback", "Нужна справка", "Справка")
     assert login_panel(panel_client)
-    body = panel_client.get(f"/panel/tickets?t={ticket_id}").text
-    card = body.split('class="wb-card"', 1)[1]
-    assert fio_of(card) == LONG_FIO
-    assert "…" not in text_of(card)
+    for path in (f"/panel/tickets?t={ticket_id}", f"/panel/tickets/{ticket_id}"):
+        response = panel_client.get(path)
+        assert response.status_code == 200
+        assert 'href="/workspace/assets/workspace.css' in response.text
+        card = re.search(r'<article class="ws-detail"[^>]*>(.*)</article>', response.text, re.S)
+        assert card, "нет настоящей карточки обращения, которая попадёт на печать"
+        assert fio_of(card.group(1)) == LONG_FIO
+        assert "…" not in text_of(card.group(1))
 
 
 # ── статическая страховка: сокращать ФИО больше нельзя ───────────────────────
@@ -309,11 +376,16 @@ def test_fio_helper_never_uses_ellipsis():
 
 
 def test_no_ellipsis_left_in_queue_markup():
-    """В очереди не осталось склейки «имя · текст» через многоточие."""
-    holders = [panel_text(path.name) for path in PANEL_SOURCES
-               if "def _tickets_queue(" in panel_text(path.name)]
-    assert holders, "в панели нет очереди _tickets_queue()"
-    whole = "\n".join(holders)
-    block = whole[whole.index("def _tickets_queue("):]
+    """Проверяется новая очередь, а не оставшийся неиспользуемый wb-renderer."""
+    source = panel_text("workspace_view.py")
+    tree = ast.parse(source)
+    queue = next((node for node in tree.body if isinstance(node, ast.FunctionDef)
+                  and node.name == "_queue_row"), None)
+    assert queue is not None, "нет рендерера элемента очереди"
+    block = ast.get_source_segment(source, queue)
     assert "short(" not in block, "в очереди снова появился short()"
-    assert 'class="wb-who"' in block and 'class="wb-fio"' in block
+    assert 'class="ws-person-name"' in block and 'class="ws-preview"' in block
+    # Превью текста можно сокращать, ФИО отдельного элемента — нельзя.
+    for node in ast.walk(queue):
+        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice):
+            assert not isinstance(node.value, ast.Name) or node.value.id != "name", "ФИО обрезается срезом"

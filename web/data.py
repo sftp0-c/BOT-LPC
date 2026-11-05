@@ -161,7 +161,9 @@ async def table_names() -> list:
     rows = await db.many(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
     )
-    return [as_str(row["name"]) for row in rows]
+    return [as_str(row["name"]) for row in rows
+            if not as_str(row["name"]).startswith("staff_web_")
+            and row["name"] not in ("workspace_operations", "ticket_files")]
 
 
 async def known_table(name: str) -> str:
@@ -182,6 +184,8 @@ async def table_columns(name: str) -> list:
         rows = [row for row in rows if row["name"] in safe]
     if name == "public_feedback":
         rows = [row for row in rows if row["name"] != "submission_nonce"]
+    if name == "tickets":
+        rows = [row for row in rows if row["name"] != "workspace_revision"]
     return [{"name": as_str(row["name"]), "type": as_str(row["type"]),
              "notnull": bool(row["notnull"]), "default": as_str(row["dflt_value"]),
              "pk": bool(row["pk"]), "time": is_time_column(row["name"])}

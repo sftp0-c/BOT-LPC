@@ -389,6 +389,7 @@ NAV_GROUPS: tuple[tuple[str, tuple[tuple[str, str, str, str], ...]], ...] = (
     ("Люди", (("/people", "Реестр", "people", ""),
               ("/students", "Студенты", "students", ""),
               ("/staff", "Сотрудники", "staff", ""),
+              ("/staff-access", "Доступ сотрудников", "lock", "Права на сайте"),
               ("/invites", "Выпуск по ссылкам", "link", "Доступ в бот"),
               ("/access", "Коды и заявки", "access", "Доступ в бот"),
               ("/nostaff", "Без прав", "user-off", "Доступ в бот"))),
@@ -504,7 +505,8 @@ def nav_html(tab: str, badges: dict | None = None) -> str:
 
 
 def page(title: str, body: str, user: str = "", tab: str = "",
-         actions: str = "", status_code: int = 200) -> HTMLResponse:
+         actions: str = "", status_code: int = 200, *,
+         extra_head: str = "", extra_scripts: str = "") -> HTMLResponse:
     """Оболочка страницы: шапка, меню группами, заголовок с действиями, скрипты.
 
     ``actions`` - кнопки в шапке (выгрузка CSV, печать): раньше они прятались
@@ -518,9 +520,9 @@ def page(title: str, body: str, user: str = "", tab: str = "",
     theme_boot = f'<script>{theme_boot_script()}</script>'
     css_head = (f'<meta name="viewport" content="width=device-width,initial-scale=1">'
                 f'<meta name="color-scheme" content="dark light">{theme_boot}'
-                f'<title>{esc(title)} — Навигатор ЛПК</title><style>{STYLE}</style>')
+                f'<title>{esc(title)} — Навигатор ЛПК</title><style>{STYLE}</style>{extra_head}')
     scripts = (f'<script>{theme_script()}</script><script>{panel_toast_js()}</script>'
-               f'<script>{actions_script()}</script>')
+               f'<script>{actions_script()}</script>{extra_scripts}')
     if title in ("Вход", "Панель выключена"):
         return HTMLResponse(
             f'<!doctype html><html lang="ru" data-theme="dark"><head><meta charset="utf-8">'
@@ -797,6 +799,7 @@ def login_response(message: str = "", status_code: int = 200) -> HTMLResponse:
 <div><label for="login-password">Пароль</label><input id="login-password" name="password" type="password" required autocomplete="current-password" placeholder="Введите пароль панели"></div>
 <label class="remember-row"><input type="checkbox" name="remember" value="1"> Запомнить меня на 30 дней</label>
 <button class="login-submit" type="submit">Войти {icon("chevron-right", 18)}</button></form>
+<p><a class="btn btn-grey" href="/workspace/login">{icon("staff", 18)} Сотрудник — войти через MAX</a></p>
 <p class="login-help">Не знаете свой ID? Отправьте боту <code>/id</code>.</p>
 <div class="login-security">{icon("audit", 16)} Доступ только по роли сис-админа</div></section>"""
     return page("Вход", body, status_code=status_code)

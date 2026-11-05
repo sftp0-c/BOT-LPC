@@ -11,6 +11,8 @@
    регламенту, а порог, за которым письмо забывают.
 """
 import re
+from html import unescape
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -89,8 +91,12 @@ async def test_csv_export_link_carries_current_filters(owner_client, env):
     await make_ticket("Первое")
     await make_ticket("Второе")
     body = owner_client.get("/panel/tickets?status=new&category=feedback").text
-    assert "/panel/tickets.csv?status=new" in body, "ссылка выгрузки потеряла фильтры"
-    assert "category=feedback" in body
+    links = re.findall(r'href="(/panel/tickets\.csv[^"]*)"', body)
+    assert len(links) == 1, "Должна быть одна ссылка выгрузки"
+    params = parse_qs(urlsplit(unescape(links[0])).query)
+    assert params["status"] == ["new"] and params["category"] == ["feedback"]
+    exported = owner_client.get(unescape(links[0]))
+    assert exported.status_code == 200 and "Первое" in exported.text and "Второе" in exported.text
 
 
 async def test_csv_and_page_agree_on_counts(owner_client, env):
@@ -170,8 +176,11 @@ async def test_workbench_shows_the_counter(owner_client, env):
     body = owner_client.get("/panel/tickets").text
     assert "Дольше суток" in body, "нет кнопки со счётчиком"
     assert "scope=overdue" in body, "кнопка не ведёт в фильтр"
-    # подпись идёт после иконки, поэтому со пробелом и без «>» в начале
-    assert "Дольше суток: 1" in body, "счётчик не показывает число"
+    # Число относится к ссылке-фильтру, а не к случайной подписи в карточке.
+    link = re.search(r'<a[^>]*class="[^"]*ws-filter-overdue[^>]*>(.*?)</a>', body, re.S)
+    assert link and "Дольше суток" in link[1]
+    counter = re.search(r'<span class="ws-count">([0-9]+)</span>', link[1])
+    assert counter and counter[1] == "1", "счётчик не показывает число"
 
     filtered = owner_client.get("/panel/tickets?scope=overdue").text
     assert f"№{old}" in filtered

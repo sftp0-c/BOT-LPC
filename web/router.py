@@ -1,6 +1,6 @@
 ﻿"""Роутеры панели: их создаёт один модуль, остальные на них подписываются.
 
-Два APIRouter на всё приложение. Создавать их прямо в webpanel.py нельзя: пути
+Роутеры приложения имеют разные границы доступа. Создавать их прямо в webpanel.py нельзя: пути
 объявляются декораторами в момент импорта модуля раздела, а модули пакета web
 импортируются как раз из webpanel.py - вышел бы круг импортов. Поэтому создание
 живёт здесь, в листе пакета, а наружу (bot.py, тестам) оба роутера отдаёт
@@ -56,14 +56,20 @@ class AuditRoute(APIRoute):
         try:
             role = "owner" if await repo.is_owner(uid) else (
                 "sysadmin" if await repo.is_sysadmin(uid) else "unknown")
+            if role == "unknown":
+                employee = await repo.get_admin(uid)
+                if employee and employee["role_type"] == "staff":
+                    role = "staff"
+            action = getattr(request.state, "audit_action", self.name)
             if self.name == "quick_search" and result == "ok":
                 result = "received"  # поиск ничего не меняет
-            await repo.log_audit(uid, role, self.name, target_type, target_id, result)
+            await repo.log_audit(uid, role, action, target_type, target_id, result)
         except Exception as exc:  # потеря журнала видна, но не ломает завершённый ответ
             log.warning("Не записан аудит маршрута %s: %s", self.name, type(exc).__name__)
 
 
 router = APIRouter(prefix="/panel", tags=["panel"], route_class=AuditRoute)
+workspace_router = APIRouter(prefix="/workspace", tags=["workspace"], route_class=AuditRoute)
 
 # Приглашения открыты всем, поэтому отдельный роутер без префикса /panel.
 open_router = APIRouter(tags=["join"])

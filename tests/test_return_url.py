@@ -123,13 +123,26 @@ async def test_massovoe_deystvie_bez_otmetok_takzhe_bezopasno(owner_client, env)
 
 
 async def test_v_ocheredi_lezhit_polnyy_adres_vozvrata(owner_client, env):
-    """В форме должен лежать полный адрес, а не строка запроса.
+    """Доступная групповая форма хранит полный адрес, а не строку запроса.
 
     Смотрим обычную очередь, а не архив: форма массовых действий печатается
     вместе с пунктами очереди, и в пустом архиве её просто нет.
     """
     await seed_ticket(env)
     page = owner_client.get("/panel/tickets").text
-    assert 'name="return"' in page, "в очереди нет формы массовых действий"
-    assert 'name="return" value="/panel/tickets?' in page, "в return снова строка запроса"
-    assert 'name="return" value="status=' not in page, "строка запроса без ведущего слеша"
+    marker = page.find('class="ws-bulk-admin"')
+    assert marker >= 0, "в очереди нет доступной формы массовых действий"
+    start, end = page.rfind("<form", 0, marker), page.find("</form>", marker)
+    assert start >= 0 and end >= 0, "групповая форма имеет незакрытую разметку"
+    form = page[start:end]
+    assert 'method="post"' in form and 'action="/panel/tickets/bulk"' in form
+    assert "<summary" in form and "Групповые действия" in form
+    for field in ("return", "all", "tids", "action", "value", "csrf"):
+        assert f'name="{field}"' in form, f"в групповой форме нет поля {field}"
+    return_input = next(
+        part.split(">", 1)[0] for part in form.split("<input")[1:]
+        if 'name="return"' in part.split(">", 1)[0]
+    )
+    assert 'type="hidden"' in return_input
+    assert 'value="/panel/tickets?' in return_input, "в return снова строка запроса"
+    assert 'value="status=' not in return_input, "строка запроса без ведущего слеша"

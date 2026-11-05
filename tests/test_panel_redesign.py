@@ -14,6 +14,7 @@
 """
 import pytest
 import re
+from pathlib import Path
 
 # Веб-панель: поднимает TestClient, поэтому медленнее обычного экрана.
 pytestmark = pytest.mark.panel
@@ -456,7 +457,8 @@ async def test_workbench_has_print_button(panel_client):
     ticket_id = await make_ticket()
     assert login_panel(panel_client)
     body = panel_client.get(f"/panel/tickets?t={ticket_id}").text
-    assert "window.print()" in body and "Печать" in body
+    assert 'data-ws-print' in body and "Печать карточки" in body
+    assert "window.print()" in (Path("web/static/workspace.js").read_text(encoding="utf-8-sig"))
 
 
 async def test_open_in_bot_link_needs_bot_username(panel_client):
@@ -476,5 +478,5 @@ def test_exports_live_in_the_page_header(panel_client):
     for body in (tickets, people):
         assert 'class="dochead"' in body and 'class="page-actions"' in body
         assert "/panel/tickets.csv" in tickets and "/panel/people.csv" in people
-    assert "Выгрузить в CSV" in tickets and "до 2000 строк" in tickets
+    assert "Выгрузить CSV" in tickets and "до 2000 строк" in tickets
     assert "Выгрузить в CSV" in people and "до 5000 строк" in people
