@@ -621,14 +621,14 @@ header{position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:var(
 .theme-toggle:active{transform:scale(.94)}
 
 /* ── боковое меню (на узком экране превращается в верхнюю ленту) ────────── */
-nav{position:fixed;top:var(--header-h);bottom:0;left:0;width:var(--sidebar);z-index:20;
+.app-nav{position:fixed;top:var(--header-h);bottom:0;left:0;width:var(--sidebar);z-index:20;
     padding:24px 14px var(--space-xxl);background:var(--surface);
     border-right:1px solid var(--line);overflow-y:auto;overscroll-behavior:contain;
     animation:nav-in var(--motion-slow) var(--ease-standard) both}
 /* Пункт меню - строка с левым отступом под активную полосу: «сейчас тут»
    показывают три вещи сразу (полоса, заливка, цвет текста), поэтому
    выбранный раздел не спутать с наведённым. */
-nav a{position:relative;display:flex;align-items:center;gap:10px;padding:9px 11px;
+.app-nav a{position:relative;display:flex;align-items:center;gap:10px;padding:9px 11px;
       margin-bottom:2px;
       border:1px solid transparent;border-radius:var(--radius-sm);color:var(--ink-soft);
       font-size:var(--text-sm);font-weight:var(--weight-medium);text-decoration:none;
@@ -636,14 +636,14 @@ nav a{position:relative;display:flex;align-items:center;gap:10px;padding:9px 11p
                  color var(--motion-fast) var(--ease-standard),
                  border-color var(--motion-fast) var(--ease-standard),
                  transform var(--motion-fast) var(--ease-standard)}
-nav a:hover{background:var(--surface-raised);color:var(--ink);text-decoration:none;transform:translateX(2px)}
-nav a.on{background:linear-gradient(110deg,var(--acc-soft),var(--surface));border-color:var(--acc-line);color:var(--acc);
+.app-nav a:hover{background:var(--surface-raised);color:var(--ink);text-decoration:none;transform:translateX(2px)}
+.app-nav a.on{background:linear-gradient(110deg,var(--acc-soft),var(--surface));border-color:var(--acc-line);color:var(--acc);
      font-weight:var(--weight-semi);box-shadow:inset 3px 0 0 var(--acc)}
 .nav-ico{display:grid;place-items:center;width:22px;height:22px;flex:0 0 22px;color:var(--mut);
      transition:color var(--motion-fast) var(--ease-standard)}
 .nav-ico .ico{width:18px;height:18px}
-nav a:hover .nav-ico{color:var(--ink-soft)}
-nav a.on .nav-ico{color:var(--acc)}
+.app-nav a:hover .nav-ico{color:var(--ink-soft)}
+.app-nav a.on .nav-ico{color:var(--acc)}
 .nav-txt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 /* ── меню по группам: пять разделов вместо шестнадцати вкладок ────────────── */
@@ -737,6 +737,50 @@ main > .card:nth-child(5){animation-delay:160ms}
 main > .card:nth-child(6){animation-delay:200ms}
 main > .card:nth-child(7){animation-delay:240ms}
 main > .card:nth-child(n+8){animation-delay:280ms}
+
+/* Доступ сотрудников: отдельные состояния и формы, без второго бокового меню. */
+.staff-web p{max-width:80ch;line-height:1.65;color:var(--ink-soft)}
+.staff-web-intro{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-lg);flex-wrap:wrap}
+.staff-web-intro>div{flex:1 1 360px;min-width:0}
+.staff-web-intro p{margin:0 0 var(--space-md)}
+.staff-web .btn{white-space:normal;text-align:center;min-height:44px}
+.staff-web-search{display:flex;flex-wrap:wrap;align-items:flex-end;gap:var(--space-sm);margin-top:var(--space-lg)}
+.staff-web-search>div{flex:1 1 260px;min-width:0}
+.staff-web-search label{margin-top:0}
+.staff-web-list{list-style:none;margin:0;padding:0}
+.staff-web-list>li{display:grid;grid-template-columns:minmax(0,1fr) minmax(170px,.55fr) auto;
+    align-items:center;gap:var(--space-lg);padding:var(--space-lg) 0;border-top:1px solid var(--line-soft)}
+.staff-web-list>li:first-child{border-top:0;padding-top:0}
+.staff-web-list>li:last-child{padding-bottom:0}
+.staff-web-person{min-width:0;overflow-wrap:anywhere}
+.staff-web-person strong{display:block;font-size:var(--text-base);font-weight:var(--weight-semi)}
+.staff-web-person p{margin:var(--space-xs) 0}
+.staff-web-person small,.staff-web-status small{display:block;color:var(--mut);line-height:1.5}
+.staff-web-status small{margin-top:var(--space-xs)}
+.staff-web-settings{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-lg);margin:var(--space-lg) 0}
+.staff-web-settings label{margin-top:0}
+.staff-web-permissions{min-width:0;margin:var(--space-lg) 0;padding:var(--space-lg);border:1px solid var(--line);border-radius:var(--radius-sm)}
+.staff-web-permissions legend{padding:0 var(--space-sm);font-weight:var(--weight-semi)}
+.staff-web-checks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-sm)}
+.staff-web-check{display:flex;align-items:flex-start;gap:var(--space-sm);margin:0;padding:var(--space-sm);
+    min-height:44px;border:1px solid var(--line-soft);border-radius:var(--radius-sm);cursor:pointer}
+.staff-web-check:hover{background:var(--surface-raised);border-color:var(--acc-line)}
+.staff-web-check:has(input:checked){background:var(--acc-soft);border-color:var(--acc-line)}
+.staff-web-check input[type=checkbox]{flex:0 0 18px;width:18px;height:18px;margin:2px 0 0;padding:0}
+.staff-web-check span{min-width:0}
+.staff-web-check small{display:block;margin-top:var(--space-xs);font-weight:var(--weight-normal);color:var(--mut);letter-spacing:0;line-height:1.5}
+.staff-web-steps{margin:0;padding-left:22px;line-height:1.65;color:var(--ink-soft)}
+.staff-web-steps li+li{margin-top:var(--space-xs)}
+.staff-web-help{margin-top:var(--space-lg)}
+.staff-web-empty{padding:var(--space-lg) 0}
+.staff-web-empty p{margin:var(--space-xs) 0 var(--space-md)}
+@media (max-width:640px){
+  .staff-web-list>li{grid-template-columns:minmax(0,1fr);gap:var(--space-sm)}
+  .staff-web-list>li>.btn{justify-self:start}
+  .staff-web-settings,.staff-web-checks{grid-template-columns:minmax(0,1fr)}
+  .staff-web-permissions{padding:var(--space-sm)}
+  .staff-web-intro>div{flex-basis:100%}
+}
 
 /* ── таблицы ─────────────────────────────────────────────────────────────
    Разделитель строки - тонкая линия, шапка - капитель с моноширинными
@@ -1367,17 +1411,17 @@ pre{max-height:560px;margin:0;padding:var(--space-lg);overflow:auto;
   .brand{min-width:0}
   .gsearch{order:3;flex:1 1 100%;max-width:none}
   .theme-toggle{margin-left:auto}
-  nav{position:sticky;top:0;width:auto;height:auto;display:flex;flex-wrap:nowrap;gap:6px;
+  .app-nav{position:sticky;top:0;width:auto;height:auto;display:flex;flex-wrap:nowrap;gap:6px;
       padding:8px 12px;overflow-x:auto;overflow-y:hidden;scroll-snap-type:x proximity;
       -webkit-overflow-scrolling:touch;scrollbar-width:none;
       border-right:0;border-bottom:1px solid var(--line)}
-  nav::-webkit-scrollbar{display:none}
-  nav a{margin:0;padding:9px 12px;font-size:var(--text-sm);white-space:nowrap;flex:0 0 auto;
+  .app-nav::-webkit-scrollbar{display:none}
+  .app-nav a{margin:0;padding:9px 12px;font-size:var(--text-sm);white-space:nowrap;flex:0 0 auto;
         scroll-snap-align:start}
   /* Полоса «сейчас тут» в горизонтальной ленте смотрит сверху: сбоку её
      не видно за соседними пунктами. */
-  nav a.on{box-shadow:inset 0 3px 0 var(--acc)}
-  nav a:hover{transform:none}
+  .app-nav a.on{box-shadow:inset 0 3px 0 var(--acc)}
+  .app-nav a:hover{transform:none}
   .nav-txt{white-space:nowrap}
   .nav-groups{flex-direction:row;flex-wrap:nowrap;align-items:center;gap:var(--space-md)}
   .nav-group{flex-direction:row;align-items:center;gap:4px}
@@ -1413,8 +1457,8 @@ pre{max-height:560px;margin:0;padding:var(--space-lg);overflow:auto;
   .gsearch input,.gsearch button{padding:9px 12px}
   .gsearch button{width:38px;height:38px;flex:0 0 38px}
   .gsearch input{padding-left:12px}
-  nav{padding:7px 10px;gap:5px}
-  nav a{padding:11px 13px;font-size:var(--text-base);min-height:44px}
+  .app-nav{padding:7px 10px;gap:5px}
+  .app-nav a{padding:11px 13px;font-size:var(--text-base);min-height:44px}
   .nav-groups{gap:var(--space-md)}
   .nav-group-label{padding:0 1px;font-size:10.5px;letter-spacing:.4px}
   .nav-badge{min-width:19px;padding:0 5px;font-size:10.5px;line-height:16px}

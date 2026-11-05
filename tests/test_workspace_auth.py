@@ -401,3 +401,38 @@ async def test_browser_expiry_rechecked_after_waiting_for_transaction(staff_auth
     result = await access.request_staff_web_code("7123456789", browser, peer, browser_expires=now + 600)
     assert not result["code"]
     assert not await db.many("SELECT * FROM staff_web_login_challenges")
+
+
+async def test_login_help_explains_separate_access_without_enumeration(ws_client, staff_auth):
+    for response in (ws_client.get("/workspace/login"), request_code(ws_client, "7555555555")):
+        assert "Код не приходит?" in response.text
+        assert "Приглашение в MAX не включает веб-доступ" in response.text
+        assert 'href="/panel/login"' in response.text
+        assert "подождите 10 минут" in response.text
+        assert "7555555555" not in response.text
+    assert not staff_auth.sent
+
+
+async def test_auth_composition_keeps_real_forms_and_no_private_demo_data(ws_client, staff_auth):
+    for response, step, action in (
+        (ws_client.get("/workspace/login"), "Шаг 1 из 2", "/workspace/login/request"),
+        (request_code(ws_client), "Шаг 2 из 2", "/workspace/login/verify"),
+    ):
+        header = re.search(r'<header class="ws-auth-header">(.*?)</header>', response.text, re.S)[1]
+        assert header.count('class="theme-toggle ws-auth-theme"') == 1
+        assert 'class="ws-auth-brand"' in header
+        assert 'class="ws-auth-story"' in response.text and 'aria-label="Как устроена работа с обращением"' in response.text
+        assert step in response.text and f'action="{action}"' in response.text
+        assert 'class="ws-auth-input-group"' in response.text
+        assert len(hidden(response, "csrf")) == 64
+        assert 'class="app-nav"' not in response.text
+        assert "7123456789" not in response.text
+    assert len(staff_auth.sent) == 1
+
+
+async def test_auth_error_uses_the_same_composition(ws_client):
+    response = ws_client.post("/workspace/login/request", data={"csrf": "wrong", "user_id": "1"})
+    assert response.status_code == 403
+    assert 'class="ws-auth-card"' in response.text and 'class="ws-auth-header"' in response.text
+    assert 'id="auth-title">Не удалось войти' in response.text
+    assert "Открыть новую форму входа" in response.text

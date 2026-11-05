@@ -235,6 +235,12 @@ CREATE TABLE IF NOT EXISTS public_feedback_rate_buckets(
     PRIMARY KEY(bucket_key, expires_at)
 );
 CREATE INDEX IF NOT EXISTS idx_public_feedback_rate_expiry ON public_feedback_rate_buckets(expires_at);
+-- Только отпечаток использованной формы: удалённый текст не сохраняется.
+CREATE TABLE IF NOT EXISTS public_feedback_deleted_nonces(
+    nonce_hash TEXT PRIMARY KEY CHECK(length(nonce_hash) = 64),
+    expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_public_feedback_deleted_expiry ON public_feedback_deleted_nonces(expires_at);
 -- Отдельный кабинет сотрудников. Строка доступа переживает удаление сотрудника.
 CREATE TABLE IF NOT EXISTS staff_web_access(
     user_id      TEXT PRIMARY KEY,
@@ -611,6 +617,8 @@ async def init_db() -> None:
         await c.execute("PRAGMA journal_mode=WAL")
         await c.executescript(SCHEMA)
         await c.execute("DELETE FROM public_feedback_rate_buckets "
+                        "WHERE expires_at <= CAST(strftime('%s', 'now') AS INTEGER)")
+        await c.execute("DELETE FROM public_feedback_deleted_nonces "
                         "WHERE expires_at <= CAST(strftime('%s', 'now') AS INTEGER)")
         for table, columns in COLUMN_UPGRADES.items():
             await _add_missing_columns(c, table, columns)

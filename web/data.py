@@ -163,7 +163,7 @@ async def table_names() -> list:
     )
     return [as_str(row["name"]) for row in rows
             if not as_str(row["name"]).startswith("staff_web_")
-            and row["name"] not in ("workspace_operations", "ticket_files")]
+            and row["name"] not in ("workspace_operations", "ticket_files", "public_feedback_deleted_nonces")]
 
 
 async def known_table(name: str) -> str:

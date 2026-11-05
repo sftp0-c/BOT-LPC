@@ -191,7 +191,7 @@ async def test_init_db_adds_only_missing_objects(legacy):
     new_tables = {("table", name) for name in ("groups", "contacts", "ticket_events", "staff_invites",
                                               "staff_requests", "login_attempts", "lessons", "admin_log", "group_aliases",
                                               "reply_templates", "faq", "audit_log", "public_feedback",
-                                              "public_feedback_rate_buckets", "staff_web_access", "staff_web_sessions",
+                                              "public_feedback_rate_buckets", "public_feedback_deleted_nonces", "staff_web_access", "staff_web_sessions",
                                               "staff_web_login_challenges", "staff_web_rate_buckets", "ticket_files",
                                               "workspace_operations")}
     new_indexes = {("index", name) for name in ("idx_contacts_last_seen", "idx_ticket_events",
@@ -199,7 +199,7 @@ async def test_init_db_adds_only_missing_objects(legacy):
                                                "idx_group_aliases_group", "idx_faq_active",
                                                "idx_audit_log_created", "idx_audit_log_user",
                                                "idx_audit_log_action", "idx_public_feedback_status",
-                                               "idx_public_feedback_rate_expiry", "idx_staff_web_sessions_user",
+                                               "idx_public_feedback_rate_expiry", "idx_public_feedback_deleted_expiry", "idx_staff_web_sessions_user",
                                                "idx_staff_web_sessions_expiry", "idx_staff_web_challenges_user",
                                                "idx_staff_web_challenges_browser", "idx_staff_web_challenges_expiry",
                                                "idx_staff_web_rates_expiry", "idx_ticket_files_ticket",

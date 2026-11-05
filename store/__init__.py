@@ -29,7 +29,8 @@ from .common import (  # noqa: F401 - публичный интерфейс па
     _contact_filter, _parse_day, _row_dict, _row_value, canonical_group,
 )
 from .feedback import (  # noqa: F401 - публичный интерфейс пакета
-    PUBLIC_FEEDBACK_KINDS, PUBLIC_FEEDBACK_STATUSES, count_public_feedback, get_public_feedback,
+    PUBLIC_FEEDBACK_KINDS, PUBLIC_FEEDBACK_STATUSES, PUBLIC_FEEDBACK_COOLDOWN, PUBLIC_FEEDBACK_TTL,
+    count_public_feedback, delete_public_feedback, get_public_feedback,
     list_public_feedback, prune_public_feedback_rates, set_public_feedback_status, submit_public_feedback,
 )
 from .groups import (  # noqa: F401 - публичный интерфейс пакета

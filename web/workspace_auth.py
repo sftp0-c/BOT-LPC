@@ -39,7 +39,7 @@ WORKSPACE_SECURITY = {
     "connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
 }
-NEUTRAL_REQUEST = "Если для этого MAX ID разрешён вход сотрудника, код отправлен в MAX. Он действует 5 минут."
+NEUTRAL_REQUEST = "Если для этого MAX ID включён веб-доступ и бот может написать вам, код придёт в MAX. Он действует 5 минут."
 NEUTRAL_VERIFY = "Код не подошёл или истёк. Проверьте его либо запросите новый."
 log = logging.getLogger("workspace.auth")
 _delivery_private = contextvars.ContextVar("workspace_otp_delivery", default=False)
@@ -152,34 +152,63 @@ def workspace_auth_page(title: str, content: str, *, status_code: int = 200) -> 
 <title>{esc(title)} — Навигатор ЛПК</title><script>{theme_boot_script()}</script><style>{STYLESHEET}</style>
 <link rel="stylesheet" href="/workspace/assets/workspace.css"></head><body class="ws-auth">
 <a class="skip-link" href="#main-content">Перейти к содержимому</a>
-<button class="theme-toggle ws-auth-theme" type="button" aria-label="Сменить тему"></button>
-<main id="main-content" class="ws-auth-shell" tabindex="-1"><section class="ws-auth-card" aria-labelledby="auth-title">
-<a class="ws-auth-brand" href="/">{icon("navigator", 28)}<span>Навигатор ЛПК</span></a>{content}
-</section></main><script>{theme_script()}</script></body></html>""", status_code=status_code, headers=WORKSPACE_SECURITY)
+<header class="ws-auth-header"><a class="ws-auth-brand" href="/">{icon("navigator", 28)}
+<span><b>Навигатор ЛПК</b><small>Для сотрудников колледжа</small></span></a>
+<button class="theme-toggle ws-auth-theme" type="button" aria-label="Сменить тему"></button></header>
+<main id="main-content" class="ws-auth-shell" tabindex="-1">
+<section class="ws-auth-story" aria-labelledby="workspace-intro-title">
+<span class="ws-auth-kicker">Ваше рабочее место</span>
+<h2 id="workspace-intro-title">Каждое обращение —<br><span>на своём месте.</span></h2>
+<p class="ws-auth-lead">Откройте свои обращения, посмотрите историю и ответьте студенту.
+Общение продолжится в привычном MAX.</p>
+<ol class="ws-auth-flow" aria-label="Как устроена работа с обращением">
+<li><span class="ws-auth-flow-icon" aria-hidden="true">{icon("inbox", 24)}</span>
+<strong>Обращение</strong><small>В вашей очереди</small></li>
+<li><span class="ws-auth-flow-icon" aria-hidden="true">{icon("reply", 24)}</span>
+<strong>Ответ</strong><small>С учётом истории</small></li>
+<li><span class="ws-auth-flow-icon" aria-hidden="true">{icon("check", 24)}</span>
+<strong>Результат</strong><small>Студенту в MAX</small></li></ol>
+<p class="ws-auth-footnote">{icon("lock", 18)}<span>Только разрешённые вам обращения и действия.
+Доступ к кабинету выдаёт сис-админ.</span></p></section>
+<section class="ws-auth-card" aria-labelledby="auth-title">{content}</section></main>
+<footer class="ws-auth-footer"><span>Навигатор ЛПК · Бета-тестирование</span>
+<span>Не передавайте код входа другим людям</span></footer>
+<script>{theme_script()}</script></body></html>""", status_code=status_code, headers=WORKSPACE_SECURITY)
 
 
 def _login_page(cookie: str, challenge: str = "", notice: str = "", *, status_code: int = 200) -> HTMLResponse:
     message = f'<p class="ws-auth-notice" role="status">{esc(notice)}</p>' if notice else ""
     token = esc(_browser_csrf(cookie))
     if challenge:
+        step, intro = "Шаг 2 из 2 · Подтверждение", "Введите код из личного сообщения бота."
         fields = f"""<form class="ws-auth-form" method="post" action="/workspace/login/verify" accept-charset="UTF-8">
 <input type="hidden" name="csrf" value="{token}"><input type="hidden" name="challenge" value="{esc(challenge)}">
-<label class="ws-auth-field" for="workspace-code">Код из MAX</label>
+<div class="ws-auth-input-group"><label class="ws-auth-field" for="workspace-code">Код из MAX</label>
 <input id="workspace-code" name="code" type="text" inputmode="numeric" pattern="[0-9]{{8}}" minlength="8" maxlength="8"
  autocomplete="one-time-code" aria-describedby="code-hint" required>
-<p id="code-hint" class="ws-auth-hint">8 цифр. Код действует только в этом браузере и только один раз.</p>
+<p id="code-hint" class="ws-auth-hint">8 цифр. Код действует только в этом браузере и только один раз.</p></div>
 <button class="btn btn-primary" type="submit">Войти</button></form>
 <a class="ws-auth-back" href="/workspace/login">Запросить другой код</a>"""
     else:
+        step, intro = "Шаг 1 из 2 · Идентификатор", "Укажите свой MAX ID — код входа придёт в MAX."
         fields = f"""<form class="ws-auth-form" method="post" action="/workspace/login/request" accept-charset="UTF-8">
-<input type="hidden" name="csrf" value="{token}"><label class="ws-auth-field" for="workspace-id">Ваш MAX ID</label>
+<input type="hidden" name="csrf" value="{token}"><div class="ws-auth-input-group">
+<label class="ws-auth-field" for="workspace-id">Ваш MAX ID</label>
 <input id="workspace-id" name="user_id" type="text" inputmode="numeric" pattern="[0-9]+" maxlength="19"
  autocomplete="username" aria-describedby="id-hint" required>
 <p id="id-hint" class="ws-auth-hint">Вход доступен сотрудникам, которым сис-админ отдельно разрешил веб-доступ.
-Ваш ID можно узнать в боте MAX.</p><button class="btn btn-primary" type="submit">Получить код в MAX</button></form>"""
-    return workspace_auth_page("Вход сотрудника", '<h1 id="auth-title">Кабинет сотрудника</h1>'
-                               '<p class="ws-auth-intro">Ваши обращения и ответы студентам.</p>'
-                               + message + fields, status_code=status_code)
+Сначала откройте диалог с ботом в MAX и нажмите «Начать» или отправьте /start.
+Ваш ID можно узнать командой /id.</p></div><button class="btn btn-primary" type="submit">Получить код в MAX</button></form>"""
+    return workspace_auth_page("Вход сотрудника", f'<p class="ws-auth-step">{step}</p>'
+                               '<h1 id="auth-title">Кабинет сотрудника</h1>'
+                               f'<p class="ws-auth-intro">{intro}</p>' + message + fields
+                               + '<details class="ws-auth-help"><summary>Код не приходит?</summary>'
+                               '<p class="ws-auth-hint">Попросите сис-админа проверить «Доступ сотрудников» → '
+                               '«Доступ к кабинету»: он должен быть включён. Приглашение в MAX не включает веб-доступ. '
+                               'Убедитесь, что указан ваш MAX ID, а диалог с ботом уже открыт. '
+                               'После нескольких запросов подряд подождите 10 минут перед новой попыткой.</p></details>'
+                               '<a class="ws-auth-back ws-auth-admin" href="/panel/login">Я сис-админ — вход по паролю</a>',
+                               status_code=status_code)
 
 
 def staff_form_token(request: Request) -> str:

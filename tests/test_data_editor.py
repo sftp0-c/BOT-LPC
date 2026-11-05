@@ -73,11 +73,11 @@ def protected_workspace_tables(names) -> set[str]:
     """Права, сеансы, операции и доверенные файлы скрыты намеренно, не произвольно."""
     required = {
         "staff_web_access", "staff_web_sessions", "staff_web_login_challenges",
-        "staff_web_rate_buckets", "workspace_operations", "ticket_files",
+        "staff_web_rate_buckets", "workspace_operations", "ticket_files", "public_feedback_deleted_nonces",
     }
     assert required <= set(names), "в базе нет обязательных таблиц рабочего места"
     return {name for name in names if name.startswith("staff_web_")} | {
-        "workspace_operations", "ticket_files",
+        "workspace_operations", "ticket_files", "public_feedback_deleted_nonces",
     }
 
 

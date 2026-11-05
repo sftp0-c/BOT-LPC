@@ -811,3 +811,34 @@ def test_composer_cannot_overlay_history():
     rule = re.search(r"\.ws-composer\s*\{([^}]*)\}", css)[1]
     assert "position: static" in rule
     assert "position: sticky" not in rule and "position: fixed" not in rule
+
+
+@pytest.mark.parametrize("allowed", [["reply", "reply_close"], ["reply"], ["reply_close"]])
+def test_plain_reply_is_first_and_close_is_quiet(payload, allowed):
+    payload["detail"]["allowed_actions"] = allowed
+    tree = dom(view.render_workbench(**payload))
+    buttons = list(cls(tree, "ws-compose-actions").nodes("button"))
+    assert [button.attrs["value"] for button in buttons] == allowed
+    for button in buttons:
+        assert button.has_class("ws-btn-primary") == (button.attrs["value"] == "reply")
+        assert button.has_class("ws-btn-quiet") == (button.attrs["value"] == "reply_close")
+
+
+def test_history_scrolls_with_document_and_queue_passes_wheel():
+    css = CSS.read_text(encoding="utf-8-sig")
+    history = re.findall(r"\.ws-history-scroll\s*\{([^}]*)\}", css)
+    assert history and all("max-height: none" in rule and "overflow: visible" in rule for rule in history)
+    queue = re.search(r"\.ws-ticket-list\s*\{([^}]*)\}", css)[1]
+    assert "overflow-y: auto" in queue and "overscroll-behavior: auto" in queue
+    assert "overscroll-behavior: contain" not in css
+    assert ".ws-app .ws-app-header .ws-brand" in css
+
+
+def test_auth_layout_has_real_header_and_reduced_motion():
+    css = CSS.read_text(encoding="utf-8-sig")
+    body = re.search(r"body\.ws-auth\s*\{([^}]*)\}", css)[1]
+    assert "display: flex" in body and "flex-direction: column" in body
+    assert "place-items: center" not in body
+    assert ".ws-auth .ws-auth-header" in css and ".ws-auth .ws-auth-theme" in css
+    assert "grid-template-columns: minmax(0, 1.08fr) minmax(340px, .92fr)" in css
+    assert "@media (max-width: 900px)" in css and ".ws-auth *::before" in css

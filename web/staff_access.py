@@ -20,6 +20,29 @@ PERMISSION_LABELS = {
     "manage_others": "Изменение чужих обращений",
 }
 PRESET_LABELS = {"custom": "Настроить отдельно", "view": "Только просмотр своих", "work": "Работа со своими"}
+PERMISSION_HINTS = {
+    "reply": "Отправлять ответы в MAX", "status": "Принимать и завершать обращения",
+    "note": "Оставлять заметки только для команды", "forward": "Назначать другого сотрудника",
+    "templates": "Использовать готовые ответы", "attachments": "Работать с файлами обращения",
+    "export": "Скачивать разрешённые обращения в CSV", "view_others": "Читать обращения других сотрудников",
+    "manage_others": "Применять выданные права к чужим обращениям",
+}
+
+
+def _access_badge(enabled: bool) -> str:
+    state = "on" if enabled else "off"
+    label = "Включён" if enabled else "Выключен"
+    return f'<span class="pill pill-{state}">{label}</span>'
+
+
+def _login_help() -> str:
+    return """<details class="staff-web-help"><summary>Если сотруднику не приходит код</summary>
+<ol class="staff-web-steps"><li>Откройте «Настроить», включите доступ к кабинету и сохраните изменения.
+Регистрация по приглашению в MAX сама по себе не открывает сайт.</li>
+<li>Сотрудник должен открыть диалог с ботом в MAX и нажать «Начать» либо отправить /start.</li>
+<li>На странице входа укажите тот же MAX ID, который показан в карточке сотрудника.
+После нескольких запросов подряд подождите 10 минут и запросите новый код.</li></ol>
+<p>Сис-админы входят через обычную страницу входа в панель, а не по коду сотрудника.</p></details>"""
 
 
 def _secure_response(response):
@@ -42,23 +65,40 @@ async def staff_web_access_list(request: Request):
     raw_page = request.query_params.get("page", "1")
     number = min(10000, max(1, int(raw_page))) if raw_page.isascii() and raw_page.isdigit() else 1
     rows = await list_staff_web_access(search, limit=51, offset=(number - 1) * 50)
-    body = f"""<section class="card"><p>Вход в кабинет выдаётся отдельно от роли в MAX.
-Существующие сотрудники не получают веб-доступ автоматически. Тестовые сотрудники и сис-админы не входят в этот список.</p>
-<form method="get" action="/panel/staff-access" class="filters"><label for="staff-access-search">Сотрудник</label>
+    body = f"""<section class="card staff-web"><div class="staff-web-intro"><div>
+<h2>Разрешите сотруднику вход на сайт</h2>
+<p>Роль в MAX и веб-доступ — разные настройки. Выберите сотрудника, включите доступ и назначьте права.
+Существующие сотрудники не получают веб-доступ автоматически. Пока доступ выключен, код для входа не отправляется.</p></div>
+<a class="btn btn-grey" href="/workspace/login">Страница входа сотрудника</a></div>
+<p class="small">Здесь только обычные действующие сотрудники. Тестовые профили и сис-админы не показаны.</p>
+<form method="get" action="/panel/staff-access" class="staff-web-search"><div>
+<label for="staff-access-search">Найти сотрудника</label>
 <input id="staff-access-search" name="q" value="{esc(search)}" maxlength="100" placeholder="ФИО, должность или MAX ID">
-<button class="btn" type="submit">Найти</button></form></section>
-<section class="card"><div class="table-wrap"><table><thead><tr><th>Сотрудник</th><th>Должность</th><th>Веб-доступ</th><th>Действие</th></tr></thead><tbody>"""
-    for row in rows[:50]:
-        body += (f'<tr><td>{esc(row["full_name"])}<br><small>{esc(row["user_id"])}</small></td>'
-                 f'<td>{esc(row["position"]) or "—"}</td><td>{"Включён" if row["enabled"] else "Выключен"}</td>'
-                 f'<td><a class="btn" href="/panel/staff-access/{esc(row["user_id"])}">Настроить</a></td></tr>')
-    if not rows:
-        body += '<tr><td colspan="4">Подходящих сотрудников нет.</td></tr>'
-    body += '</tbody></table></div></section><nav class="pager" aria-label="Страницы сотрудников">'
-    for visible, target, label in ((number > 1, number - 1, "Назад"), (len(rows) > 50, number + 1, "Далее")):
-        if visible:
-            body += f'<a class="btn" href="/panel/staff-access?{esc(urlencode({"q": search, "page": target}))}">{label}</a>'
-    body += '</nav>'
+</div><button class="btn" type="submit">Найти</button>
+{'<a class="btn btn-grey" href="/panel/staff-access">Сбросить поиск</a>' if search else ''}</form></section>
+<section class="card staff-web"><h2>Сотрудники и доступ</h2>"""
+    if rows:
+        body += '<ul class="staff-web-list">'
+        for row in rows[:50]:
+            hint = "Вход по коду из MAX разрешён" if row["enabled"] else "Код не отправляется, пока доступ выключен"
+            body += (f'<li><div class="staff-web-person"><strong>{esc(row["full_name"]) or "Без ФИО"}</strong>'
+                     f'<p>{esc(row["position"]) or "Должность не указана"}</p><small>MAX ID: {esc(row["user_id"])}</small></div>'
+                     f'<div class="staff-web-status">{_access_badge(row["enabled"])}<small>{hint}</small></div>'
+                     f'<a class="btn" href="/panel/staff-access/{esc(row["user_id"])}" '
+                     f'aria-label="Настроить доступ: {esc(row["full_name"]) or esc(row["user_id"])}">Настроить</a></li>')
+        body += '</ul>'
+    else:
+        body += ('<div class="staff-web-empty"><strong>Подходящих сотрудников нет.</strong>'
+                 '<p>Проверьте поиск или добавьте обычного сотрудника по MAX ID.</p>'
+                 '<a class="btn btn-grey" href="/panel/staff">Открыть сотрудников</a></div>')
+    body += '</section>'
+    if number > 1 or len(rows) > 50:
+        body += '<nav class="pager" aria-label="Страницы сотрудников">'
+        for visible, target, label in ((number > 1, number - 1, "Назад"), (len(rows) > 50, number + 1, "Далее")):
+            if visible:
+                body += f'<a class="btn btn-grey" href="/panel/staff-access?{esc(urlencode({"q": search, "page": target}))}">{label}</a>'
+        body += f'<span class="small">Страница {number}</span></nav>'
+    body += f'<section class="card staff-web"><h2>Проверка входа</h2>{_login_help()}</section>'
     return _secure_response(page("Веб-доступ сотрудников", body, user, "/staff-access"))
 
 
@@ -70,24 +110,28 @@ async def staff_web_access_edit(request: Request, user_id: str):
     selected = set(access["permissions"])
     options = ''.join(f'<option value="{name}">{label}</option>' for name, label in PRESET_LABELS.items())
     checks = ''.join(
-        f'<label class="check"><input type="checkbox" name="permissions" value="{name}"'
-        f'{" checked" if name in selected else ""}><span>{PERMISSION_LABELS[name]}</span></label>'
-        for name in WEB_PERMISSIONS)
-    body = f"""<section class="card"><h2>{esc(staff['full_name'])}</h2><p>{esc(staff['position'])}</p>
-<p>Просмотр собственных обращений включён в сам доступ. Право изменения чужих обращений включает их просмотр.
-Право MAX «видеть все» не выдаёт веб-права.</p>
+        f'<label class="staff-web-check"><input type="checkbox" name="permissions" value="{name}"'
+        f'{" checked" if name in selected else ""}><span>{PERMISSION_LABELS[name]}'
+        f'<small>{PERMISSION_HINTS[name]}</small></span></label>' for name in WEB_PERMISSIONS)
+    body = f"""<section class="card staff-web"><div class="staff-web-intro"><div>
+<h2>{esc(staff['full_name'])}</h2><p>{esc(staff['position']) or 'Должность не указана'} · MAX ID: {esc(user_id)}</p>
+</div><div class="staff-web-status">{_access_badge(access['enabled'])}</div></div>
+<p>Просмотр собственных обращений включён в сам доступ. Право MAX «видеть все» не выдаёт веб-права.</p>
 <form method="post" action="/panel/staff-access/{esc(user_id)}">{csrf(request)}
-<label for="staff-access-enabled">Доступ к кабинету</label><select id="staff-access-enabled" name="enabled">
+<div class="staff-web-settings"><div><label for="staff-access-enabled">Доступ к кабинету</label>
+<select id="staff-access-enabled" name="enabled">
 <option value="0"{" selected" if not access['enabled'] else ""}>Выключен</option>
-<option value="1"{" selected" if access['enabled'] else ""}>Включён</option></select>
-<label for="staff-access-preset">Набор прав</label><select id="staff-access-preset" name="preset">{options}</select>
+<option value="1"{" selected" if access['enabled'] else ""}>Включён</option></select></div>
+<div><label for="staff-access-preset">Набор прав</label><select id="staff-access-preset" name="preset">{options}</select></div></div>
 <p>«Работа со своими»: ответы, статусы, заметки, передача, шаблоны и вложения. Выгрузка и чужие обращения выключены.
 Отдельные флажки учитываются только при выборе «Настроить отдельно».</p>
-<fieldset><legend>Отдельные права</legend>{checks}</fieldset>
-<button class="btn btn-primary" type="submit">Сохранить и отозвать прежние сессии</button></form></section>
-<section class="card"><h2>Активные входы</h2><p>Отзыв завершает все сессии сотрудника и гасит выданные коды.
+<fieldset class="staff-web-permissions"><legend>Отдельные права</legend><div class="staff-web-checks">{checks}</div></fieldset>
+<p class="small">Изменение чужих обращений включает их просмотр. После сохранения прежние входы и коды будут отозваны.</p>
+<div class="btn-row"><button class="btn" type="submit">Сохранить доступ</button>
+<a class="btn btn-grey" href="/panel/staff-access">К списку сотрудников</a></div></form>{_login_help()}</section>
+<section class="card staff-web"><h2>Завершить прежние входы</h2><p>Отзыв завершает все сессии сотрудника и гасит выданные коды.
 Разрешение на новый вход остаётся.</p><form method="post" action="/panel/staff-access/{esc(user_id)}/revoke">
-{csrf(request)}<button class="btn" type="submit">Отозвать все сессии</button></form></section>"""
+{csrf(request)}<button class="btn btn-grey" type="submit">Отозвать все сессии</button></form></section>"""
     return _secure_response(page("Веб-доступ сотрудника", body, user, "/staff-access"))
 
 

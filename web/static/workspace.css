@@ -111,7 +111,7 @@ select.ws-input { padding-right: var(--space-xxl); }
 .ws-ticket-entry { position:relative; }
 .ws-bulk-check { display:flex; align-items:center; min-height:32px; padding:4px 15px 0; font-size:13px; color:var(--mut); }
 .ws-bulk-check input { width:18px; height:18px; margin:0; accent-color:var(--acc); }
-.ws-ticket-list { padding: var(--space-sm) !important; max-height: 68dvh; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.ws-ticket-list { padding: var(--space-sm) !important; max-height: 68dvh; overflow-y: auto; overscroll-behavior: auto; scrollbar-width: thin; }
 .ws-ticket-list li + li { margin-top: var(--space-xs); }
 .ws-ticket-row {
   display: flex; flex-direction: column; gap: 6px; min-width: 0; position: relative;
@@ -160,7 +160,8 @@ select.ws-input { padding-right: var(--space-xxl); }
 .ws-conversation { display: flex; flex-direction: column; min-height: 0; }
 .ws-section-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px var(--space-sm); padding-bottom: var(--space-lg); }
 .ws-section-heading .ws-muted { font-size: 12px; }
-.ws-history-scroll { min-height: 160px; max-height: min(48dvh, 690px); overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; padding: 2px var(--space-xs) var(--space-lg) 2px; }
+/* История идёт вместе со страницей: колесо мыши не запирается внутри карточки. */
+.ws-history-scroll { min-height: 0; max-height: none; overflow: visible; padding: 2px 0 var(--space-lg); }
 .ws-timeline { display: flex; flex-direction: column; gap: var(--space-lg); }
 .ws-timeline-item { min-width: 0; }
 .ws-message { max-width: 78ch; padding: var(--space-lg); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-raised); overflow-wrap: anywhere; }
@@ -198,15 +199,21 @@ select.ws-input { padding-right: var(--space-xxl); }
 .ws-file-name { display: block; overflow-wrap: anywhere; }
 .ws-file small { display: block; color: var(--mut); font-size: 12px; }
 .ws-file-unavailable { flex-wrap: wrap; }
-/* Композер занимает свою строку сетки; прокручивается история, а не текст под формой. */
+/* Поле ответа идёт после истории и не перекрывает её при прокрутке. */
 .ws-composer { position: static; min-width: 0; align-self: stretch; padding-top: var(--space-lg); background: var(--surface); border-top: 1px solid var(--line); }
 .ws-composer-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: var(--space-xs) var(--space-md); margin-bottom: var(--space-md); }
 .ws-reply-as { color: var(--mut); font-size: 12px; overflow-wrap: anywhere; }
 .ws-textarea { min-height: 156px; resize: vertical; font-size: 16px; line-height: 1.6; }
 .ws-text-field > span:first-child { font-size: 13px; }
 .ws-field-hint { font-size: 12px; color: var(--mut); margin-top: var(--space-sm) !important; line-height: 1.5; }
-.ws-compose-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); margin-top: var(--space-md); }
-.ws-compose-actions .ws-btn { font-size: 15px; }
+.ws-compose-actions { display: flex; flex-wrap: wrap; align-items: stretch; gap: var(--space-sm); margin-top: var(--space-lg); }
+.ws-compose-actions .ws-btn { min-height: 46px; min-width: 132px; font-size: 14px; padding: 11px 18px; }
+.ws-compose-actions .ws-btn-quiet:hover { background: var(--surface-raised); color: var(--ink); border-color: var(--line-strong); }
+.ws-composer .ws-template-picker { margin-top: var(--space-md) !important; }
+.ws-composer .ws-template-picker > summary { padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-raised); }
+.ws-composer .ws-template-picker[open] > summary { border: 1px solid var(--acc-line); }
+.ws-composer .ws-template-controls { margin-top: var(--space-md); }
+.ws-composer .ws-more-actions > summary { padding-block: var(--space-md); }
 .ws-draft-status:empty { display: none; }
 .ws-draft-status { min-height: 18px; }
 .ws-template-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-sm); }
@@ -247,28 +254,108 @@ select.ws-input { padding-right: var(--space-xxl); }
 body.ws-app { min-height: 100dvh; }
 .ws-app .ws-app-main { width: 100%; max-width: none; margin: 0; padding: clamp(16px, 2vw, 32px); animation: none; }
 .ws-app .ws-app-header { position: static; inset: auto; width: 100%; margin: 0; min-height: var(--header-h); padding: var(--space-lg) clamp(16px, 2vw, 32px); display: flex; align-items: center; justify-content: space-between; gap: var(--space-lg); flex-wrap: wrap; background: var(--surface); border-bottom: 1px solid var(--line); box-shadow: none; }
-.ws-app .ws-app-header .brand { min-width: 0; }
+.ws-app .ws-app-header .ws-brand { min-width: 0; display: flex; align-items: center; gap: var(--space-md); color: var(--ink); text-decoration: none; }
+.ws-app .ws-brand > .ico { width: 40px; height: 40px; padding: 8px; color: var(--acc); background: var(--acc-soft); border: 1px solid var(--acc-line); border-radius: var(--radius-sm); }
+.ws-app .ws-brand b { font-size: 17px; }
+.ws-app .ws-brand small { display: block; margin-top: 3px; color: var(--mut); font-size: 12px; }
+.ws-app .ws-account { margin-left: auto; }
+.ws-app .ws-account-name { max-width: 38ch; min-width: 0; overflow-wrap: anywhere; }
 .ws-app .ws-app-header form { margin: 0; }
-.ws-app .ws-app-header :is(a:not(.brand), button) { min-height: var(--tap-min); display: inline-flex; align-items: center; gap: var(--space-sm); }
-.ws-app .ws-app-header .brand small { text-transform: none; }
+.ws-app .ws-app-header :is(a:not(.ws-brand), button) { min-height: var(--tap-min); display: inline-flex; align-items: center; gap: var(--space-sm); }
+.ws-app .ws-app-header .ws-brand small { text-transform: none; }
 .ws-app .ws-app-user, .ws-app :is(.ws-app-account, .ws-account) { display: flex; align-items: center; gap: var(--space-md); flex-wrap: wrap; }
 .ws-app .ws-app-user small, .ws-app :is(.ws-app-account, .ws-account) small { display: block; color: var(--mut); }
-/* Самостоятельный вход: auth-agent использует эти классы вместе с базовой темой. */
-body.ws-auth { min-height: 100dvh; display: grid; place-items: center; padding: 24px; color: var(--ink); background: radial-gradient(ellipse at 25% 0, var(--canvas-a), transparent 65%), var(--bg); }
-.ws-auth .ws-auth-shell { width: min(100%, 490px); max-width: none; margin: 0; padding: 0; min-height: 0; animation: none; }
-.ws-auth-card { width: 100%; padding: clamp(24px, 4vw, 40px); border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-sm); }
-.ws-auth-brand { display: flex; align-items: center; gap: var(--space-md); margin: 0 0 var(--space-xxl); color: var(--ink); font-size: 15px; font-weight: var(--weight-semi); text-decoration: none; }
-.ws-auth-brand > .ico { width: 36px; height: 36px; padding: 7px; border: 1px solid var(--acc-line); border-radius: var(--radius-sm); background: var(--acc-soft); color: var(--acc); }
-.ws-auth-brand small { display: block; color: var(--mut); font-size: 12px; font-weight: var(--weight-normal); }
-.ws-auth .ws-auth-title, .ws-auth h1 { font-size: 28px; line-height: 1.2; letter-spacing: -.03em; margin-bottom: var(--space-md); }
-.ws-auth-lead, .ws-auth-intro { color: var(--mut); font-size: 15px; line-height: 1.6; margin: 0 0 var(--space-xl); }
+/* Вход имеет свою шапку и естественную высоту; переключатель не создаёт пустую строку. */
+body.ws-auth {
+  min-height: 100vh; min-height: 100svh; display: flex; flex-direction: column; position: relative;
+  isolation: isolate; padding: 24px clamp(20px, 4vw, 64px); color: var(--ink);
+  background: radial-gradient(ellipse at 0 25%, var(--canvas-a), transparent 58%),
+              radial-gradient(ellipse at 95% 80%, var(--canvas-b), transparent 55%), var(--bg);
+}
+.ws-auth::before { content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background-image: linear-gradient(var(--line-soft) 1px, transparent 1px), linear-gradient(90deg, var(--line-soft) 1px, transparent 1px);
+  background-size: 72px 72px; opacity: .32; mask-image: radial-gradient(ellipse at 25% 35%, currentColor, transparent 68%); }
+.ws-auth .ws-auth-header { width: min(100%, 1200px); margin: 0 auto; padding: 0; min-height: 52px;
+  position: static; inset: auto; display: flex; flex-wrap: nowrap; justify-content: space-between; gap: var(--space-lg);
+  color: var(--ink); background: transparent; box-shadow: none; border: 0; }
+.ws-auth-brand { display: flex; align-items: center; gap: var(--space-md); min-width: 0;
+  margin: 0; color: var(--ink); text-decoration: none; }
+.ws-auth-brand:hover { text-decoration: none; }
+.ws-auth-brand > .ico { width: 44px; height: 44px; padding: 9px; border: 1px solid var(--acc-line);
+  border-radius: var(--radius-md); background: var(--acc-soft); color: var(--acc); }
+.ws-auth-brand b { font-size: 19px; font-weight: var(--weight-semi); }
+.ws-auth-brand small { display: block; margin-top: 2px; color: var(--mut); font-size: 12px; font-weight: var(--weight-normal); }
+.ws-auth .ws-auth-theme { flex: 0 0 44px; width: 44px; height: 44px; margin: 0; color: var(--ink-soft); }
+.ws-auth .ws-auth-shell { width: min(100%, 1200px); max-width: none; margin: 0 auto; padding: clamp(36px, 6vh, 72px) 0;
+  min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(340px, .92fr);
+  align-items: center; gap: clamp(28px, 4.5vw, 72px); animation: none; }
+.ws-auth-story { min-width: 0; position: relative; padding: var(--space-lg) 0; }
+.ws-auth-kicker { display: inline-flex; align-items: center; gap: var(--space-sm); color: var(--acc);
+  font-size: 12px; letter-spacing: .08em; font-weight: var(--weight-semi); text-transform: uppercase; }
+.ws-auth-kicker::before { content: ""; width: 22px; height: 2px; background: currentColor; }
+.ws-auth-story h2 { font-size: clamp(32px, 3.4vw, 50px); line-height: 1.15; letter-spacing: -.045em;
+  margin: 18px 0 var(--space-xl); font-weight: var(--weight-bold); }
+.ws-auth-story h2 span { color: var(--acc); }
+.ws-auth-lead { max-width: 47ch; color: var(--ink-soft); font-size: 17px; line-height: 1.7; margin: 0 0 var(--space-xl); }
+.ws-auth-flow { position: relative; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-sm);
+  list-style: none; margin: 30px 0 var(--space-lg); padding: var(--space-lg); border: 1px solid var(--line);
+  border-radius: var(--radius-lg); background: linear-gradient(135deg, var(--surface), var(--surface-raised)); }
+.ws-auth-flow::before { content: ""; position: absolute; top: 47px; left: 18%; right: 18%; height: 1px;
+  background: linear-gradient(90deg, var(--acc-line), var(--acc), var(--acc-line)); transform-origin: left;
+  pointer-events: none; animation: ws-auth-connect 900ms var(--ease-standard) both; }
+.ws-auth-flow li { min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 6px;
+  position: relative; text-align: center; }
+.ws-auth-flow-icon { display: grid; place-items: center; width: 48px; height: 48px; margin-bottom: 4px;
+  border: 1px solid var(--acc-line); border-radius: var(--radius-md); background: var(--surface); color: var(--acc);
+  transition: box-shadow var(--motion-base) var(--ease-standard); }
+.ws-auth-flow li:hover .ws-auth-flow-icon { box-shadow: var(--shadow-focus); }
+.ws-auth-flow strong { font-size: 14px; font-weight: var(--weight-semi); }
+.ws-auth-flow small { font-size: 12px; color: var(--mut); line-height: 1.5; }
+.ws-auth-footnote { display: flex; align-items: flex-start; gap: var(--space-sm); max-width: 49ch;
+  font-size: 13px; line-height: 1.6; color: var(--mut); margin: 0; }
+.ws-auth-footnote .ico { color: var(--acc); margin-top: 2px; }
+.ws-auth-card { width: 100%; min-width: 0; padding: clamp(24px, 3vw, 40px); border: 1px solid var(--line);
+  border-top: 3px solid var(--acc-line); border-radius: var(--radius-lg); background: var(--surface);
+  box-shadow: var(--shadow-md); animation: ws-auth-appear var(--motion-slow) var(--ease-standard); }
+.ws-auth .ws-auth-step { font-size: 12px; font-weight: var(--weight-semi); color: var(--acc); margin: 0 0 12px; }
+.ws-auth .ws-auth-title, .ws-auth h1 { font-size: clamp(24px, 2.15vw, 30px); line-height: 1.25;
+  letter-spacing: -.025em; margin: 0 0 var(--space-sm); }
+.ws-auth-intro { color: var(--mut); font-size: 15px; line-height: 1.6; margin: 0 0 var(--space-xl); }
 .ws-auth-form { display: flex; flex-direction: column; gap: var(--space-lg); }
-.ws-auth-field { margin: 0; }
-.ws-auth-field label, .ws-auth-form > label { margin: 0 0 var(--space-sm); color: var(--ink-soft); font-size: 14px; }
-.ws-auth-form .btn-primary, .ws-auth-form .ws-btn-primary { width: 100%; margin-top: var(--space-xs); font-size: 16px; }
-.ws-auth-hint { color: var(--mut); font-size: 13px; line-height: 1.6; margin-top: var(--space-lg); }
-.ws-auth .ws-auth-notice { display: block; margin-top: var(--space-lg); }
+.ws-auth-input-group { display: flex; flex-direction: column; gap: var(--space-sm); }
+.ws-auth .ws-auth-field { margin: 0; color: var(--ink-soft); font-size: 14px; font-weight: var(--weight-semi); }
+.ws-auth-form :is(input:not([type=hidden]), select) { background: var(--surface-sunken); border-color: var(--line-strong); }
+.ws-auth-form input:focus { background: var(--surface); border-color: var(--acc); box-shadow: var(--shadow-focus); }
+.ws-auth-form input[name=code] { font-size: 25px; letter-spacing: .28em; font-variant-numeric: tabular-nums; }
+.ws-auth-form .btn-primary, .ws-auth-form .ws-btn-primary { width: 100%; margin: 0; min-height: 48px; font-size: 15px; }
+.ws-auth .ws-auth-hint { color: var(--mut); font-size: 13px; line-height: 1.65; margin: 0; }
+.ws-auth .ws-auth-notice { display: block; margin: 0 0 var(--space-lg); }
+.ws-auth .ws-auth-help { margin: var(--space-lg) 0 0; padding: 0; border: 0; border-top: 1px solid var(--line);
+  border-radius: 0; background: transparent; }
+.ws-auth .ws-auth-help > summary { min-height: 44px; display: flex; align-items: center; gap: var(--space-sm);
+  padding: 12px 0; font-size: 14px; color: var(--ink-soft); background: transparent; }
+.ws-auth .ws-auth-help[open] > summary { border: 0; margin: 0; }
+.ws-auth .ws-auth-help[open] > p { padding: 0 0 var(--space-md); }
+.ws-auth .ws-auth-back { display: inline-flex; align-items: center; min-height: 44px; padding: 8px 0;
+  font-size: 13px; line-height: 1.5; color: var(--ink-soft); }
+.ws-auth .ws-auth-admin { margin-top: var(--space-xs); }
 .ws-auth a:not(.btn):not(.ws-btn):not(.ws-auth-brand) { text-underline-offset: 3px; }
+.ws-auth .ws-auth-footer { width: min(100%, 1200px); max-width: none; margin: 0 auto; padding: 16px 0 0;
+  display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-sm); border-top: 1px solid var(--line-soft);
+  color: var(--mut); font-size: 12px; text-align: left; }
+@keyframes ws-auth-appear { from { opacity: .6; } to { opacity: 1; } }
+@keyframes ws-auth-connect { from { transform: scaleX(0); opacity: 0; } to { transform: scaleX(1); opacity: 1; } }
+@media (max-width: 900px) {
+  .ws-auth .ws-auth-shell { grid-template-columns: minmax(0, 1fr); max-width: 620px; gap: var(--space-xl); flex: 0 0 auto; padding: 24px 0 32px; }
+  .ws-auth-story { padding: 0; }
+  .ws-auth-story h2 { font-size: 34px; margin: 12px 0 var(--space-md); }
+  .ws-auth-story h2 br { display: none; }
+  .ws-auth-lead { max-width: none; font-size: 16px; margin-bottom: var(--space-md); }
+  .ws-auth-flow { margin: var(--space-lg) 0 0; padding: var(--space-md); }
+  .ws-auth-flow::before { top: 39px; }
+  .ws-auth-footnote { display: none; }
+  .ws-auth .ws-auth-footer { margin-top: auto; }
+}
 @media (min-width: 1640px) {
   .ws-detail-grid { grid-template-columns: minmax(0, 1fr) 250px; gap: var(--space-xl); }
   .ws-context { order: 0; }
@@ -289,7 +376,6 @@ body.ws-auth { min-height: 100dvh; display: grid; place-items: center; padding: 
   .ws-detail { padding: var(--space-lg); }
   .ws-detail-title-row h2 { font-size: 22px; }
   .ws-detail-main { height: auto; }
-  .ws-history-scroll { max-height: 570px; }
   .ws-composer { position: static; }
 }
 @media (max-width: 1000px) {
@@ -320,7 +406,7 @@ body.ws-auth { min-height: 100dvh; display: grid; place-items: center; padding: 
 @media (max-width: 560px) {
   .ws-app .ws-app-main { padding: var(--space-md); }
   .ws-app .ws-app-header { padding: var(--space-md); gap: var(--space-md); }
-  .ws-app .ws-app-header .brand { flex: 1 1 180px; }
+  .ws-app .ws-app-header .ws-brand { flex: 1 1 180px; }
   .ws-app .ws-app-user, .ws-app :is(.ws-app-account, .ws-account) { justify-content: space-between; width: 100%; }
   .ws-workbench .ws-title { font-size: 26px; }
   .ws-topbar { align-items: flex-start; margin-bottom: var(--space-lg); }
@@ -352,11 +438,23 @@ body.ws-auth { min-height: 100dvh; display: grid; place-items: center; padding: 
   .ws-filter-fields .ws-field:nth-child(-n+2) { grid-column: 1 / -1; }
   .ws-notice { padding: var(--space-md); font-size: 14px; }
   body.ws-auth { padding: var(--space-lg); }
-  .ws-auth-card { padding: 25px 20px; border-radius: var(--radius-md); }
+  .ws-auth-card { padding: 24px 20px; border-radius: var(--radius-md); }
+  .ws-auth .ws-auth-shell { padding-top: 24px; gap: 20px; }
+  .ws-auth-story h2 { font-size: 28px; margin: 10px 0; }
+  .ws-auth-lead { font-size: 15px; margin-bottom: 0; }
+  .ws-auth-story .ws-auth-flow { display: none; }
+  .ws-auth-brand b { font-size: 17px; }
+  .ws-auth-brand small { font-size: 11px; }
+  .ws-auth-flow { padding: 14px 10px; gap: 6px; }
+  .ws-auth-flow strong { font-size: 12px; }
+  .ws-auth-flow small { font-size: 11px; }
+  .ws-auth-flow-icon { width: 42px; height: 42px; }
+  .ws-auth-flow::before { top: 35px; }
+  .ws-auth .ws-auth-footer { font-size: 11px; }
   .ws-auth .ws-auth-title, .ws-auth h1 { font-size: 26px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .ws-workbench *, .ws-auth *, .ws-app .ws-app-header { animation: none !important; transition: none !important; scroll-behavior: auto; }
+  .ws-workbench *, .ws-auth *, .ws-auth *::before, .ws-auth *::after, .ws-auth::before, .ws-app .ws-app-header { animation: none !important; transition: none !important; scroll-behavior: auto; }
 }
 @media print {
   .ws-workbench .ws-topbar, .ws-queue, .ws-bulk-admin, .ws-detail-toolbar, .ws-card-tools, .ws-composer, .ws-admin-tools, .ws-readonly, .ws-app .ws-app-header { display: none !important; }

@@ -340,3 +340,44 @@ async def test_panel_duplicate_fields_are_rejected(access_client):
 
 def test_staff_access_module_uses_only_declared_permissions():
     assert set(staff_access.PERMISSION_LABELS) == set(access.WEB_PERMISSIONS)
+
+
+async def test_staff_access_has_clear_status_and_no_empty_pager(access_client):
+    response = access_client.get("/panel/staff-access")
+    assert response.status_code == 200
+    assert response.text.count('<nav ') == 1
+    assert 'aria-label="Страницы сотрудников"' not in response.text
+    assert 'class="staff-web-list"' in response.text
+    assert 'class="pill pill-off">Выключен</span>' in response.text
+    assert "Код не отправляется, пока доступ выключен" in response.text
+    assert "Существующие сотрудники не получают веб-доступ автоматически" in response.text
+    assert "Если сотруднику не приходит код" in response.text
+    assert 'href="/workspace/login"' in response.text
+    assert await access.get_staff_web_access("7555666777") is None
+
+
+@pytest.mark.parametrize("number,count,label", [(1, 51, "Далее"), (2, 1, "Назад")])
+async def test_staff_access_pager_only_when_needed(access_client, monkeypatch, number, count, label):
+    sample = (await access.list_staff_web_access())[0]
+    observed = []
+
+    async def rows(search, limit, offset):
+        observed.append((search, limit, offset))
+        return [sample] * count
+
+    monkeypatch.setattr(staff_access, "list_staff_web_access", rows)
+    response = access_client.get(f"/panel/staff-access?q=проверка&page={number}")
+    pager = re.search(r'<nav class="pager"[^>]*>(.*?)</nav>', response.text, re.S)
+    assert pager and label in pager[1] and f"Страница {number}" in pager[1]
+    assert "q=%D0%BF" in pager[1] and "&amp;page=" in pager[1]
+    assert observed == [("проверка", 51, (number - 1) * 50)]
+
+
+async def test_staff_access_empty_search_and_form_are_explicit(access_client):
+    empty = access_client.get("/panel/staff-access?q=ничего-не-найдено")
+    assert "Подходящих сотрудников нет." in empty.text and "Сбросить поиск" in empty.text
+    assert 'aria-label="Страницы сотрудников"' not in empty.text
+    edit = access_client.get("/panel/staff-access/7555666777")
+    assert edit.text.count('class="staff-web-check"') == len(access.WEB_PERMISSIONS)
+    assert "Сохранить доступ" in edit.text and "К списку сотрудников" in edit.text
+    assert "прежние входы и коды будут отозваны" in edit.text

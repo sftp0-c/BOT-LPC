@@ -180,10 +180,11 @@ def _workspace_shell(title: str, body: str, actor: dict, csrf_token: str, *, sta
 <title>{esc(title)} — Навигатор ЛПК</title><script>{theme_boot_script()}</script><style>{STYLESHEET}</style>
 <link rel="stylesheet" href="/workspace/assets/workspace.css?v={version.__version__}"></head>
 <body class="ws-app" data-panel-user="{esc(uid)}"><a class="skip-link" href="#workspace-main">Перейти к обращениям</a>
-<header class="ws-app-header"><a class="ws-brand" href="/workspace/tickets">{icon('navigator', 27)} <b>Навигатор ЛПК</b></a>
-<span class="ws-muted">Кабинет сотрудника · Бета-тестирование</span><div class="ws-account"><span><b>{esc(name)}</b><small>{esc(position)}</small></span>
+<header class="ws-app-header"><a class="ws-brand" href="/workspace/tickets">{icon('navigator', 27)}
+<span><b>Навигатор ЛПК</b><small>Кабинет сотрудника · Бета-тестирование</small></span></a>
+<div class="ws-account"><span class="ws-account-name"><b>{esc(name)}</b><small>{esc(position)}</small></span>
 <button type="button" class="theme-toggle" aria-label="Сменить тему"></button>
-<form method="post" action="/workspace/logout"><input type="hidden" name="csrf" value="{esc(csrf_token)}"><button class="ws-btn" type="submit">{icon('logout', 18)} Выйти</button></form></div></header>
+<form method="post" action="/workspace/logout"><input type="hidden" name="csrf" value="{esc(csrf_token)}"><button class="ws-btn ws-btn-quiet" type="submit">{icon('logout', 18)} Выйти</button></form></div></header>
 <main id="workspace-main" class="ws-app-main">{body}</main>
 <script>{theme_script()}</script><script src="/workspace/assets/workspace.js?v={version.__version__}" defer></script></body></html>""", status_code=status_code, headers=HEADERS)
 

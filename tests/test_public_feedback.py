@@ -5,6 +5,10 @@ import html
 import logging
 import re
 import sqlite3
+from pathlib import Path
+import shutil
+import subprocess
+from types import ModuleType
 from urllib.parse import urlencode
 
 import httpx
@@ -18,6 +22,7 @@ import config
 import database as db
 import repository as repo
 from web import common, feedback
+from store import feedback as feedback_store
 
 NOW = 1_793_888_000
 FORM_URL = "https://feedback.example"
@@ -29,6 +34,7 @@ def client(monkeypatch, env):
     monkeypatch.setattr(config, "PUBLIC_URL", FORM_URL)
     monkeypatch.setattr(config, "WEB_PANEL_PASSWORD", "test-panel-pass")
     monkeypatch.setattr(feedback, "_now", lambda: NOW)
+    monkeypatch.setattr(feedback_store, "_now", lambda: feedback._now())
     return TestClient(bot.app, base_url=FORM_URL, follow_redirects=False)
 
 
@@ -77,10 +83,11 @@ async def test_form_separate_cookie_headers_and_no_database(client, monkeypatch)
     assert common.COOKIE not in client.cookies
     assert not common._decode_session(cookie)
     csp = first.headers["content-security-policy"]
-    for value in ("form-action 'self'", "connect-src 'none'", "script-src 'none'", "style-src 'self'"):
+    for value in ("form-action 'self'", "connect-src 'none'", "script-src 'self'", "style-src 'self'"):
         assert value in csp
     assert "unsafe-inline" not in csp
-    assert "<script" not in first.text and "<style" not in first.text and "style=" not in first.text
+    assert f'<script src="/feedback/assets/feedback.js?v={version.__version__}" defer></script>' in first.text
+    assert first.text.count("<script") == 1 and "<style" not in first.text and "style=" not in first.text
     assert f'href="/public/landing.css?v={version.__version__}"' in first.text
     assert "Бета-тестирование" in first.text
     assert first.headers["cache-control"] == "no-store"
@@ -256,12 +263,13 @@ async def test_replay_immutable_new_nonce_and_cookie_limit(client, monkeypatch):
     assert client.post("/feedback", data=changed).status_code == 303
     item = await repo.get_public_feedback(1)
     assert item["body"] == BODY and item["kind"] == "bug"
-    for _ in range(3):
+    for index in range(1, 4):
+        monkeypatch.setattr(feedback, "_now", lambda value=NOW + index * 30: value)
         assert client.post("/feedback", data=fields(client)).status_code == 303
     assert client.cookies.get(feedback.FEEDBACK_COOKIE) == cookie
     assert await repo.count_public_feedback() == 4
     limited = client.post("/feedback", data=fields(client))
-    assert limited.status_code == 429 and limited.headers["retry-after"] == "600"
+    assert limited.status_code == 429 and limited.headers["retry-after"] == "510"
     monkeypatch.setattr(feedback, "_now", lambda: NOW + 600)
     assert client.post("/feedback", data=fields(client)).status_code == 303
 
@@ -314,8 +322,8 @@ async def test_atomic_concurrent_submissions_rate_and_replay(client):
         for _ in range(6):
             forms.append({**base, "submission_nonce": hidden(await parallel.get("/feedback"), "submission_nonce")})
         responses = await asyncio.gather(*(parallel.post("/feedback", data=form) for form in forms))
-        assert sorted(response.status_code for response in responses) == [303] * 5 + [429] * 2
-    assert await repo.count_public_feedback() == 5
+        assert sorted(response.status_code for response in responses) == [303] + [429] * 6
+    assert await repo.count_public_feedback() == 1
     # Отдельный посетитель одновременно повторяет один и тот же nonce.
     transport = httpx.ASGITransport(app=bot.app, client=("1.1.1.1", 1234))
     async with httpx.AsyncClient(transport=transport, base_url=FORM_URL) as parallel:
@@ -324,7 +332,7 @@ async def test_atomic_concurrent_submissions_rate_and_replay(client):
                 "submission_nonce": hidden(response, "submission_nonce")}
         responses = await asyncio.gather(*(parallel.post("/feedback", data=form) for _ in range(5)))
         assert all(response.status_code == 303 for response in responses)
-    assert await repo.count_public_feedback() == 6
+    assert await repo.count_public_feedback() == 2
 
 
 async def test_anonymous_storage_xss_no_sends_or_secret_logs(client, env, caplog):
@@ -438,3 +446,291 @@ async def test_feedback_raw_data_read_only_and_nonce_hidden(env):
     columns = await data.table_columns("public_feedback")
     assert "submission_nonce" not in {column["name"] for column in columns}
     assert "body" in {column["name"] for column in columns}
+
+
+async def test_cooldown_boundary_keeps_text_cookie_and_nonce(client, monkeypatch):
+    form = fields(client)
+    cookie = client.cookies.get(feedback.FEEDBACK_COOKIE)
+    first = client.post("/feedback", data=form)
+    assert first.status_code == 303
+    wait_cookie = client.cookies.get(feedback.FEEDBACK_WAIT_COOKIE)
+    assert wait_cookie and client.cookies.get(feedback.FEEDBACK_COOKIE) == cookie
+    assert feedback.FEEDBACK_COOKIE + "=" not in first.headers["set-cookie"]
+    again = fields(client)
+    await_page = client.get("/feedback")
+    assert 'data-wait-seconds="30"' in await_page.text
+    assert "disabled" not in await_page.text  # Без JS остаётся рабочая форма, сервер всё равно защищает.
+    malicious = '</textarea><script>НЕ_ИСПОЛНЯТЬ_ТЕКСТ</script>'
+    monkeypatch.setattr(feedback, "_now", lambda: NOW + 29)
+    limited = client.post("/feedback", data={**again, "description": malicious})
+    assert limited.status_code == 429 and limited.headers["retry-after"] == "1"
+    assert html.escape(malicious) in limited.text and malicious not in limited.text
+    assert hidden(limited, "submission_nonce") == again["submission_nonce"]
+    assert client.cookies.get(feedback.FEEDBACK_COOKIE) == cookie
+    assert await repo.count_public_feedback() == 1
+    monkeypatch.setattr(feedback, "_now", lambda: NOW + 30)
+    assert client.post("/feedback", data=again).status_code == 303
+    assert await repo.count_public_feedback() == 2
+
+
+async def test_replay_and_new_ui_cookie_do_not_reset_cooldown(client, monkeypatch):
+    form = fields(client)
+    assert client.post("/feedback", data=form).status_code == 303
+    marker = dict(await db.one("SELECT * FROM public_feedback_rate_buckets WHERE bucket_key LIKE 'cooldown:%'"))
+    cookie = client.cookies.get(feedback.FEEDBACK_COOKIE)
+    monkeypatch.setattr(feedback, "_now", lambda: NOW + 10)
+    assert client.post("/feedback", data=form).status_code == 303
+    assert dict(await db.one("SELECT * FROM public_feedback_rate_buckets WHERE bucket_key LIKE 'cooldown:%'")) == marker
+    # Удаление UI-подсказки убирает лишь таймер, не серверную паузу.
+    for item in list(client.cookies.jar):
+        if item.name == feedback.FEEDBACK_WAIT_COOKIE:
+            client.cookies.delete(item.name, domain=item.domain, path=item.path)
+    limited = client.post("/feedback", data=fields(client))
+    assert limited.status_code == 429 and limited.headers["retry-after"] == "20"
+    assert client.cookies.get(feedback.FEEDBACK_COOKIE) == cookie
+
+
+async def test_cooldown_does_not_block_another_person_at_same_peer(client):
+    assert client.post("/feedback", data=fields(client)).status_code == 303
+    other = TestClient(bot.app, base_url=FORM_URL, follow_redirects=False)
+    assert other.post("/feedback", data=fields(other)).status_code == 303
+    assert await repo.count_public_feedback() == 2
+
+
+async def test_untrusted_wait_hint_not_an_authorization_or_sliding_cookie(client, monkeypatch):
+    fields(client)
+    cookie = client.cookies.get(feedback.FEEDBACK_COOKIE)
+    client.cookies.set(feedback.FEEDBACK_WAIT_COOKIE, "forged", path="/feedback")
+    page = client.get("/feedback")
+    assert 'data-wait-seconds="0"' in page.text
+    assert client.cookies.get(feedback.FEEDBACK_COOKIE) == cookie
+    monkeypatch.setattr(feedback, "_now", lambda: NOW + 200)
+    page = client.get("/feedback")
+    assert "Max-Age=7000" in page.headers["set-cookie"]
+    assert client.cookies.get(feedback.FEEDBACK_COOKIE) == cookie
+
+
+async def test_global_cap_applies_without_shared_peer(client):
+    for index in range(121):
+        result, wait = await repo.submit_public_feedback(now=NOW, peer_key=digest(index), shared_peer=False)
+        assert result == ("ignored" if index < 120 else "limited")
+    assert wait == 3600
+
+
+async def test_cooldown_and_expiry_use_clock_after_sqlite_wait(client, monkeypatch):
+    peer, cookie = digest("peer"), digest("cookie")
+    assert await repo.submit_public_feedback(now=NOW, peer_key=peer, cookie_key=cookie,
+                                             kind="bug", body=BODY, submission_nonce="first") == ("created", 1)
+    async with db._conn() as conn:
+        await conn.execute("BEGIN IMMEDIATE")
+        monkeypatch.setattr(feedback_store, "_now", lambda: NOW + 29)
+        task = asyncio.create_task(repo.submit_public_feedback(peer_key=peer, cookie_key=cookie,
+                                                               kind="bug", body=BODY, submission_nonce="second"))
+        await asyncio.sleep(0.05)
+        monkeypatch.setattr(feedback_store, "_now", lambda: NOW + 30)
+        await conn.commit()
+    assert await task == ("created", 2)
+    async with db._conn() as conn:
+        await conn.execute("BEGIN IMMEDIATE")
+        task = asyncio.create_task(repo.submit_public_feedback(peer_key=peer, cookie_key=cookie,
+                                                               kind="bug", body=BODY, submission_nonce="expired",
+                                                               expires_at=NOW + 31))
+        await asyncio.sleep(0.05)
+        monkeypatch.setattr(feedback_store, "_now", lambda: NOW + 31)
+        await conn.commit()
+    assert await task == ("expired", 0)
+    assert await repo.count_public_feedback() == 2
+
+
+def delete_fields(client, feedback_id=1):
+    csrf = authenticate(client)
+    return {"csrf": csrf, "confirm": "УДАЛИТЬ", "feedback_id": str(feedback_id)}
+
+
+async def test_delete_confirmation_escapes_text_and_deletes_only_feedback(client, env):
+    form = fields(client)
+    body = '<script>Приватный отзыв 80418</script>'
+    assert client.post("/feedback", data={**form, "description": body}).status_code == 303
+    await db.run("INSERT INTO public_feedback(kind,body,submission_nonce) VALUES('bug',?,'other')", (BODY,))
+    tid = await repo.create_ticket("300", "200", "feedback", "Студенческое обращение не удалять")
+    assert tid == 1
+    data = delete_fields(client)
+    confirm = client.get("/panel/feedback/1/delete")
+    assert confirm.status_code == 200 and "Удалить отзыв №1?" in confirm.text
+    assert "без возможности восстановления" in confirm.text
+    assert body not in confirm.text and html.escape(body) in confirm.text
+    assert form["submission_nonce"] not in confirm.text
+    assert hidden(confirm, "feedback_id") == "1"
+    response = client.post("/panel/feedback/1/delete", data=data)
+    assert response.status_code == 303 and response.headers["location"] == "/panel/feedback"
+    assert await repo.get_public_feedback(1) is None
+    assert await repo.get_public_feedback(2) is not None
+    assert await repo.get_ticket(tid) is not None
+    assert not env.sent
+    assert client.post("/panel/feedback/1/delete", data=data).status_code == 404
+    assert client.get("/panel/feedback/1/delete").status_code == 404
+
+
+@pytest.mark.parametrize("bad", ["csrf", "confirm", "wrong-id", "duplicate", "extra"])
+async def test_delete_needs_csrf_unique_fields_and_confirmation(client, bad):
+    assert client.post("/feedback", data=fields(client)).status_code == 303
+    data = delete_fields(client)
+    if bad == "csrf":
+        data["csrf"] = "wrong"
+    elif bad == "confirm":
+        data["confirm"] = "да"
+    elif bad == "wrong-id":
+        data["feedback_id"] = "2"
+    elif bad == "extra":
+        data["delete_all"] = "1"
+    raw = urlencode(data) + ("&confirm=УДАЛИТЬ" if bad == "duplicate" else "")
+    result = client.post("/panel/feedback/1/delete", content=raw.encode("utf-8"),
+                         headers={"Content-Type": "application/x-www-form-urlencoded"})
+    assert result.status_code == (403 if bad == "csrf" else 400)
+    assert await repo.get_public_feedback(1) is not None
+    assert not await db.many("SELECT * FROM public_feedback_deleted_nonces")
+
+
+async def test_delete_forbidden_without_admin_and_store_rechecks(client, monkeypatch):
+    assert client.post("/feedback", data=fields(client)).status_code == 303
+    assert client.get("/panel/feedback/1/delete").status_code == 303
+    assert client.post("/panel/feedback/1/delete", data={}).status_code == 303
+    await db.run("INSERT INTO admins(user_id,full_name,role_type) VALUES('222','Тест сотрудника','staff')")
+    data = {"csrf": authenticate(client, "222"), "confirm": "УДАЛИТЬ", "feedback_id": "1"}
+    assert client.post("/panel/feedback/1/delete", data=data).status_code == 403
+    assert await repo.delete_public_feedback(1, "222") == "denied"
+    async with db._conn() as conn:
+        await conn.execute("BEGIN IMMEDIATE")
+        pending = asyncio.create_task(repo.delete_public_feedback(1, "1"))
+        await asyncio.sleep(0.05)
+        await conn.execute("UPDATE admins SET role_type='staff' WHERE user_id='1'")
+        await conn.commit()
+    assert await pending == "denied"
+    assert await repo.get_public_feedback(1) is not None
+
+
+async def test_delete_audit_private_and_replay_never_resurrects(client, caplog, monkeypatch):
+    form = fields(client)
+    marker = "СЕКРЕТНЫЙ_ТЕКСТ_ОТЗЫВА_80491"
+    form["description"] = marker
+    assert client.post("/feedback", data=form).status_code == 303
+    data = delete_fields(client)
+    caplog.set_level(logging.DEBUG)
+    assert client.post("/panel/feedback/1/delete", data=data).status_code == 303
+    row = dict(await db.one("SELECT * FROM audit_log ORDER BY id DESC LIMIT 1"))
+    assert row["action"] == "public_feedback_delete" and row["target_type"] == "public_feedback"
+    assert row["target_id"] == "1" and row["user_id"] == "1" and row["result"] == "ok"
+    marker_row = dict(await db.one("SELECT * FROM public_feedback_deleted_nonces"))
+    assert set(marker_row) == {"nonce_hash", "expires_at"}
+    assert len(marker_row["nonce_hash"]) == 64 and marker_row["nonce_hash"] != form["submission_nonce"]
+    assert marker_row["expires_at"] == NOW + feedback.FEEDBACK_TTL
+    monkeypatch.setattr(feedback, "_now", lambda: NOW + 31)
+    assert client.post("/feedback", data=form).status_code == 303
+    assert await repo.count_public_feedback() == 0
+    assert client.post("/panel/feedback/1/delete", data=data).status_code == 404
+    assert (await db.one("SELECT result FROM audit_log ORDER BY id DESC LIMIT 1"))["result"] == "denied"
+    assert not await db.many("SELECT * FROM admin_log")
+    for secret in (marker, form["submission_nonce"], form["csrf"], marker_row["nonce_hash"]):
+        assert secret not in caplog.text
+
+
+async def test_delete_marker_and_removal_are_atomic(client):
+    form = fields(client)
+    assert client.post("/feedback", data=form).status_code == 303
+    await db.run("CREATE TRIGGER fail_feedback_delete BEFORE DELETE ON public_feedback "
+                 "BEGIN SELECT RAISE(ABORT,'синтетический отказ'); END")
+    with pytest.raises(sqlite3.IntegrityError):
+        await repo.delete_public_feedback(1, "1")
+    assert await repo.get_public_feedback(1) is not None
+    assert not await db.many("SELECT * FROM public_feedback_deleted_nonces")
+
+
+async def test_deleted_nonce_cleanup_and_raw_data_hidden(client, monkeypatch):
+    from web import data
+    assert client.post("/feedback", data=fields(client)).status_code == 303
+    assert await repo.delete_public_feedback(1, "1") == "deleted"
+    assert "public_feedback_deleted_nonces" not in await data.table_names()
+    assert "public_feedback_deleted_nonces" not in data.READ_ONLY_TABLES
+    assert "public_feedback_deleted_nonces" in db.EXPECTED_TABLES
+    assert not await db.missing_objects()
+    await repo.prune_public_feedback_rates(NOW + feedback.FEEDBACK_TTL)
+    assert not await db.many("SELECT * FROM public_feedback_deleted_nonces")
+
+
+async def test_feedback_script_is_local_and_does_not_change_main(client):
+    response = client.get("/feedback/assets/feedback.js")
+    assert response.status_code == 200 and "javascript" in response.headers["content-type"]
+    assert response.headers["x-content-type-options"] == "nosniff"
+    root = client.get("/")
+    assert "/feedback/assets/feedback.js" not in root.text
+    assert client.get("/feedback/assets/.env").status_code == 404
+    text = response.text
+    assert "Date.now()" in text and "textContent" in text and "pageshow" in text
+    assert not any(word in text for word in ("fetch(", "innerHTML", "localStorage", "eval("))
+
+
+@pytest.mark.parametrize("mutation", ["cooldown", "delete-role", "deleted-replay"])
+async def test_feedback_security_rules_detect_in_memory_mutations(client, mutation):
+    source_path = Path(feedback_store.__file__)
+    source = source_path.read_text(encoding="utf-8-sig")
+    if mutation == "cooldown":
+        source = source.replace('if cooldown["until"] and cooldown["until"] > now:', 'if False:')
+    elif mutation == "delete-role":
+        source = source.replace('if not actor or actor["is_test"] or actor["role_type"] not in ("owner", "sysadmin", "superadmin"):', 'if False:')
+    else:
+        source = source.replace('if existing or deleted:', 'if existing:')
+    altered = ModuleType("feedback_mutated")
+    exec(compile(source, str(source_path), "exec"), altered.__dict__)
+    altered._now = lambda: NOW
+    base = dict(now=NOW, peer_key=digest("peer"), cookie_key=digest("cookie"), kind="bug", body=BODY)
+    assert await altered.submit_public_feedback(**base, submission_nonce="accepted-nonce") == ("created", 1)
+    if mutation == "cooldown":
+        base["now"] = NOW + 1
+        result = await altered.submit_public_feedback(**base, submission_nonce="new-nonce")
+        with pytest.raises(AssertionError):
+            assert result[0] == "limited"
+    elif mutation == "delete-role":
+        await db.run("INSERT INTO admins(user_id,full_name,role_type) VALUES('333','Тест сотрудника','staff')")
+        result = await altered.delete_public_feedback(1, "333")
+        with pytest.raises(AssertionError):
+            assert result == "denied"
+    else:
+        assert await altered.delete_public_feedback(1, "1") == "deleted"
+        base["now"] = NOW + 31
+        result = await altered.submit_public_feedback(**base, submission_nonce="accepted-nonce")
+        with pytest.raises(AssertionError):
+            assert result[0] == "replay" and await repo.count_public_feedback() == 0
+
+
+def test_feedback_timer_unlocks_and_handles_background_tabs():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node не установлен")
+    script = (Path(feedback.__file__).with_name("static") / "feedback.js").read_text(encoding="utf-8-sig")
+    runner = r"""
+const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
+const code = fs.readFileSync(0, 'utf8');
+let now = 100000, callback;
+const hint = {dataset: {waitSeconds: '30'}, textContent: '', setAttribute(k,v) { this[k]=v; }};
+const button = {disabled:false};
+const listeners = {};
+const window = {setInterval(fn) {callback=fn;return 1;}, clearInterval() {}, addEventListener(name,fn) {listeners[name]=fn;}};
+const document = {querySelector(selector) {return selector==='[data-feedback-wait]' ? hint : button;}, addEventListener(name,fn) {listeners[name]=fn;}};
+vm.runInNewContext(code, {window, document, Date: {now() {return now;}}, Number, Math});
+assert.equal(button.disabled,true); assert.ok(hint.textContent.includes('30'));
+now += 29000; callback(); assert.equal(button.disabled,true); assert.ok(hint.textContent.includes('1'));
+now += 1000; callback(); assert.equal(button.disabled,false); assert.equal(hint.role,'status');
+now += 60000; listeners.pageshow(); assert.equal(button.disabled,false);
+"""
+    result = subprocess.run([node, "-e", runner], input=script, text=True, encoding="utf-8", capture_output=True)
+    assert result.returncode == 0, result.stderr
+
+
+async def test_delete_csrf_rule_detects_in_memory_mutation(client, monkeypatch):
+    assert client.post("/feedback", data=fields(client)).status_code == 303
+    data = delete_fields(client)
+    data["csrf"] = "forged"
+    monkeypatch.setattr(feedback, "require_form", common.require_user)
+    result = client.post("/panel/feedback/1/delete", data=data)
+    with pytest.raises(AssertionError):
+        assert result.status_code == 403

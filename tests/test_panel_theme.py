@@ -544,3 +544,17 @@ def test_nav_paths_have_distinct_icons():
 
 
 # ── стили ────────────────────────────────────────────────────────────────────
+
+
+def test_sidebar_styles_do_not_apply_to_other_navigation():
+    css = without_comments(theme.STYLESHEET)
+    assert ".app-nav{position:fixed" in css
+    assert ".app-nav{position:sticky" in css
+    assert not re.search(r"(?<![\w.-])nav\s*(?:\{|::|a\b)", css), "Пагинация не должна становиться боковым меню"
+
+
+def test_staff_access_layout_is_scoped_and_responsive():
+    for marker in (".staff-web-list>li{", ".staff-web-checks{", ".staff-web-permissions{",
+                   ".staff-web-status small{", ".staff-web .btn{white-space:normal"):
+        assert marker in theme.STYLESHEET
+    assert ".staff-web-settings,.staff-web-checks{grid-template-columns:minmax(0,1fr)}" in theme.STYLESHEET

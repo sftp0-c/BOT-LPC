@@ -572,10 +572,10 @@ def _composer(base: str, ticket: Mapping, detail: Mapping, actor: Mapping, csrf_
                 '<p class="ws-field-hint">Подставится только текст. Отправки не будет, пока вы не нажмёте кнопку ответа.</p></details>'
             )
         reply += '<div class="ws-compose-actions">'
-        if "reply_close" in allowed:
-            reply += _submit("reply_close", "Ответить и закрыть", True, "check")
         if "reply" in allowed:
-            reply += _submit("reply", "Ответить", "reply_close" not in allowed, "send")
+            reply += _submit("reply", "Ответить", True, "send")
+        if "reply_close" in allowed:
+            reply += _submit("reply_close", "Ответить и закрыть", False, "check")
         reply += '</div><p class="ws-draft-status ws-field-hint" data-ws-draft-status role="status" aria-live="polite"></p></form>'
     more = ""
     if "note" in allowed:
