@@ -128,6 +128,16 @@ async def test_dynamic_group_list_keeps_full_data_in_text(api):
     await menus._ask_group(STUDENT, "Иванов Иван", "", [{"code": long_code, "active": 1}])
     text, keyboard = api.last(STUDENT)[1], api.last(STUDENT)[2]
     assert long_code in text
+    # «24-21-2С-ДЛИННАЯ» - 16 ячеек, влезает в кнопку целиком: на кнопке сам код
+    assert any(button["text"] == long_code for row in keyboard for button in row)
+
+
+async def test_group_button_falls_back_to_number_for_huge_codes(api):
+    huge = "24-21-2С-ОЧЕНЬ-ДЛИННАЯ-ГРУППА"   # 29 ячеек - MAX такую подпись режет
+    await repo.upsert_group(huge, "Очень длинная группа")
+    await menus._ask_group(STUDENT, "Иванов Иван", "", [{"code": huge, "active": 1}])
+    text, keyboard = api.last(STUDENT)[1], api.last(STUDENT)[2]
+    assert huge in text                      # полный код по-прежнему в тексте
     assert any(button["text"] == "Группа 1" for row in keyboard for button in row)
 
 

@@ -12,7 +12,7 @@ from handlers.common import (BACK, admin_of, api, can_broadcast, is_super, log, 
                              notify, welcome_text)
 from bot_commands import command_payload
 from handlers.registry import CALLBACKS, STATES, callback, state
-from max_api import BUTTON_TEXT, MAX_ROWS, btn, link_btn
+from max_api import BUTTON_TEXT, MAX_ROWS, btn, display_width, link_btn, row_limit
 from timetable import WEEKDAYS_FULL
 from utils import (OPEN_STATUSES, STATUS, STATUS_SHORT, as_str, cut_plain, fmt_time, group_code,
                     group_digits, has_position, norm_code, norm_group, short, to_int, valid_group)
@@ -196,6 +196,18 @@ def sub_hint(label: str) -> str:
     if label.startswith("🔕"):
         return "🔕 «Отписка» — больше не присылать обновления расписания группы."
     return "🔔 «Подписка» — бот напишет сам, когда расписание группы изменится."
+
+
+def _group_button_label(code: str, index: int, limit: int) -> str:
+    """Подпись кнопки выбора группы: сам код, пока он влезает целиком.
+
+    MAX режет длинные подписи кнопок (см. row_limit в max_api), а в
+    справочнике бывают длинные коды. Короткие коды - обычное дело -
+    показываются на кнопке как есть, для непомещающихся остаётся
+    «Группа N»: полный код всегда продублирован в тексте списка под
+    номером N.
+    """
+    return code if display_width(code) <= limit else f"Группа {index}"
 
 
 async def _group_allowed(group) -> bool:
@@ -858,7 +870,8 @@ async def _ask_group(x: str, name: str = "", typed: str = "", suggestions=None) 
         # Ничего похожего нет: показываем весь справочник, чтобы человек выбрал
         # из известного, а не заводил своё.
         choices = list((await repo.list_groups(active_only=True))[:20])
-    keyboard = [[btn(f"Группа {index}", f"regpick:{group['code']}")]
+    keyboard = [[btn(_group_button_label(group["code"], index, row_limit(1)),
+                     f"regpick:{group['code']}")]
                 for index, group in enumerate(choices, 1)]
     keyboard.append([btn("🔤 Введу код", "regpick:")])
     choice_text = "\n".join(
@@ -1502,7 +1515,8 @@ async def cb_view_schedules(x, arg):
     for index, code in enumerate(chunk, page * GROUPS_PAGE + 1):
         label = await _schedule_subscription_label(x, code)
         hint = hint or sub_hint(label)      # смысл кнопки для всех групп один
-        keyboard.append([btn(f"Группа {index}", f"sched:{code}"),
+        keyboard.append([btn(_group_button_label(code, index, row_limit(2)),
+                             f"sched:{code}"),
                          btn(label, f"schedsub:{code}")])
     nav = []
     if page:
