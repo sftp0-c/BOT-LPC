@@ -51,4 +51,34 @@
     window.addEventListener("resize", measure, {passive: true});
     measure();
   }
+
+  // Compact sticky header and section-aware navigation.
+  var header = document.querySelector(".lp-head");
+  var navLinks = Array.prototype.slice.call(document.querySelectorAll('.lp-head nav a[href^="#"]'));
+  var sections = navLinks.map(function (link) { return document.querySelector(link.getAttribute("href")); }).filter(Boolean);
+  var updateHeader = function () { if (header) header.classList.toggle("is-scrolled", window.scrollY > 12); };
+  updateHeader();
+  window.addEventListener("scroll", updateHeader, {passive:true});
+  if (!quiet.matches && "IntersectionObserver" in window && navLinks.length && sections.length) {
+    var sectionObserver = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting) return;
+        navLinks.forEach(function (link) {
+          if (link.getAttribute("href") === "#" + entry.target.id) link.setAttribute("aria-current", "location");
+          else link.removeAttribute("aria-current");
+        });
+      });
+    }, {rootMargin:"-25% 0px -60% 0px",threshold:0});
+    sections.forEach(function (section) { sectionObserver.observe(section); });
+  }
+  // Reveal cards as they enter the viewport; content remains visible without JS.
+  if (!quiet.matches && "IntersectionObserver" in window) {
+    var targets = document.querySelectorAll(".lp-feature,.lp-screen,.lp-roadmap article,.lp-flow li");
+    var cardObserver = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (entry.isIntersecting) { entry.target.classList.add("is-visible"); cardObserver.unobserve(entry.target); }
+      });
+    }, {threshold:0.08,rootMargin:"0px 0px -30px 0px"});
+    targets.forEach(function (item) { cardObserver.observe(item); });
+  }
 })();
