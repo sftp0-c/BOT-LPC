@@ -81,3 +81,19 @@ html{scroll-behavior:smooth;scroll-padding-top:112px}
 @media(max-width:900px){.lp-hero-phone,.lp-mini-panel{animation:none}.lp-gallery-section .lp-screen:hover{transform:none}}
 @media(max-width:680px){html{scroll-padding-top:88px}.lp-gallery-section .lp-screen:hover{transform:none}.lp-work-section .lp-system-figure{box-shadow:0 16px 36px rgba(0,0,0,.18)}}
 @media(prefers-reduced-motion:reduce){.lp-hero-phone,.lp-mini-panel,.lp-hero-art::after,.lp-route path{animation:none!important}.lp-reveal,.lp-reveal.is-visible{will-change:auto}.lp-feature:hover,.lp-gallery-section .lp-screen:hover{transform:none}}
+
+/* Витрина функций: якорная карта этапов и экран веб-кабинета. */
+.lp-gallery-map{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 24px}
+.lp-gallery-map a{display:inline-flex;align-items:center;min-height:36px;padding:6px 14px;border:1px solid #33496b;border-radius:99px;background:#0f1c30;color:#c7d7ee;font-size:11px;font-weight:600;text-decoration:none;transition:background .18s,border-color .18s,color .18s}
+.lp-gallery-map a:hover{background:#1b3050;border-color:#527bb4;color:#fff}
+.lp-screen-workspace .lp-window{background:#ecf6f2;border-bottom-color:#d3e7e0}
+.lp-otp-note{display:flex;align-items:flex-start;gap:8px;margin-top:13px;padding:10px 12px;border:1px dashed #b5cae6;border-radius:9px;font-size:10px;color:#486787;line-height:1.6;background:#f7faff}
+.lp-otp-note .ico{color:var(--acc);flex-shrink:0;margin-top:1px}
+
+/* Правка: при prefers-reduced-motion плавная прокрутка не включается. */
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.lp-gallery{scroll-behavior:auto}}
+
+/* Контраст макетов в тёмной галерее: светлые поверхности телефона и окна
+   не должны наследовать светлый цвет текста тёмного раздела. */
+.lp-gallery-section .lp-device{color:var(--ink)}
+.lp-gallery-section .lp-demo-dashboard{color:var(--ink)}

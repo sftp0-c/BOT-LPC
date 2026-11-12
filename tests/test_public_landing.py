@@ -107,12 +107,15 @@ def test_content_beta_screens_and_planned_rights():
     page = TestClient(bot.app).get("/").text
     nodes = Markup(page).nodes
     figures = [attrs for tag, attrs in nodes if tag == "figure" and attrs.get("id", "").startswith("screen-")]
-    assert len(figures) == 5
-    assert {item["id"] for item in figures} == {
-        "screen-welcome", "screen-request", "screen-reply", "screen-schedule", "screen-panel"}
-    for text in ("Бета-тестирование", "Планируется", "Обычные сотрудники пока работают в MAX",
-                 "Веб-кабинет сотрудника", "Сейчас эти права не выдаются", "переписка реальных студентов"):
+    assert [item["id"] for item in figures] == [
+        "screen-welcome", "screen-schedule", "screen-faq", "screen-request",
+        "screen-reply", "screen-workspace", "screen-panel"]
+    for text in ("Бета-тестирование", "Планируется", "Расширение пилота",
+                 "Веб-кабинет сотрудника: вход по коду из MAX",
+                 "Доступ выдаёт сис-админ", "переписка реальных студентов"):
         assert text in page
+    assert any(tag == "nav" and "lp-gallery-map" in (attrs.get("class") or "")
+               for tag, attrs in nodes)
     hrefs = {attrs["href"] for tag, attrs in nodes if tag == "a" and "href" in attrs}
     assert {"/feedback?kind=bug", "/feedback?kind=suggestion", "/panel/login"} <= hrefs
     ids = {attrs["id"] for _tag, attrs in nodes if "id" in attrs}
@@ -142,6 +145,9 @@ def test_accessibility_and_progressive_enhancement():
     assert "prefers-reduced-motion" in css and "prefers-reduced-motion" in js
     assert "IntersectionObserver" in js and "unobserve" in js
     assert ".lp-reveal{opacity:1}" in css
+    assert "scroll-behavior:auto" in css.rsplit("@media(prefers-reduced-motion:reduce)", 1)[-1]
+    assert ".lp-gallery-section .lp-device{color:var(--ink)}" in css
+    assert ".lp-gallery-section .lp-demo-dashboard{color:var(--ink)}" in css
     assert "opacity:0" not in css.split("@keyframes")[0]
     assert "min-height:58px" in css and "max-width:560px" in css
     assert "color-scheme:light" in css and "--bg:#fff" in css
