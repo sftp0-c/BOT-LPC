@@ -67,6 +67,9 @@ def test_landing_has_strict_security_and_no_inline_code():
             src = attrs.get("src", attrs.get("href", ""))
             if attrs.get("rel") != "canonical":
                 assert src.startswith("/public/")
+        if tag == "link" and attrs.get("rel") == "icon":
+            # версия в URL: без неё браузер оставляет старую фавиконку в кеше
+            assert attrs.get("href") == f"/public/mark.svg?v={version.__version__}"
 
 
 def test_seo_and_service_routes():
@@ -77,6 +80,12 @@ def test_seo_and_service_routes():
         assert marker in page
     robots = client.get("/robots.txt")
     assert robots.status_code == 200 and "Sitemap:" in robots.text
+    favicon = client.get("/favicon.ico")
+    assert favicon.status_code == 200
+    assert favicon.headers["content-type"] == "image/x-icon"
+    assert favicon.headers["x-content-type-options"] == "nosniff"
+    assert favicon.headers["cache-control"] == "public, max-age=3600"
+    assert favicon.content[:4] == b"\x00\x00\x01\x00"  # настоящая ICO-сигнатура
     assert "Disallow: /feedback" in robots.text
     sitemap = client.get("/sitemap.xml")
     assert "https://bot-lpc.ru/" in sitemap.text and "feedback" not in sitemap.text
@@ -137,7 +146,13 @@ def test_accessibility_and_progressive_enhancement():
                for tag, attrs in nodes)
     for tag, attrs in nodes:
         if tag == "img":
-            assert attrs.get("alt") and attrs.get("width") and attrs.get("height")
+            assert attrs.get("width") and attrs.get("height")
+            if attrs.get("aria-hidden") == "true":
+                # Декоративная картинка: пустой alt обязателен, иначе
+                # скринридер прочитает её в дополнение к соседнему тексту.
+                assert attrs.get("alt") == "", attrs
+            else:
+                assert attrs.get("alt"), attrs
         if tag == "button":
             assert attrs.get("aria-label")
     css = Path("web/static/landing.css").read_text(encoding="utf-8-sig")

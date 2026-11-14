@@ -178,7 +178,7 @@ async def overview(request: Request):
     body = f"""
 <section class="dashboard-hero"><div><span class="eyebrow">{weekday} · {current:%d.%m.%Y}</span>
 <h2>{greeting}</h2><p>Обращения не теряются, ответы приходят вовремя. Здесь собрана работа колледжа за сегодня.</p></div>
-<div class="hero-sign">{icon("navigator", 58)}<div><strong>Навигатор ЛПК</strong><small>Меньше рутины. Больше внимания.</small></div></div></section>
+<div class="hero-sign"><img class="ico ico-navigator" src="/public/logo-emblem.png" width="58" height="58" alt="" aria-hidden="true"><div><strong>Навигатор ЛПК</strong><small>Меньше рутины. Больше внимания.</small></div></div></section>
 <div class="big-stats">{counters}</div>
 <div class="bento">
 <section class="card bento-day"><div class="card-title"><h2>{icon("analytics", 20)} Сегодня</h2><span class="small mut">{current:%d.%m.%Y}</span></div>

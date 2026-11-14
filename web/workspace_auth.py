@@ -152,7 +152,7 @@ def workspace_auth_page(title: str, content: str, *, status_code: int = 200) -> 
 <title>{esc(title)} — Навигатор ЛПК</title><script>{theme_boot_script()}</script><style>{STYLESHEET}</style>
 <link rel="stylesheet" href="/workspace/assets/workspace.css"></head><body class="ws-auth">
 <a class="skip-link" href="#main-content">Перейти к содержимому</a>
-<header class="ws-auth-header"><a class="ws-auth-brand" href="/">{icon("navigator", 28)}
+<header class="ws-auth-header"><a class="ws-auth-brand" href="/"><img class="ico ico-navigator" src="/public/logo-emblem.png" width="28" height="28" alt="" aria-hidden="true">
 <span><b>Навигатор ЛПК</b><small>Для сотрудников колледжа</small></span></a>
 <button class="theme-toggle ws-auth-theme" type="button" aria-label="Сменить тему"></button></header>
 <main id="main-content" class="ws-auth-shell" tabindex="-1">

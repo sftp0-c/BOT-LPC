@@ -82,6 +82,7 @@ TOKENS: dict[str, str] = {
     "dark.mut": "#98a4b4",                # подписи, даты
     "dark.acc": "#35d9b1",                # акцент: ссылки, активный пункт
     "dark.acc-ink": "#04211c",            # текст на акценте
+    "dark.mark-plate": "#ffffff",         # подложка знака: белая в обеих темах
     "dark.acc-soft": "#0e2b26",           # мягкая подложка акцента
     "dark.acc-line": "#1f5f4f",           # граница мягкой подложки
     "dark.ok": "#4fd47f",
@@ -152,6 +153,7 @@ TOKENS: dict[str, str] = {
     "light.mut": "#516783",               # тёмный текст, а не блёклый синий
     "light.acc": "#1d4ed8",
     "light.acc-ink": "#ffffff",
+    "light.mark-plate": "#ffffff",
     "light.acc-soft": "#eaf1ff",
     "light.acc-line": "#afc5f4",
     "light.ok": "#0f6b31",
@@ -332,8 +334,6 @@ def light_rules() -> str:
 # концы, никакой заливки и никаких внешних файлов. Значения - это содержимое
 # <svg>; разметку собирает icon().
 ICONS: dict[str, str] = {
-    "navigator": '<path d="M12 2.8 21.2 7.6v8.8L12 21.2l-9.2-4.8V7.6L12 2.8Z"/>'
-                 '<path d="m15.8 7.4-2 6.4-5.6 2.8 2-6.4 5.6-2.8Z"/>',
     "logout": '<path d="M10 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h5"/>'
               '<path d="M10 12h10m-4-4 4 4-4 4"/>',
     # ── разделы панели ───────────────────────────────────────────────────
@@ -1096,7 +1096,7 @@ button:active,.btn:active{transform:translateY(0);background:var(--acc-soft);
 .orbit-ring{position:absolute;left:25px;top:14px;width:320px;height:320px;border:1px solid var(--line);border-radius:50%}
 .orbit-ring::after{content:"";position:absolute;inset:30px;border:1px solid var(--line-soft);border-radius:50%}
 .orbit-core{position:absolute;left:120px;top:32px;transform:rotate(-12deg);color:var(--acc-line)}
-.orbit-core .ico{width:100px;height:100px}
+.orbit-core .ico{width:88px;height:88px}
 .orbit-note{position:absolute;display:flex;align-items:center;gap:8px;padding:12px 16px;border:1px solid var(--line);
      border-radius:12px;background:var(--surface);box-shadow:var(--shadow-md);font-size:11px;color:var(--ink-soft)}
 .orbit-note .ico{color:var(--acc)}.orbit-note-a{left:0;top:28px}.orbit-note-b{left:126px;top:104px}
@@ -1615,6 +1615,14 @@ STYLESHEET: str = "\n".join([
     theme_root_css(),
     light_rules(),
     _BASE_CSS,
+    # Знак бренда -- растровая эмблема колледжа: квадратный слот, пропорции знака.
+    "img.ico-navigator{object-fit:contain}",
+    # Эмблема несёт свой синий цвет, на тёмных плашках она глохнет --
+    # в тёмных темах знак стоит на белой скруглённой подложке.
+    'html:not([data-theme="light"]) :is(.brand,.login-brand) .logo{background:var(--mark-plate);border-color:var(--mark-plate)}',
+    ".orbit-core{left:246px;top:24px}",
+    ".orbit-core .ico{width:64px;height:64px;background:var(--mark-plate);padding:10px;border-radius:18px;box-sizing:border-box}",
+    ".hero-sign .ico{background:var(--mark-plate);padding:9px;border-radius:16px;box-sizing:border-box}",
 ])
 
 

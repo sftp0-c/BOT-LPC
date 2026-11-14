@@ -180,7 +180,7 @@ def _workspace_shell(title: str, body: str, actor: dict, csrf_token: str, *, sta
 <title>{esc(title)} — Навигатор ЛПК</title><script>{theme_boot_script()}</script><style>{STYLESHEET}</style>
 <link rel="stylesheet" href="/workspace/assets/workspace.css?v={version.__version__}"></head>
 <body class="ws-app" data-panel-user="{esc(uid)}"><a class="skip-link" href="#workspace-main">Перейти к обращениям</a>
-<header class="ws-app-header"><a class="ws-brand" href="/workspace/tickets">{icon('navigator', 27)}
+<header class="ws-app-header"><a class="ws-brand" href="/workspace/tickets"><img class="ico ico-navigator" src="/public/logo-emblem.png" width="27" height="27" alt="" aria-hidden="true">
 <span><b>Навигатор ЛПК</b><small>Кабинет сотрудника · Бета-тестирование</small></span></a>
 <div class="ws-account"><span class="ws-account-name"><b>{esc(name)}</b><small>{esc(position)}</small></span>
 <button type="button" class="theme-toggle" aria-label="Сменить тему"></button>

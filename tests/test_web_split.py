@@ -130,7 +130,7 @@ def mounted_routers(routes) -> list:
 def panel_routes() -> set:
     """Маршруты модулей web/: панель, приглашения и публичная витрина."""
     found = registered_routes(bot.app.routes)
-    public = {"/", "/robots.txt", "/sitemap.xml"}
+    public = {"/", "/favicon.ico", "/robots.txt", "/sitemap.xml"}
     return {item for item in found
             if item[1].startswith(("/panel", "/join", "/public/", "/feedback", "/workspace")) or item[1] in public}
 

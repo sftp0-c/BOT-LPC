@@ -18,7 +18,7 @@ import config
 import version
 import repository as repo
 
-from .common import csrf, esc, flash, icon, page, require_form, require_user
+from .common import csrf, esc, flash, page, require_form, require_user
 from .router import open_router, router
 
 FEEDBACK_COOKIE = "lpc_feedback"
@@ -147,7 +147,7 @@ def _public_page(title: str, content: str, status: int = 200, *, timer: bool = F
 <link rel="stylesheet" href="/public/landing.css?v={version.__version__}"></head><body class="fb-page">
 <a class="lp-skip" href="#content">Перейти к содержимому</a>
 <header class="lp-head"><a class="lp-brand" href="/" aria-label="Навигатор ЛПК">
-<span class="lp-mark" aria-hidden="true">{icon("navigator", 28)}</span><span><b>Навигатор ЛПК</b><small>Обратная связь</small></span></a>
+<span class="lp-mark" aria-hidden="true"><img class="ico ico-navigator" src="/public/logo-emblem.png" width="28" height="28" alt="" aria-hidden="true"></span><span><b>Навигатор ЛПК</b><small>Обратная связь</small></span></a>
 <span class="lp-beta">Бета-тестирование</span><a class="lp-login" href="/">На главную</a></header>
 <main id="content" class="fb-main"><section class="fb-card">{content}</section></main>{script}</body></html>""",
                         status_code=status, headers=headers)

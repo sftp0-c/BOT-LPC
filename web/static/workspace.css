@@ -255,7 +255,7 @@ body.ws-app { min-height: 100dvh; }
 .ws-app .ws-app-main { width: 100%; max-width: none; margin: 0; padding: clamp(16px, 2vw, 32px); animation: none; }
 .ws-app .ws-app-header { position: static; inset: auto; width: 100%; margin: 0; min-height: var(--header-h); padding: var(--space-lg) clamp(16px, 2vw, 32px); display: flex; align-items: center; justify-content: space-between; gap: var(--space-lg); flex-wrap: wrap; background: var(--surface); border-bottom: 1px solid var(--line); box-shadow: none; }
 .ws-app .ws-app-header .ws-brand { min-width: 0; display: flex; align-items: center; gap: var(--space-md); color: var(--ink); text-decoration: none; }
-.ws-app .ws-brand > .ico { width: 40px; height: 40px; padding: 8px; color: var(--acc); background: var(--acc-soft); border: 1px solid var(--acc-line); border-radius: var(--radius-sm); }
+.ws-app .ws-brand > .ico { width: 40px; height: 40px; padding: 8px; color: var(--acc); background: var(--mark-plate); border: 1px solid var(--acc-line); border-radius: var(--radius-sm); }
 .ws-app .ws-brand b { font-size: 17px; }
 .ws-app .ws-brand small { display: block; margin-top: 3px; color: var(--mut); font-size: 12px; }
 .ws-app .ws-account { margin-left: auto; }
@@ -282,7 +282,7 @@ body.ws-auth {
   margin: 0; color: var(--ink); text-decoration: none; }
 .ws-auth-brand:hover { text-decoration: none; }
 .ws-auth-brand > .ico { width: 44px; height: 44px; padding: 9px; border: 1px solid var(--acc-line);
-  border-radius: var(--radius-md); background: var(--acc-soft); color: var(--acc); }
+  border-radius: var(--radius-md); background: var(--mark-plate); color: var(--acc); }
 .ws-auth-brand b { font-size: 19px; font-weight: var(--weight-semi); }
 .ws-auth-brand small { display: block; margin-top: 2px; color: var(--mut); font-size: 12px; font-weight: var(--weight-normal); }
 .ws-auth .ws-auth-theme { flex: 0 0 44px; width: 44px; height: 44px; margin: 0; color: var(--ink-soft); }
@@ -467,3 +467,4 @@ body.ws-auth {
   .ws-workbench .ws-context dl { display: flex; }
   .ws-app .ws-app-main { margin: 0; padding: 0; }
 }
+img.ico-navigator{object-fit:contain}

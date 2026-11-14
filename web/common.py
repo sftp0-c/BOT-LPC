@@ -545,7 +545,7 @@ def page(title: str, body: str, user: str = "", tab: str = "",
 {css_head}</head><body class="panel-app" data-tab="{esc(tab)}" data-panel-user="{esc(user)}">
 <a class="skip-link" href="#main-content">Перейти к содержимому</a>
 <header class="app-header">
-  <div class="brand"><span class="logo">{icon("navigator", 24)}</span><span>
+  <div class="brand"><span class="logo"><img class="ico ico-navigator" src="/public/logo-emblem.png" width="24" height="24" alt="" aria-hidden="true"></span><span>
     <b>Навигатор <em>ЛПК</em></b><small><span class="panel-beta">Бета-тестирование</span></small></span></div>
   <button class="gsearch palette-trigger" type="button" data-palette-open aria-label="Поиск по панели">
     {icon("search", 18)}<span>Найти обращение, человека, группу</span><kbd>Ctrl K</kbd>
@@ -781,14 +781,14 @@ def login_response(message: str = "", status_code: int = 200) -> HTMLResponse:
     error = (f'<div class="msg msg-bad" role="alert">{icon("warning", 18)}'
              f'<span>{esc(message)}</span></div>') if message else ""
     body = f"""<section class="login-story" aria-labelledby="login-heading">
-<div class="login-brand"><span class="logo">{icon("navigator", 32)}</span><div><b>Навигатор ЛПК</b><small>Колледж ближе</small></div></div>
+<div class="login-brand"><span class="logo"><img class="ico ico-navigator" src="/public/logo-emblem.png" width="32" height="32" alt="" aria-hidden="true"></span><div><b>Навигатор ЛПК</b><small>Колледж ближе</small></div></div>
 <span class="eyebrow">ЕДИНАЯ РАБОЧАЯ СРЕДА</span>
 <h1 id="login-heading">Меньше рутины.<br><span>Больше внимания.</span></h1>
 <p class="login-lead">Обращения, расписание и работа колледжа — в одном месте. Студенты остаются в привычном MAX.</p>
 <div class="login-flow" aria-label="Путь обращения"><span>{icon("tickets", 20)} Обращение</span><i>{icon("chevron-right", 16)}</i>
 <span>{icon("clock", 20)} В работе</span><i>{icon("chevron-right", 16)}</i><span>{icon("check", 20)} Ответ</span></div>
 <div class="login-points"><span>{icon("inbox", 18)} Прозрачная очередь</span><span>{icon("audit", 18)} История действий</span><span>{icon("schedules", 18)} Расписание в MAX</span></div>
-<div class="login-orbit" aria-hidden="true"><div class="orbit-ring"></div><div class="orbit-core">{icon("navigator", 100)}</div>
+<div class="login-orbit" aria-hidden="true"><div class="orbit-ring"></div><div class="orbit-core"><img class="ico ico-navigator" src="/public/logo-emblem.png" width="100" height="100" alt="" aria-hidden="true"></div>
 <span class="orbit-note orbit-note-a">{icon("check", 16)} Ни одного потерянного обращения</span>
 <span class="orbit-note orbit-note-b">{icon("reply", 16)} Понятный следующий шаг</span></div>
 </section>
