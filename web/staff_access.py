@@ -6,8 +6,9 @@ from fastapi.responses import RedirectResponse
 
 from store.staff import get_admin
 from store.web_access import (
-    WEB_PERMISSIONS, WEB_PERMISSION_PRESETS, get_staff_web_access, list_staff_web_access,
-    normalize_staff_web_id, revoke_staff_web_sessions, set_staff_web_access,
+    WEB_PERMISSIONS, WEB_PERMISSION_PRESETS, enable_all_staff_web_access, get_staff_web_access,
+    is_staff_auto_codes_enabled, list_staff_web_access, normalize_staff_web_id,
+    revoke_staff_web_sessions, set_staff_auto_codes_mode, set_staff_web_access,
 )
 
 from .common import csrf, esc, flash, page, require_form, require_user
@@ -65,7 +66,22 @@ async def staff_web_access_list(request: Request):
     raw_page = request.query_params.get("page", "1")
     number = min(10000, max(1, int(raw_page))) if raw_page.isascii() and raw_page.isdigit() else 1
     rows = await list_staff_web_access(search, limit=51, offset=(number - 1) * 50)
-    body = f"""<section class="card staff-web"><div class="staff-web-intro"><div>
+    auto_enabled = await is_staff_auto_codes_enabled()
+    auto_pill = f'<span class="pill pill-{"on" if auto_enabled else "off"}">{"Включён" if auto_enabled else "Выключен"}</span>'
+    auto_btn = "Выключить режим" if auto_enabled else "Включить авто-режим"
+    auto_val = "0" if auto_enabled else "1"
+    auto_card = f"""<section class="card staff-web">
+<div class="staff-web-intro"><div>
+<h2>Режим отправки кодов: {auto_pill}</h2>
+<p>В автоматическом режиме сотрудникам со статусом «Сотрудник» в боте не нужно вручную включать доступ по одному: при вводе MAX ID на странице входа одноразовый код отправляется в MAX автоматически с правами «Работа со своими».</p></div>
+<form method="post" action="/panel/staff-access/auto-mode" style="margin:0">{csrf(request)}
+<input type="hidden" name="enabled" value="{auto_val}">
+<button class="btn btn-grey" type="submit">{auto_btn}</button></form></div>
+<div class="btn-row" style="margin-top:12px">
+<form method="post" action="/panel/staff-access/enable-all" style="margin:0">{csrf(request)}
+<button class="btn btn-ok" type="submit">Включить всех существующих сотрудников</button></form></div>
+</section>"""
+    body = f"""{auto_card}<section class="card staff-web"><div class="staff-web-intro"><div>
 <h2>Разрешите сотруднику вход на сайт</h2>
 <p>Роль в MAX и веб-доступ — разные настройки. Выберите сотрудника, включите доступ и назначьте права.
 Существующие сотрудники не получают веб-доступ автоматически. Пока доступ выключен, код для входа не отправляется.</p></div>
@@ -133,6 +149,24 @@ async def staff_web_access_edit(request: Request, user_id: str):
 Разрешение на новый вход остаётся.</p><form method="post" action="/panel/staff-access/{esc(user_id)}/revoke">
 {csrf(request)}<button class="btn btn-grey" type="submit">Отозвать все сессии</button></form></section>"""
     return _secure_response(page("Веб-доступ сотрудника", body, user, "/staff-access"))
+
+
+@router.post("/staff-access/auto-mode", include_in_schema=False)
+async def staff_web_access_auto_mode(request: Request):
+    actor = await require_form(request)
+    data = await request.form()
+    enabled = data.get("enabled") == "1"
+    await set_staff_auto_codes_mode(enabled, actor)
+    flash("Режим отправки кодов: " + ("включён автоматически." if enabled else "выключен (ручной режим)."))
+    return _secure_response(RedirectResponse("/panel/staff-access", status_code=303))
+
+
+@router.post("/staff-access/enable-all", include_in_schema=False)
+async def staff_web_access_enable_all(request: Request):
+    actor = await require_form(request)
+    count = await enable_all_staff_web_access(actor)
+    flash(f"Веб-доступ включён для {count} сотрудников.")
+    return _secure_response(RedirectResponse("/panel/staff-access", status_code=303))
 
 
 @router.post("/staff-access/{user_id}", include_in_schema=False)

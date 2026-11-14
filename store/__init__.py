@@ -65,6 +65,7 @@ from .staff import (  # noqa: F401 - публичный интерфейс па�
     set_staff_category, set_staff_see_all, set_vacation, staff_activity, staff_by_role,
     staff_for_category, staff_on_vacation, staff_sees_all, staff_sees_all_bulk, staff_targets,
     update_admin, vacation_note, vacation_replacement, vacations_bulk,
+    all_category_responsible, get_category_responsible, set_category_responsible,
 )
 from .sysadmin import (  # noqa: F401 - публичный интерфейс пакета
     _save_revoked, add_sysadmin, admin_log, admin_log_counts, audit_actions, audit_count,
@@ -88,6 +89,7 @@ from .web_access import (  # noqa: F401 - публичные функции ве
     staff_web_principal_in_tx, normalize_staff_web_permissions, normalize_staff_web_id,
     staff_web_secret, staff_web_hash, staff_web_session_hash, request_staff_web_code,
     verify_staff_web_code, cancel_staff_web_challenge, revoke_staff_web_session,
+    STAFF_AUTO_CODES_KEY, is_staff_auto_codes_enabled, set_staff_auto_codes_mode, enable_all_staff_web_access,
 )
 from .workspace import (  # noqa: F401 - единые права и операции рабочего места
     workspace_list, workspace_ticket, workspace_apply, workspace_attachment,

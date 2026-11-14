@@ -16,7 +16,7 @@ from handlers import schedules
 from handlers.common import BACK, DEFAULT_WELCOME, admin_of, api, is_super, log, need_super, notify, spawn
 from handlers.registry import callback, state
 from max_api import btn
-from utils import (CODE_TTL_CHOICES, POSITION_CODES, POSITION_TITLES, POSITIONS_BTN, STAFF_CATS,
+from utils import (CATS, CODE_TTL_CHOICES, POSITION_CODES, POSITION_TITLES, POSITIONS_BTN, STAFF_CATS,
                    STAFF_CATS_BTN, STATUS, as_str, cut_plain, fmt_when, gen_code, group_code,
                    is_sysadmin_role, norm_group, norm_position, person_label, profile_url, short,
                    tail_file, to_int, ttl_label, valid_group)
@@ -1827,14 +1827,26 @@ async def st_update_sched(x, text, p):
 async def send_settings(x: str):
     enabled = await db.get_setting("tickets_enabled", "1") == "1"
     welcome = await db.get_setting("welcome_text", DEFAULT_WELCOME)
+    responsibles = await repo.all_category_responsible()
+    lines = []
+    for code, title in (("certificates", "📄 Справки"), ("accounting", "💰 Бухгалтерия"),
+                        ("academic", "🎓 Учёба"), ("feedback", "💬 Связь")):
+        uid = responsibles.get(code)
+        if uid:
+            adm = await repo.get_admin(uid)
+            name = adm["full_name"] if adm else uid
+        else:
+            name = "автовыбор"
+        lines.append(f"• {title}: {name}")
+    resp_text = "\n".join(lines)
     await api.send(
         x,
-        f"⚙️ Настройки\n\nПриём обращений: {'включён' if enabled else 'выключен'}\n"
+        f"⚙️ Настройки\n\nПриём обращений: {'включён' if enabled else 'выключен'}\n\n"
+        f"Ответственные за разделы:\n{resp_text}\n\n"
         f"Приветствие студентов:\n{welcome}",
         [
-            # 2 + 1 + 9 + 1 + 9 = 22 ячейки, а предел в ряду из одной кнопки - 20,
-# поэтому действие короткое, а «Приём обращений: включён» стоит текстом выше
-[btn("📥 " + ("Выключить" if enabled else "Включить"), "set:tickets")],
+            [btn("📥 " + ("Выключить" if enabled else "Включить"), "set:tickets")],
+            [btn("🎯 Ответственные", "set:resp")],
             [btn("✏️ Приветствие", "set:welcome")],
             *BACK,
         ],
@@ -1855,6 +1867,13 @@ async def cb_set(x, arg):
         enabled = await db.get_setting("tickets_enabled", "1") == "1"
         await db.set_setting("tickets_enabled", "0" if enabled else "1")
         await send_settings(x)
+    elif arg == "resp":
+        keyboard = [
+            [btn("📄 Справки", "setresp:certificates"), btn("💰 Бухгалтерия", "setresp:accounting")],
+            [btn("🎓 Учёба", "setresp:academic"), btn("💬 Связь", "setresp:feedback")],
+            [btn("↩️ Назад", "settings")],
+        ]
+        await api.send(x, "🎯 Выберите раздел для назначения ответственного:", keyboard)
     elif arg == "welcome":
         await db.set_state(x, "set_welcome")
         await api.send(x, "Отправьте новый текст приветствия студентов (до 500 символов) или /cancel.")
@@ -1946,3 +1965,37 @@ async def command(x: str, cmd: str) -> bool:
     await api.send(x, f"{await diagnostics_text(x)}\n\nПроверяю связь с MAX API…", BACK)
     spawn(check_api(x))
     return True
+
+
+@callback("setresp")
+async def cb_set_resp(x, arg):
+    if not await need_super(x):
+        return
+    cat = as_str(arg).strip()
+    title = CATS.get(cat, cat)
+    responsibles = await repo.all_category_responsible()
+    current = responsibles.get(cat, "")
+    current_adm = await repo.get_admin(current) if current else None
+    current_name = current_adm["full_name"] if current_adm else ("автовыбор" if not current else current)
+    staff = await repo.list_staff()
+    keyboard = []
+    for s in staff:
+        uid = str(s["user_id"])
+        mark = "● " if uid == current else ""
+        label = f"{mark}{short(s['full_name'], 16)}"
+        keyboard.append([btn(label, f"setrespuid:{cat}:{uid}")])
+    keyboard.append([btn("🔄 Автовыбор", f"setrespuid:{cat}:auto")])
+    keyboard.append([btn("↩️ Назад", "set:resp")])
+    await api.send(x, f"{title}\nТекущий ответственный: {current_name}\n\nВыберите нового ответственного сотрудника:", keyboard)
+
+
+@callback("setrespuid")
+async def cb_set_resp_uid(x, arg):
+    if not await need_super(x):
+        return
+    cat, _, uid = as_str(arg).partition(":")
+    if uid == "auto":
+        await repo.set_category_responsible(cat, "", x)
+    else:
+        await repo.set_category_responsible(cat, uid, x)
+    await send_settings(x)

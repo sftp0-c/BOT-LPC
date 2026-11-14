@@ -1,10 +1,10 @@
-"""Настройки: приём обращений, тексты для студентов и список ключей."""
+﻿"""Настройки: приём обращений, тексты для студентов и список ключей."""
 import config
 import database as db
 import repository as repo
 from fastapi import Request
 from panel_theme import icon
-from utils import as_str, fmt_when
+from utils import CATS, as_str, fmt_when
 
 from .common import csrf, esc, flash, page, redirect, require_form, require_user, value
 from .router import router
@@ -59,6 +59,20 @@ async def settings_page(request: Request):
     welcome = await db.get_setting("welcome_text", "")
     consent_text = await db.get_setting("consent_text", "")
     tickets_enabled = await db.get_setting("tickets_enabled", "1") == "1"
+    responsibles = await repo.all_category_responsible()
+    staff_list = await repo.list_staff()
+    resp_rows = []
+    for cat in ("certificates", "accounting", "academic", "feedback"):
+        assigned = responsibles.get(cat, "")
+        opts = ['<option value="">(Автовыбор: ответственный по категории / первый сотрудник)</option>']
+        for s in staff_list:
+            uid = str(s["user_id"])
+            selected = " selected" if uid == assigned else ""
+            pos = f" ({esc(s['position'])})" if ("position" in s.keys() and s['position']) else ""
+            opts.append(f'<option value="{uid}"{selected}>{esc(s["full_name"])}{pos}</option>')
+        select_html = f'<select name="resp_{cat}">{"".join(opts)}</select>'
+        resp_rows.append(f'<tr><td><strong>{esc(CATS.get(cat, cat))}</strong></td><td>{select_html}</td></tr>')
+    resp_table = "".join(resp_rows)
     actions = await repo.admin_log(15)
     counts = await repo.admin_log_counts(30)
     sysadmins = await repo.list_sysadmins()
@@ -78,6 +92,11 @@ async def settings_page(request: Request):
 <input type="hidden" name="enabled" value="{"0" if tickets_enabled else "1"}">
 <button class="{"btn-bad" if tickets_enabled else "btn-ok"}">{icon("close" if tickets_enabled else "check", 16)} {"Выключить" if tickets_enabled else "Включить"}</button>
 <span class="small mut">сейчас: {"включён" if tickets_enabled else "выключен"}</span></form></div>
+<div class="card"><h2>{icon("people", 20)} Ответственные за разделы обращений</h2>
+<p class="small mut">Назначьте сотрудника, отвечающего за каждый раздел. При создании обращения в боте студент не будет выбирать сотрудника вручную — обращение автоматически направится назначенному ответственному.</p>
+<form method="post" action="/panel/settings/responsible">{csrf(request)}
+<table><tr><th>Раздел</th><th>Ответственный сотрудник</th></tr>{resp_table}</table>
+<div style="margin-top:10px"><button class="btn-ok">Сохранить ответственных</button></div></form></div>
 <div class="card"><h2>{icon("check", 20)} Согласие на обработку данных</h2>
 <p class="small mut">Этот текст студент видит при регистрации. Пустое поле - бот покажет
 свою заготовку. Согласие хранится с датой и редакцией текста.</p>
@@ -119,6 +138,17 @@ async def settings_page(request: Request):
 <tr><th>Перечитывание PDF расписания</th><td>раз в {config.SCHEDULE_CACHE_HOURS} ч</td></tr>
 </table><p class="small mut">Секреты (.env, токен бота) панель не показывает.</p></div>"""
     return page("Настройки", body, user, "/settings")
+
+
+@router.post("/settings/responsible")
+async def settings_responsible(request: Request):
+    actor = await require_form(request)
+    data = await request.form()
+    for cat in ("certificates", "accounting", "academic", "feedback"):
+        uid = as_str(data.get(f"resp_{cat}", "")).strip()
+        await repo.set_category_responsible(cat, uid, actor)
+    flash("Ответственные за разделы сохранены.")
+    return redirect("/panel/settings")
 
 
 @router.post("/settings/tickets")

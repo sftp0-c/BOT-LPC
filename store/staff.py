@@ -1,4 +1,4 @@
-"""Сотрудники: карточки, роли, отпуска, заместители, права на чужие
+﻿"""Сотрудники: карточки, роли, отпуска, заместители, права на чужие
 обращения и список занятых ФИО для приглашений по ссылке.
 
 Права сис-админа (выдать, снять, .env) живут в store.sysadmin, а правка
@@ -556,3 +556,47 @@ async def set_staff_test(user_id: str, value: bool = True) -> bool:
         return False
     await db.run("UPDATE admins SET is_test=? WHERE user_id=?", (1 if value else 0, as_str(user_id),))
     return True
+
+
+# ── ответственные за разделы обращений ─────────────────────────────────────────
+async def get_category_responsible(cat: str) -> dict | None:
+    """Возвращает ответственного за раздел: назначенного явно или единственного сотрудника раздела."""
+    key = f"resp_cat:{cat}"
+    uid = await db.get_setting(key, "")
+    if uid:
+        row = await get_admin(uid)
+        if row and row["role_type"] == "staff" and not row["is_test"]:
+            return dict(row)
+    # Если явно не назначен, проверяем сотрудников, у которых ticket_category == cat (не 'all')
+    specific = await db.many(
+        "SELECT * FROM admins WHERE role_type='staff' AND is_test=0 AND ticket_category=?",
+        (cat,),
+    )
+    if len(specific) == 1:
+        return dict(specific[0])
+    return None
+
+
+async def set_category_responsible(cat: str, user_id: str, actor_id: str = "") -> None:
+    """Назначение ответственного за раздел (пустая строка - сброс на автовыбор)."""
+    key = f"resp_cat:{cat}"
+    uid = as_str(user_id).strip()
+    if uid:
+        await db.set_setting(key, uid)
+    else:
+        await db.run("DELETE FROM settings WHERE key=?", (key,))
+    if actor_id:
+        await db.run(
+            "INSERT INTO admin_log(actor_id, action, details, created_at) VALUES(?, ?, ?, ?)",
+            (actor_id, "category_responsible", f"cat={cat}; user_id={uid or 'auto'}", clock.stamp()),
+        )
+
+
+async def all_category_responsible() -> dict[str, str]:
+    """Словарь {category: user_id} назначенных ответственных."""
+    rows = await db.many("SELECT key, value FROM settings WHERE key LIKE 'resp_cat:%'")
+    res = {}
+    for r in rows:
+        cat = r["key"].split("resp_cat:", 1)[1]
+        res[cat] = r["value"]
+    return res

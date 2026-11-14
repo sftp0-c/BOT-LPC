@@ -1039,6 +1039,22 @@ async def cb_ask(x, arg):
     if await db.get_setting("tickets_enabled", "1") != "1":
         return await api.send(x, "Приём обращений временно отключён.", BACK)
     await db.set_state(x, "ticket", {"cat": category, "topic": title})
+    resp = await repo.get_category_responsible(category)
+    if resp:
+        admin_id = str(resp["user_id"])
+        replacement = await repo.vacation_replacement(resp)
+        away = bool(replacement) and await repo.on_vacation(admin_id)
+        payload = {"admin": admin_id, "cat": category, "topic": title}
+        if away:
+            payload["admin"] = replacement["user_id"]
+            payload["vacation"] = 1
+            payload["was"] = admin_id
+            head = f"Кому: {replacement['full_name']} (за {resp['full_name']})"
+            foot = "\n\n" + await repo.vacation_note(resp)
+        else:
+            head, foot = f"Кому: {resp['full_name']}", ""
+        await db.set_state(x, "ticket", payload)
+        return await api.send(x, f"{title}\n{head}{foot}\nНапишите обращение одним сообщением (или /cancel для отмены).")
     rows = await repo.staff_for_category(category)
     if not rows:
         return await api.send(x, "Сотрудник по этому вопросу ещё не назначен — напишите через "
@@ -1069,6 +1085,22 @@ async def cb_new_ticket(x, cat):
         return await api.send(x, f"{CATS[cat]}\nВыберите тему обращения:",
                               [[btn(label, f"topic:{cat}:{code}")]
                                for code, label in TOPIC_CATS_BTN[cat].items()] + BACK)
+    resp = await repo.get_category_responsible(cat)
+    if resp:
+        admin_id = str(resp["user_id"])
+        replacement = await repo.vacation_replacement(resp)
+        away = bool(replacement) and await repo.on_vacation(admin_id)
+        payload = {"admin": admin_id, "cat": cat, "topic": ""}
+        if away:
+            payload["admin"] = replacement["user_id"]
+            payload["vacation"] = 1
+            payload["was"] = admin_id
+            head = f"Кому: {replacement['full_name']} (за {resp['full_name']})"
+            foot = "\n\n" + await repo.vacation_note(resp)
+        else:
+            head, foot = f"Кому: {resp['full_name']}", ""
+        await db.set_state(x, "ticket", payload)
+        return await api.send(x, f"{CATS[cat]}\n{head}{foot}\nНапишите обращение одним сообщением (или /cancel для отмены).")
     rows = await repo.staff_for_category(cat)
     if not rows:
         return await api.send(x, "Сотрудники для этого раздела пока не назначены. Обратитесь в учебную часть.", BACK)
@@ -1084,6 +1116,22 @@ async def cb_ticket_topic(x, arg):
         return
     if await db.get_setting("tickets_enabled", "1") != "1":
         return await api.send(x, "Приём обращений временно отключён. Попробуйте позже.", BACK)
+    resp = await repo.get_category_responsible(cat)
+    if resp:
+        admin_id = str(resp["user_id"])
+        replacement = await repo.vacation_replacement(resp)
+        away = bool(replacement) and await repo.on_vacation(admin_id)
+        payload = {"admin": admin_id, "cat": cat, "topic": title}
+        if away:
+            payload["admin"] = replacement["user_id"]
+            payload["vacation"] = 1
+            payload["was"] = admin_id
+            head = f"Кому: {replacement['full_name']} (за {resp['full_name']})"
+            foot = "\n\n" + await repo.vacation_note(resp)
+        else:
+            head, foot = f"Кому: {resp['full_name']}", ""
+        await db.set_state(x, "ticket", payload)
+        return await api.send(x, f"{CATS[cat]} · {title}\n{head}{foot}\nНапишите обращение одним сообщением (или /cancel для отмены).")
     rows = await repo.staff_for_category(cat)
     if not rows:
         return await api.send(x, "Сотрудники для этого раздела пока не назначены. Обратитесь в учебную часть.", BACK)

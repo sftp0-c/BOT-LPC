@@ -31,7 +31,8 @@ __all__ = (
     "normalize_staff_web_permissions", "normalize_staff_web_id",
     "staff_web_secret", "staff_web_hash", "staff_web_session_hash",
     "request_staff_web_code", "verify_staff_web_code", "cancel_staff_web_challenge",
-    "revoke_staff_web_session",
+    "revoke_staff_web_session", "STAFF_AUTO_CODES_KEY", "is_staff_auto_codes_enabled",
+    "set_staff_auto_codes_mode", "enable_all_staff_web_access",
 )
 
 
@@ -294,14 +295,23 @@ async def request_staff_web_code(user_id: str, browser_hash: str, peer_hash: str
             await conn.commit()
             return result
         row = await (await conn.execute(
-            "SELECT w.auth_version,w.permissions FROM staff_web_access w JOIN admins a ON a.user_id=w.user_id "
-            "WHERE a.user_id=? AND a.role_type='staff' AND a.is_test=0 AND w.enabled=1",
+            "SELECT w.auth_version,w.permissions,w.enabled FROM admins a LEFT JOIN staff_web_access w ON w.user_id=a.user_id "
+            "WHERE a.user_id=? AND a.role_type='staff' AND a.is_test=0",
             (_PrivateText(identifier),))).fetchone()
-        if row:
+        if row and row["enabled"] == 1:
             try:
                 _read_permissions(row["permissions"])
             except ValueError:
                 row = None
+        elif row and row["enabled"] is None and await is_staff_auto_codes_enabled():
+            default_perms = json.dumps(list(WEB_WORK_PERMISSIONS), separators=(",", ":"))
+            await conn.execute(
+                "INSERT INTO staff_web_access(user_id,enabled,permissions,auth_version,created_at,updated_at,updated_by) "
+                "VALUES(?,1,?,1,?,?,?) ON CONFLICT(user_id) DO UPDATE SET enabled=1, updated_at=excluded.updated_at",
+                (_PrivateText(identifier), _PrivateText(default_perms), now, now, _PrivateText("auto_mode")))
+            row = {"auth_version": 1, "permissions": default_perms}
+        else:
+            row = None
         # Новый код погашает старый лишь у того же браузера, не у чужого сотрудника.
         await conn.execute("UPDATE staff_web_login_challenges SET consumed_at=? "
                            "WHERE browser_hash=? AND consumed_at=0", (max(1, now), _PrivateText(browser_hash)))
@@ -384,3 +394,56 @@ async def revoke_staff_web_session(session_hash: str) -> bool:
         return False
     return bool(await db.run_count("UPDATE staff_web_sessions SET revoked_at=? WHERE token_hash=? AND revoked_at=0",
                                    (max(1, _now()), _PrivateText(session_hash))))
+
+
+STAFF_AUTO_CODES_KEY = "staff_auto_codes"
+
+
+async def is_staff_auto_codes_enabled() -> bool:
+    """Включён ли режим автоматической отправки кодов сотрудникам (по умолчанию включён)."""
+    return (await db.get_setting(STAFF_AUTO_CODES_KEY, "1")) == "1"
+
+
+async def set_staff_auto_codes_mode(enabled: bool, actor_id: str) -> bool:
+    """Переключение режима авто-отправки кодов сис-админом."""
+    async with db._conn() as conn:
+        if not await _actor_allowed(conn, actor_id):
+            return False
+        await db.set_setting(STAFF_AUTO_CODES_KEY, "1" if enabled else "0")
+        await conn.execute(
+            "INSERT INTO admin_log(actor_id, action, details, created_at) VALUES(?, ?, ?, ?)",
+            (_PrivateText(actor_id), "staff_auto_codes_mode", _PrivateText(f"enabled={int(enabled)}"), clock.stamp()),
+        )
+        await conn.commit()
+    return True
+
+
+async def enable_all_staff_web_access(actor_id: str) -> int:
+    """Включает веб-доступ с правами Работа со своими всем действующим сотрудникам."""
+    now = _now()
+    default_perms = json.dumps(list(WEB_WORK_PERMISSIONS), separators=(",", ":"))
+    count = 0
+    async with db._conn() as conn:
+        await conn.execute("BEGIN IMMEDIATE")
+        if not await _actor_allowed(conn, actor_id):
+            await conn.rollback()
+            return 0
+        staff_rows = await (await conn.execute(
+            "SELECT user_id FROM admins WHERE role_type='staff' AND is_test=0"
+        )).fetchall()
+        for s in staff_rows:
+            uid = s["user_id"]
+            if not normalize_staff_web_id(uid):
+                continue
+            await conn.execute(
+                "INSERT INTO staff_web_access(user_id, enabled, permissions, auth_version, created_at, updated_at, updated_by) "
+                "VALUES(?, 1, ?, 1, ?, ?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET enabled=1, permissions=excluded.permissions, "
+                "auth_version=staff_web_access.auth_version+1, updated_at=excluded.updated_at, updated_by=excluded.updated_by",
+                (_PrivateText(uid), _PrivateText(default_perms), now, now, _PrivateText(actor_id)),
+            )
+            await _revoke_in_tx(conn, uid, now)
+            count += 1
+        await _access_audit(conn, actor_id, "staff_web_enable_all", "all", f"count={count}")
+        await conn.commit()
+    return count

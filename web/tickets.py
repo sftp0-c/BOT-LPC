@@ -431,7 +431,7 @@ async def _staff_choices(keep_current: str = "", current_name: str = "") -> tupl
     исполнителя выбирают по имени, и обрезанное «Ковалевский Ко… · Секрет…»
     для этого не годится, поэтому должность уходит в ``title`` пункта.
     """
-    choices = {"": "— не назначен —"}
+    choices = {"": "— автовыбор (ответственный за раздел) —"}
     titles: dict[str, str] = {}
     if keep_current:
         choices[keep_current] = f"{fio(current_name, keep_current, FIO_MAX)} (сейчас)"
@@ -577,8 +577,13 @@ async def ticket_new_submit(request: Request):
     group_raw = value(data, "group_code").strip()
     if group_raw and not await repo.get_user(student_id):
         await repo.upsert_user(student_id, value(data, "full_name").strip() or f"Студент {student_id}", group_raw)
-    ticket_id = await repo.create_ticket(student_id, value(data, "target_admin_id"),
-                                         value(data, "category"), text, "")
+    target_admin = value(data, "target_admin_id").strip()
+    cat = value(data, "category").strip() or "feedback"
+    if not target_admin:
+        resp = await repo.get_category_responsible(cat)
+        if resp:
+            target_admin = str(resp["user_id"])
+    ticket_id = await repo.create_ticket(student_id, target_admin, cat, text, "")
     pickup = value(data, "pickup_place").strip()
     if pickup:
         await repo.update_ticket(ticket_id, actor, pickup_place=pickup)
