@@ -168,3 +168,11 @@ async def test_bot_broadcast_custom_flow(env, api):
     assert state_row is not None
     assert state_row["state"] == "bc_text"
     assert "custom:Иванов, 888" in state_row["payload"]["aud"]
+
+
+async def test_ticket_new_page_loads(panel_client, env):
+    assert login_panel(panel_client)
+    res = panel_client.get("/panel/tickets/new")
+    assert res.status_code == 200
+    assert "Новое обращение" in res.text
+    assert "students-list" in res.text

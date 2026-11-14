@@ -518,9 +518,6 @@ async def attachment_download(request: Request, name: str):
     return FileResponse(path, filename=safe)
 
 
-@router.get("/tickets/new")
-
-
 async def _students_datalist() -> str:
     """Выпадающий список зарегистрированных студентов для выбора при создании обращения."""
     students = await repo.find_students("", limit=300)
@@ -533,6 +530,8 @@ async def _students_datalist() -> str:
         opts.append(f'<option value="{esc(name)}">{esc(name)} ({esc(grp)}) — ID {esc(uid)}</option>')
     return "".join(opts)
 
+
+@router.get("/tickets/new")
 async def ticket_new(request: Request):
     """Создание обращения из панели: для заявок, пришедших не через бота."""
     user = await require_user(request)
