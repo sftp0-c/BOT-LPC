@@ -567,13 +567,6 @@ async def get_category_responsible(cat: str) -> dict | None:
         row = await get_admin(uid)
         if row and row["role_type"] == "staff" and not row["is_test"]:
             return dict(row)
-    # Если явно не назначен, проверяем сотрудников, у которых ticket_category == cat (не 'all')
-    specific = await db.many(
-        "SELECT * FROM admins WHERE role_type='staff' AND is_test=0 AND ticket_category=?",
-        (cat,),
-    )
-    if len(specific) == 1:
-        return dict(specific[0])
     return None
 
 

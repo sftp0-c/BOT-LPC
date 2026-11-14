@@ -207,16 +207,19 @@ def skipped_rows(rows: list) -> list:
 
 # ── страница ─────────────────────────────────────────────────────────────────
 @router.get("/invites")
+@router.get("/staff-bulk")
 async def invites_page(request: Request):
     """Пустая форма: сюда же возвращается и результат проверки."""
     user = await require_user(request)
     more = to_int(request.query_params.get("more", ""), 0)
     fields = {"n_rows": FIELD_ROWS_DEFAULT + max(0, min(more, 30))}
+    tab = "/invites" if getattr(request, "url", None) and request.url.path.endswith("/invites") else "/staff"
     return page("Выпуск сотрудников по ссылкам",
-                _body_html(request, "", config.STAFF_CODE_TTL, None, None, fields), user, "/staff")
+                _body_html(request, "", config.STAFF_CODE_TTL, None, None, fields), user, tab)
 
 
 @router.post("/invites")
+@router.post("/staff-bulk")
 async def invites_submit(request: Request):
     """«Проверить» не создаёт ничего, «Создать приглашения» - по хорошим строкам."""
     user = await require_form(request)
@@ -232,8 +235,9 @@ async def invites_submit(request: Request):
     fields["n_rows"] = as_str(data.get("n_rows", FIELD_ROWS_DEFAULT))
     rows = await check_rows(raw)
     title = "Выпуск сотрудников по ссылкам"
+    tab = "/invites" if getattr(request, "url", None) and request.url.path.endswith("/invites") else "/staff"
     if as_str(data.get("action")).strip() != "create":
-        return page(title, _body_html(request, raw, ttl, rows, None, fields), user, "/staff")
+        return page(title, _body_html(request, raw, ttl, rows, None, fields), user, tab)
     issued = await create_invites_bulk(ready_rows(rows), created_by=user, ttl_hours=ttl)
     # коды в журнал и в ленту действий не пишем: иначе они уедут в /panel/logs
     log.info("панель: выпущено %d приглашений по ссылкам, срок %s (сис-админ %s)",
@@ -246,7 +250,7 @@ async def invites_submit(request: Request):
     shown = {"n_rows": FIELD_ROWS_DEFAULT} if issued else fields
     return page(title,
                 _body_html(request, raw, ttl, rows, (links, skipped_rows(rows)),
-                           shown), user, "/staff")
+                           shown), user, tab)
 
 
 async def _links(issued: list) -> list:
@@ -303,7 +307,7 @@ def _field_rows_html(request: Request, values: dict, ttl: int) -> str:
 <th>Кабинет</th><th>Раздел обращений</th></tr>{''.join(body)}</table>"""
 
 
-def _one_form_html(request: Request, values: dict, ttl: int) -> str:
+def _one_form_html(request: Request, values: dict, ttl: int, action_url: str = "/panel/invites") -> str:
     """Основная форма: строки с полями, «создать» - и ссылки для MAX."""
     total = to_int(as_str(values.get("n_rows")), FIELD_ROWS_DEFAULT)
     # Подсказки должностей для поля: можно выбрать из справочника, можно вписать
@@ -315,7 +319,7 @@ def _one_form_html(request: Request, values: dict, ttl: int) -> str:
              + "</datalist>")
     return _card("Кого заводим", "staff", f"""
 {names}
-<form method="post" action="/panel/invites">
+<form method="post" action="{action_url}">
 {csrf(request)}
 <input type="hidden" name="n_rows" value="{max(total, FIELD_ROWS_DEFAULT)}">
 <input type="hidden" name="action" value="create">
@@ -323,7 +327,7 @@ def _one_form_html(request: Request, values: dict, ttl: int) -> str:
 <div class="grid" style="margin-top:10px">
 <div>{select("ttl_hours", {value: label for value, label in CODE_TTL_CHOICES}, ttl, label="Срок ссылки")}</div>
 <div><button class="btn-ok">{icon("link", 16)} Создать ссылки</button></div>
-<div><a class="btn-grey" href="/panel/invites?more={max(total + FIELD_ROWS_DEFAULT, FIELD_ROWS_DEFAULT)}">{icon("plus", 16)} Ещё строк</a></div>
+<div><a class="btn-grey" href="{action_url}?more={max(total + FIELD_ROWS_DEFAULT, FIELD_ROWS_DEFAULT)}">{icon("plus", 16)} Ещё строк</a></div>
 </div>
 </form>
 <p class="small mut">Заполните нужные строки и нажмите «Создать ссылки». Появятся
@@ -332,14 +336,14 @@ def _one_form_html(request: Request, values: dict, ttl: int) -> str:
 Пустые строки пропускаются, заполнять все не нужно.</p>""")
 
 
-def _form_html(request: Request, raw: str, ttl: int) -> str:
+def _form_html(request: Request, raw: str, ttl: int, action_url: str = "/panel/invites") -> str:
     hours = {value: label for value, label in CODE_TTL_CHOICES}
     textarea = (f'<div class="full"><label>Список сотрудников</label>'
                 f'<textarea name="rows" rows="10" placeholder='
                 f'"Иванов Иван Иванович; Секретарь; 214; Справки">{esc(raw)}</textarea></div>')
     return _card("Кто становится сотрудником", "staff", f"""
 <p class="small mut">{FORMAT_HINT}</p>
-<form method="post" action="/panel/invites" class="grid">
+<form method="post" action="{action_url}" class="grid">
 {csrf(request)}
 {textarea}
 <div>{select("ttl_hours", hours, ttl, label="Срок ссылки")}</div>
@@ -426,7 +430,10 @@ def _body_html(request: Request, raw: str, ttl: int, rows, result,
     После «Создать приглашения» таблица разбора не дублируется: там уже есть
     список ссылок и отдельный список пропущенных строк.
     """
-    parts = [_one_form_html(request, fields or {}, ttl), _form_html(request, raw, ttl)]
+    path = request.url.path if request and getattr(request, "url", None) else "/panel/invites"
+    action_url = path if path in ("/panel/staff-bulk", "/panel/invites") else "/panel/invites"
+    parts = [_one_form_html(request, fields or {}, ttl, action_url=action_url),
+             _form_html(request, raw, ttl, action_url=action_url)]
     if result is not None:
         links, skipped = result
         parts += [_report_html(len(links), skipped, created=True),

@@ -45,12 +45,13 @@ async def _persons_datalist() -> str:
     opts = []
     seen = set()
     for c in contacts:
-        uid = as_str(c["user_id"])
-        if uid in seen:
+        row = dict(c)
+        uid = as_str(row.get("user_id", ""))
+        if not uid or uid in seen:
             continue
         seen.add(uid)
-        name = as_str(c.get("fio") or c.get("staff_name") or c.get("display_name") or f"ID {uid}")
-        sub = as_str(c.get("group_code") or c.get("position") or "")
+        name = as_str(row.get("fio") or row.get("staff_name") or row.get("display_name") or f"ID {uid}")
+        sub = as_str(row.get("group_code") or row.get("position") or "")
         sub_label = f" ({sub})" if sub else ""
         opts.append(f'<option value="{esc(uid)}">{esc(name)}{esc(sub_label)} — ID {esc(uid)}</option>')
         if name and name != f"ID {uid}":

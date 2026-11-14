@@ -69,7 +69,15 @@ async def settings_page(request: Request):
             uid = str(s["user_id"])
             selected = " selected" if uid == assigned else ""
             pos = f" ({esc(s['position'])})" if ("position" in s.keys() and s['position']) else ""
-            opts.append(f'<option value="{uid}"{selected}>{esc(s["full_name"])}{pos}</option>')
+            raw_fn = as_str(s["full_name"] if "full_name" in s.keys() else "")
+            parts = [p for p in raw_fn.split() if p]
+            if len(parts) >= 2:
+                name = f"{parts[0]} " + " ".join(f"{p[0].upper()}." for p in parts[1:])
+            elif parts:
+                name = parts[0]
+            else:
+                name = f"ID {uid}"
+            opts.append(f'<option value="{uid}"{selected}>{esc(name)}{pos} — ID {esc(uid)}</option>')
         select_html = f'<select name="resp_{cat}">{"".join(opts)}</select>'
         resp_rows.append(f'<tr><td><strong>{esc(CATS.get(cat, cat))}</strong></td><td>{select_html}</td></tr>')
     resp_table = "".join(resp_rows)

@@ -112,8 +112,9 @@ async def test_panel_staff_access_auto_mode_endpoints(panel_client):
 async def test_category_responsible_auto_pick_in_bot(api):
     await register(STUDENT, "Иванов Иван", "24-23")
     await add_staff(STAFF1, "Петрова Мария", category="certificates", position="Секретарь")
+    await repo.set_category_responsible("certificates", STAFF1, "1")
 
-    # 1. При одном сотруднике с категорией certificates — он единственный ответственный
+    # 1. При назначенном ответственном за раздел certificates — он выбирается автоматически
     resp = await repo.get_category_responsible("certificates")
     assert resp and str(resp["user_id"]) == STAFF1
 

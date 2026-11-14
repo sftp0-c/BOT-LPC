@@ -297,25 +297,25 @@ th.col-act,td.col-act{width:1%}
    иначе кнопки одного ряда наезжали на кнопки другого. */
 .staff-hints{margin-top:var(--space-sm)}
 .staff-actions{margin-top:var(--space-sm)}
-.staff-hints button{padding:4px 11px;font-size:12px;border-radius:12px;border:1px solid var(--line);background:var(--surface-card);color:var(--ink);cursor:pointer;transition:all .15s ease}
+.staff-hints button{padding:4px 11px;font-size:12px;border-radius:12px;border:1px solid var(--line);background:var(--surface-raised);color:var(--ink);cursor:pointer;transition:all var(--motion-fast) ease}
 .staff-hints button:hover{background:var(--acc-soft);border-color:var(--acc-line);color:var(--acc)}
 .staff-actions button,.staff-actions .btn{min-height:36px}
 
 /* Метрики и панель действий в разделе Сотрудники */
 .staff-kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:var(--space-md);margin-bottom:var(--space-lg)}
-.staff-kpi-card{background:var(--surface-card);border:1px solid var(--line);border-radius:var(--radius-md);padding:var(--space-md);box-shadow:var(--shadow-sm);transition:transform .15s ease}
+.staff-kpi-card{background:var(--surface-raised);border:1px solid var(--line);border-radius:var(--radius-md);padding:var(--space-md);box-shadow:var(--shadow-sm);transition:transform var(--motion-fast) ease}
 .staff-kpi-card:hover{transform:translateY(-1px)}
 .staff-kpi-label{font-size:var(--text-sm);color:var(--mut);display:flex;align-items:center;gap:6px}
 .staff-kpi-value{font-size:26px;font-weight:700;color:var(--ink);margin-top:6px}
 
 .staff-toolbar{display:flex;flex-wrap:wrap;gap:var(--space-sm);align-items:center;margin-bottom:var(--space-lg)}
 .staff-quick-filters{display:flex;flex-wrap:wrap;gap:var(--space-xs);margin-top:var(--space-sm);align-items:center}
-.staff-filter-chip{padding:4px 11px;font-size:12px;border-radius:14px;border:1px solid var(--line);background:var(--surface-card);color:var(--ink-soft);text-decoration:none;transition:all .15s ease;display:inline-flex;align-items:center}
+.staff-filter-chip{padding:4px 11px;font-size:12px;border-radius:14px;border:1px solid var(--line);background:var(--surface-raised);color:var(--ink-soft);text-decoration:none;transition:all var(--motion-fast) ease;display:inline-flex;align-items:center}
 .staff-filter-chip:hover,.staff-filter-chip.is-active{background:var(--acc-soft);border-color:var(--acc-line);color:var(--acc);font-weight:var(--weight-semi)}
 
 .staff-subrow-card{background:var(--surface-sunken);border:1px solid var(--line);border-radius:var(--radius-md);padding:var(--space-md);margin:6px 0}
 .staff-subrow-header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:var(--space-sm);padding-bottom:var(--space-xs);border-bottom:1px solid var(--line)}
-.staff-quick-box{padding:8px;background:var(--surface-card);border:1px solid var(--line);border-radius:var(--radius-sm)}
+.staff-quick-box{padding:8px;background:var(--surface-raised);border:1px solid var(--line);border-radius:var(--radius-sm)}
 .staff-quick-box label{font-size:11px;font-weight:600;color:var(--mut);margin-bottom:2px}
 .staff-quick-box input,.staff-quick-box select{font-size:13px;padding:4px 8px;min-height:30px}
 
