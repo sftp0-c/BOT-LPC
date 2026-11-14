@@ -1,4 +1,4 @@
-"""Досье человека: всё о нём на одной странице.
+﻿"""Досье человека: всё о нём на одной странице.
 
 Карточка человека отвечала на вопрос «кто он и что о нём записано», а всё
 остальное - обращения, переписка, права, подписки, действия сис-админа - лежало
@@ -327,6 +327,6 @@ async def dossier_page(request: Request, user_id: str, status: str = "", ticket:
         _subs_card(person),
         _history_card(data["history"]),
     ) if part)
-    actions = (f'<a class="btn btn-grey" href="/panel/tickets?t={data["thread_ticket"]}">'
+    actions = (f'<a class="btn btn-grey" href="/panel/tickets?t={to_int(data["thread_ticket"])}">'
                f'{icon("tickets", 16)} Открыть обращение</a>' if data["thread_ticket"] else "")
     return page(f"Досье: {name}", body, viewer, "/people", actions=actions)

@@ -1,4 +1,4 @@
-"""Рассылки: новая рассылка и её история."""
+﻿"""Рассылки: новая рассылка и её история."""
 import repository as repo
 from fastapi import Request
 from handlers.broadcast import run_broadcast
@@ -37,6 +37,26 @@ def _broadcasts_table(rows) -> str:
 
 
 # ── рассылки ──────────────────────────────────────────────────────────────────
+
+
+async def _persons_datalist() -> str:
+    """Выпадающий список людей для рассылки отдельным лицам."""
+    contacts = await repo.people(limit=300)
+    opts = []
+    seen = set()
+    for c in contacts:
+        uid = as_str(c["user_id"])
+        if uid in seen:
+            continue
+        seen.add(uid)
+        name = as_str(c.get("fio") or c.get("staff_name") or c.get("display_name") or f"ID {uid}")
+        sub = as_str(c.get("group_code") or c.get("position") or "")
+        sub_label = f" ({sub})" if sub else ""
+        opts.append(f'<option value="{esc(uid)}">{esc(name)}{esc(sub_label)} — ID {esc(uid)}</option>')
+        if name and name != f"ID {uid}":
+            opts.append(f'<option value="{esc(name)}">{esc(name)}{esc(sub_label)} — ID {esc(uid)}</option>')
+    return "".join(opts)
+
 BROADCASTS_PAGE = 25    # рассылок на страницу истории
 
 
@@ -51,7 +71,11 @@ async def broadcasts_list(request: Request, page_no: int = 1):
     rows = found[(page_no - 1) * BROADCASTS_PAGE: page_no * BROADCASTS_PAGE]
     pages_bar = pager("/panel/broadcasts", [], page_no, pages, f"рассылок: {len(found)}")
     tail = window_tail(len(found), window, "Свежие рассылки сверху, дальше - на следующих страницах.")
-    audience_options = {"all": "всем студентам"}
+    audience_options = {
+        "all": "всем студентам",
+        "staff": "преподавателям и сотрудникам",
+        "custom": "отдельным лицам (выбор из списка ниже)",
+    }
     for row in await repo.top_groups(300):
         audience_options[row["group_code"]] = f"группе {row['group_code']} ({row['students']} чел.)"
     body = f"""
@@ -59,6 +83,9 @@ async def broadcasts_list(request: Request, page_no: int = 1):
 <form method="post" action="/panel/broadcasts/send">{csrf(request)}<div class="grid">
 <div>{select('audience', audience_options, 'all', label="Кому")}</div>
 <div><label>MAX ID для проверки (необязательно)</label><input name="test_to" placeholder="проверить на себе"></div>
+<div class="full"><label>Отдельные лица (выберите из списка или введите ФИО / MAX ID через запятую)</label>
+<input name="custom_recipients" list="recipients-list" placeholder="Начните вводить фамилию или MAX ID...">
+<datalist id="recipients-list">{await _persons_datalist()}</datalist></div>
 <div class="full"><label>Текст объявления</label><textarea name="text" maxlength="3500"
   placeholder="Уважаемые студенты…"></textarea></div></div>
 <p class="small mut">Объявление придёт с подписью «— ФИО, должность». Отправка идёт в фоне,
@@ -78,7 +105,13 @@ async def broadcasts_send(request: Request):
     if not text:
         flash("!Введите текст объявления.")
         return redirect("/panel/broadcasts")
-    if audience != "all" and not valid_group(audience):
+    if audience == "custom":
+        custom_uids = as_str(data.get("custom_recipients", "")).strip()
+        if not custom_uids:
+            flash("!Укажите хотя бы одного получателя (ФИО или MAX ID).")
+            return redirect("/panel/broadcasts")
+        audience = f"custom:{custom_uids}"
+    elif audience not in ("all", "staff") and not valid_group(audience):
         flash("!Неизвестная группа — выберите её из списка.")
         return redirect("/panel/broadcasts")
     if test_to:

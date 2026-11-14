@@ -264,7 +264,7 @@ def main() -> int:
             copy = copy_database(stamp)
         except RuntimeError as exc:
             print(f"✗ {exc}")
-            print("  Пуш остановлен: без копии базы откатить обращения нечем.")
+            print("  Пуш остановлен: без бекапа базы откатить обращения нечем.")
             print("  Если меняются только тексты - повтори с BOTLPC_SKIP_DB_BACKUP=1")
             return 1
         if copy is None:

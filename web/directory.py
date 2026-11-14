@@ -1,6 +1,5 @@
 ﻿"""Справочники: контакты колледжа с частыми вопросами и группы студентов."""
 import college
-import database as db
 import repository as repo
 from fastapi import Request
 from handlers import faq
@@ -47,8 +46,7 @@ async def _faq_counts() -> tuple[int, int]:
     видно, что выключенные вопросы в базе тоже есть.
     """
     await faq.ensure_category_column()
-    row = await db.one("SELECT COUNT(*) AS total, COALESCE(SUM(active),0) AS enabled FROM faq")
-    return to_int(row["total"]), to_int(row["enabled"])
+    return await repo.faq_counts()
 
 
 @router.get("/college")
@@ -188,13 +186,12 @@ async def faq_seed(request: Request):
 async def faq_item_toggle(request: Request, faq_id: int):
     """Включить или выключить отдельный вопрос, не удаляя его."""
     actor = await require_form(request)
-    row = await db.one("SELECT active FROM faq WHERE id=?", (int(faq_id),))
-    if not row:
+    found, was_active = await repo.toggle_faq_item(int(faq_id))
+    if not found:
         flash("!Такого вопроса нет.")
         return redirect("/panel/college")
-    await db.run("UPDATE faq SET active=CASE active WHEN 1 THEN 0 ELSE 1 END WHERE id=?", (int(faq_id),))
     await repo.log_action(actor, "частый вопрос", f"№{faq_id}")
-    flash(f"Вопрос №{faq_id} {'выключен' if to_int(row['active']) else 'включен'}.")
+    flash(f"Вопрос №{faq_id} {'выключен' if was_active else 'включен'}.")
     return redirect("/panel/college")
 
 

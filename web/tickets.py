@@ -7,7 +7,6 @@ from datetime import timedelta
 from urllib.parse import parse_qsl, urlencode
 
 import clock
-import database as db
 import repository as repo
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, Response
@@ -16,7 +15,7 @@ from handlers.tickets import TPL_FIELDS, render_template, unknown_placeholders
 from panel_theme import icon
 from store.tickets import ticket_filter_dates
 from utils import (CATS, OPEN_STATUSES, STAFF_CATS, STATUS, as_str, cut_plain, fmt_when,
-                    group_code, to_int)
+                    to_int)
 
 from .common import (FIO_MAX, _action_form, bot_open_link, code_cell, copy_btn, csrf, esc, fio, flash, form, log, open_in_bot,
                      page, page_window, pager, pages_of, panel_link, pill, plain, redirect, require_form,
@@ -242,8 +241,7 @@ async def templates_edit_submit(request: Request, template_id: int):
         flash("!Нужны и название, и текст ответа: шаблон без текста бесполезен.")
         return redirect(f"/panel/templates/{template_id}/edit")
     category = value(data, "category") or "all"      # раздел - как при добавлении
-    await db.run("UPDATE reply_templates SET title=?, text=?, category=? WHERE id=?",
-                 (title[:80], text[:2000], category, template_id))
+    await repo.update_template(template_id, title[:80], text[:2000], category)
     log.info("панель: изменён шаблон %s (сис-админ %s)", template_id, user)
     await repo.log_action(user, "шаблон ответа изменён", f"ID {template_id}; поля: title, text, category")
     flash(f"Шаблон «{title}» сохранён.")
@@ -521,6 +519,20 @@ async def attachment_download(request: Request, name: str):
 
 
 @router.get("/tickets/new")
+
+
+async def _students_datalist() -> str:
+    """Выпадающий список зарегистрированных студентов для выбора при создании обращения."""
+    students = await repo.find_students("", limit=300)
+    opts = []
+    for s in students:
+        uid = as_str(s["user_id"])
+        name = as_str(s["full_name"])
+        grp = as_str(s["group_code"])
+        opts.append(f'<option value="{esc(uid)}">{esc(name)} ({esc(grp)})</option>')
+        opts.append(f'<option value="{esc(name)}">{esc(name)} ({esc(grp)}) — ID {esc(uid)}</option>')
+    return "".join(opts)
+
 async def ticket_new(request: Request):
     """Создание обращения из панели: для заявок, пришедших не через бота."""
     user = await require_user(request)
@@ -530,7 +542,9 @@ async def ticket_new(request: Request):
 <form method="post" action="/panel/tickets/new">{csrf(request)}
 <input type="hidden" name="return" value="{esc(return_to)}">
 <div class="grid">
-<div><label>MAX ID студента</label><input name="student_id" required></div>
+<div><label>MAX ID студента (или выберите из списка)</label>
+<input name="student_id" list="students-list" placeholder="ФИО, группа или MAX ID..." required>
+<datalist id="students-list">{await _students_datalist()}</datalist></div>
 <div><label>ФИО (если ещё не регистрировался)</label><input name="full_name"></div>
 <div><label>Группа</label><input name="group_code" placeholder="24-23"></div>
 <div>{select("category", dict(CATS), "feedback")}</div>
@@ -557,22 +571,29 @@ async def ticket_new_submit(request: Request):
     if not student_id or not text:
         flash("!Нужен MAX ID студента и текст обращения.")
         return redirect("/panel/tickets/new")
+    if not student_id.isdigit():
+        matches = await repo.find_students(student_id)
+        if matches:
+            student_id = str(matches[0]["user_id"])
     group_raw = value(data, "group_code").strip()
     if group_raw and not await repo.get_user(student_id):
-        # created_at пишем явно: DEFAULT (datetime('now')) в схеме - это UTC,
-        # а всё остальное время в проекте локальное
-        await db.run(
-            "INSERT INTO users(user_id, full_name, group_code, created_at) VALUES(?,?,?,?) "
-            "ON CONFLICT(user_id) DO UPDATE SET full_name=excluded.full_name, "
-            "group_code=excluded.group_code",
-            (student_id, value(data, "full_name").strip() or f"Студент {student_id}",
-             group_code(group_raw), clock.stamp()),
-        )
+        await repo.upsert_user(student_id, value(data, "full_name").strip() or f"Студент {student_id}", group_raw)
     ticket_id = await repo.create_ticket(student_id, value(data, "target_admin_id"),
                                          value(data, "category"), text, "")
     pickup = value(data, "pickup_place").strip()
     if pickup:
         await repo.update_ticket(ticket_id, actor, pickup_place=pickup)
+    try:
+        staff_row = await repo.get_admin(actor)
+        staff_label = fio(staff_row["full_name"], actor) if staff_row else "Сотрудник колледжа"
+        await notify(
+            student_id,
+            f"📩 Новое обращение от сотрудника колледжа ({staff_label}):\n\n{text}",
+            [[{"type": "callback", "text": "✍️ Ответить", "payload": f"rp:{ticket_id}"},
+              {"type": "callback", "text": "📂 Открыть", "payload": f"t:{ticket_id}"}]],
+        )
+    except Exception as exc:
+        log.warning("Не удалось отправить уведомление студенту при создании обращения №%s: %s", ticket_id, exc)
     await repo.log_action(actor, "обращение создано из панели",
                           f"№{ticket_id}, студент {student_id}")
     flash(f"Обращение №{ticket_id} создано.")
@@ -583,9 +604,17 @@ async def ticket_new_submit(request: Request):
 async def tickets_bulk(request: Request):
     actor = await require_form(request)
     data = await request.form()
-    chosen = [item for item in value(data, "tids").split(",") if item]
+    raw_items = data.getlist("tids") if hasattr(data, "getlist") else [value(data, "tids")]
+    chosen = []
+    for item in raw_items:
+        if not item:
+            continue
+        for part in str(item).split(","):
+            part = part.strip()
+            if part.isdigit() and part not in chosen:
+                chosen.append(part)
     action = value(data, "action")
-    if action not in {"assign", "status", "pickup", "archive"}:
+    if action not in {"assign", "status", "pickup", "archive", "close"}:
         raise HTTPException(status_code=400, detail="Неизвестное массовое действие")
     if not chosen:
         flash("!Отметьте обращения галочкой слева.")
@@ -844,7 +873,8 @@ async def ticket_reply(request: Request, ticket_id: int):
         "💬 Ответ по обращению №{tid} — {subject}\nОтвечает: {who}\n\n{text}".format(
             tid=ticket_id, subject=_ticket_subject(t), who=_answerer_label(answerer, answerer_id),
             text=text),
-        [[{"type": "callback", "text": "📂 Открыть", "payload": f"t:{ticket_id}"}]],
+        [[{"type": "callback", "text": "✍️ Ответить", "payload": f"rp:{ticket_id}"},
+          {"type": "callback", "text": "📂 Открыть", "payload": f"t:{ticket_id}"}]],
     )
     log.info("панель: ответ на обращение %s: вошёл %s, ответил за %s (шаблон %s)",
              ticket_id, user, answerer_id, template_id if by_template else "—")
@@ -882,6 +912,15 @@ async def ticket_status(request: Request, ticket_id: int):
     return redirect(safe_return(form_data, f"/panel/tickets?t={ticket_id}"))
 
 
+def build_tickets_queue_viewmodel(rows: list, visible: list, live_query: str,
+                                  selected: dict | None, archived: bool) -> dict:
+    """Подготовка view-model для очереди обращений: данные отдельно от HTML-разметки."""
+    return {
+        "rows": rows, "visible": visible, "live_query": live_query,
+        "selected": selected, "archived": archived,
+    }
+
+
 def _tickets_queue(request: Request, rows, latest: dict, live_query: str, selected,
                     archived: bool) -> str:
     """Левая колонка: отметки для массовых действий и переход в карточку.
@@ -894,6 +933,7 @@ def _tickets_queue(request: Request, rows, latest: dict, live_query: str, select
     if not rows:
         return '<div class="card mut">Обращений нет.</div>'
     visible = rows[:TICKETS_PAGE]
+    _vm = build_tickets_queue_viewmodel(rows, visible, live_query, selected, archived)
     ids = ",".join(str(row["ticket_id"]) for row in visible)
     items = []
     for row in visible:
@@ -934,15 +974,15 @@ def _tickets_queue(request: Request, rows, latest: dict, live_query: str, select
 <div class="wb-list">{''.join(items)}</div>
 <details class="wb-bulk"><summary>Групповые действия для отмеченных</summary>
 <div class="grid" style="margin-top:8px">
-<div>{select("action", {"assign": "Назначить сотрудника",
+<div>{select("action", {"close": "Закрыть обращения",
                         "status": "Сменить статус",
+                        "assign": "Назначить сотрудника",
                         "pickup": "Кабинет выдачи",
-                        "archive": "В архив"}, "assign")}</div>
+                        "archive": "В архив"}, "close")}</div>
 <div><button class="btn-ok">Применить</button></div></div>
-<div><label>Куда</label><input name="value"
-  placeholder="сотрудник, статус или кабинет 115"></div>
-<p class="small mut">Отметьте обращения галочкой слева. Поле «Куда» принимает свой текст:
-например <code>115</code> для кабинета справок или <code>in_progress</code> для статуса.</p>
+<div><label>Значение (для статуса, сотрудника или кабинета)</label><input name="value"
+  placeholder="в работе / закрыто / ID сотрудника / каб. 115"></div>
+<p class="small mut">Отметьте обращения галочкой слева. Для закрытия или архива поле значения можно оставить пустым.</p>
 </details>
 <input type="hidden" name="all" value="{esc(ids)}">
 </form>{more}</div>"""

@@ -26,7 +26,7 @@ WEB_PERMISSIONS = (
 WORKSPACE_FILE_LIMIT = 3
 WORKSPACE_FILE_BYTES = 20 * 1024 * 1024
 _CLOSED = ("completed", "rejected", "closed")
-_ACTIONS = ("reply", "reply_close", "status", "note", "forward")
+_ACTIONS = ("reply", "reply_close", "status", "note", "forward", "close")
 _FILTERS = {"view", "status", "category", "q", "period", "mine", "date_from", "date_to", "scope"}
 _STORAGE_NAME = re.compile(r"[A-Za-zА-Яа-яЁё0-9_-][A-Za-zА-Яа-яЁё0-9._-]{0,59}\Z")
 _FILE_SUFFIXES = (".jpg", ".jpeg", ".png", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".txt")
@@ -117,7 +117,7 @@ def _acl(principal: dict, *, mine: bool = False) -> tuple[str, tuple]:
 def _may_change(principal: dict, ticket: dict, action: str) -> bool:
     if ticket["target_admin_id"] != principal["user_id"] and not _has(principal, "manage_others"):
         return False
-    needed = ("reply", "status") if action == "reply_close" else (action,)
+    needed = ("reply", "status") if action == "reply_close" else ("status",) if action == "close" else (action,)
     return all(_has(principal, permission) for permission in needed)
 
 
@@ -125,7 +125,7 @@ def _allowed_actions(principal: dict, ticket: dict) -> list[str]:
     allowed = [permission for permission in ("templates", "attachments") if _has(principal, permission)]
     if not ticket["deleted_at"]:
         allowed += [action for action in _ACTIONS if _may_change(principal, ticket, action)
-                    and not (action == "reply_close" and ticket["status"] in _CLOSED)]
+                    and not (action in ("reply_close", "close") and ticket["status"] in _CLOSED)]
     return allowed
 
 
@@ -442,7 +442,7 @@ async def workspace_apply(actor_id, ticket_id, action: str, *, session_hash: str
             return {**_error("conflict"), "revision": ticket["workspace_revision"]}
         if ticket["deleted_at"]:
             return _error("conflict", "Обращение в архиве. Сначала восстановите его.")
-        if action == "reply_close" and ticket["status"] in _CLOSED:
+        if action in ("reply_close", "close") and ticket["status"] in _CLOSED:
             return _error("conflict", "Обращение уже закрыто.")
         if action == "status" and ticket["status"] == status:
             return _error("conflict", "Этот статус уже установлен.")
@@ -465,7 +465,7 @@ async def workspace_apply(actor_id, ticket_id, action: str, *, session_hash: str
                 return _error("invalid", "Автор ответа не является действующим сотрудником.")
         stamp = clock.stamp()
         new_status = status if action == "status" else ticket["status"]
-        if action == "reply_close":
+        if action in ("reply_close", "close"):
             new_status = "completed"
         elif action == "reply" and ticket["status"] in ACCEPT_ON_REPLY:
             new_status = "accepted"
@@ -500,7 +500,7 @@ async def workspace_apply(actor_id, ticket_id, action: str, *, session_hash: str
             (principal["user_id"], audience, key, _PrivateText(fingerprint), ticket_id, action, fresh_revision,
              message_id, json.dumps(event_ids), stamp))
         notifications = []
-        if action != "note":
+        if action not in ("note", "close"):
             notify_text = text
             if action == "forward":
                 notify_text = (text + "\n\n" if text else "") + ticket["text_content"][:700]

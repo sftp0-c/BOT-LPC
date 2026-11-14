@@ -318,6 +318,7 @@ def staff_menu(a):
     if staff_position_filled(a):
         rows.append([btn(SECTION_BTN, "mysection")])
     rows.append([btn("📬 Обращения", "staff"), btn("📊 Статистика", "staffstats")])
+    rows.append([btn("✉️ Написать студенту", "write_student")])
     if can_broadcast(a):
         rows.append([btn("📢 Рассылка", "broadcast")])
     if is_super(a):  # переход в панель сис-админа — кнопкой, для тех, кто вписан в .env

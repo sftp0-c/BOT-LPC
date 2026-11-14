@@ -16,10 +16,11 @@ import re
 import secrets
 import time
 from html import escape as _escape
+from pathlib import Path
 from urllib.parse import urlencode
 
 from fastapi import HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 
 import config
 import version
@@ -504,6 +505,41 @@ def nav_html(tab: str, badges: dict | None = None) -> str:
     return '<div class="nav-groups">' + "".join(blocks) + "</div>"
 
 
+PANEL_SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "font-src 'self'; "
+        "connect-src 'self'; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "frame-ancestors 'none'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+}
+
+
+@router.get("/static/{name}", include_in_schema=False)
+async def panel_static_asset(name: str):
+    allowed = {
+        "panel.css": "text/css; charset=utf-8",
+        "panel.js": "text/javascript; charset=utf-8",
+    }
+    if name not in allowed:
+        return Response(status_code=404)
+    file_path = Path(__file__).resolve().parent / "static" / name
+    if not file_path.is_file():
+        return Response(status_code=404)
+    return FileResponse(file_path, media_type=allowed[name], headers={
+        **PANEL_SECURITY_HEADERS,
+        "Cache-Control": "public, max-age=3600",
+    })
+
+
 def page(title: str, body: str, user: str = "", tab: str = "",
          actions: str = "", status_code: int = 200, *,
          extra_head: str = "", extra_scripts: str = "") -> HTMLResponse:
@@ -520,8 +556,11 @@ def page(title: str, body: str, user: str = "", tab: str = "",
     theme_boot = f'<script>{theme_boot_script()}</script>'
     css_head = (f'<meta name="viewport" content="width=device-width,initial-scale=1">'
                 f'<meta name="color-scheme" content="dark light">{theme_boot}'
-                f'<title>{esc(title)} — Навигатор ЛПК</title><style>{STYLE}</style>{extra_head}')
-    scripts = (f'<script>{theme_script()}</script><script>{panel_toast_js()}</script>'
+                f'<title>{esc(title)} — Навигатор ЛПК</title>'
+                f'<link rel="stylesheet" href="/panel/static/panel.css?v={version.__version__}">'
+                f'<style>{STYLE}</style>{extra_head}')
+    scripts = (f'<script src="/panel/static/panel.js?v={version.__version__}" defer></script>'
+               f'<script>{theme_script()}</script><script>{panel_toast_js()}</script>'
                f'<script>{actions_script()}</script>{extra_scripts}')
     if title in ("Вход", "Панель выключена"):
         return HTMLResponse(
@@ -531,7 +570,7 @@ def page(title: str, body: str, user: str = "", tab: str = "",
             f'<main id="main-content" class="login-shell">{banner}{body}</main>'
             f'<footer class="login-footer">Навигатор ЛПК · Работа с обращениями в MAX · '
             f'Бета-тестирование · версия {esc(version.__version__)}</footer>{scripts}</body></html>',
-            status_code=status_code, headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow", "Referrer-Policy": "no-referrer"},
+            status_code=status_code, headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow", **PANEL_SECURITY_HEADERS},
         )
     scripts += f'<script>{nav_scroll_script()}</script><script>{hotkeys_script(NAV_SECTIONS)}</script>'
     nav = nav_html(tab, _nav_badges.get())
@@ -561,7 +600,7 @@ def page(title: str, body: str, user: str = "", tab: str = "",
 <main id="main-content" tabindex="-1">{head}{banner}{body}</main>
 <footer class="app-footer"><span>Навигатор ЛПК</span><span>Единая очередь · Данные из бота в MAX</span></footer>
 {scripts}
-</body></html>""", status_code=status_code, headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow", "Referrer-Policy": "no-referrer"},
+</body></html>""", status_code=status_code, headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow", **PANEL_SECURITY_HEADERS},
     )
 
 

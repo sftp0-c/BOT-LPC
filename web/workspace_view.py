@@ -34,7 +34,7 @@ from utils import CATS, STATUS, fmt_when, person_label
 
 WORKSPACE_STYLESHEET_HREF = "/workspace/assets/workspace.css"
 WORKSPACE_SCRIPT_SRC = "/workspace/assets/workspace.js"
-ACTIONS = frozenset({"reply", "reply_close", "status", "note", "forward", "template_preview"})
+ACTIONS = frozenset({"reply", "reply_close", "status", "note", "forward", "template_preview", "close"})
 FILTER_KEYS = ("tab", "q", "status", "category", "scope", "view", "mine", "date_from", "date_to")
 TABS = (("open", "Открытые"), ("waiting", "Ждут ответа"), ("closed", "Закрытые"))
 STATUS_LABELS = {code: re.sub(r"^[^\w]+", "", label) for code, label in STATUS.items()}
@@ -141,7 +141,7 @@ def _url(base: str, params: Mapping, **changes) -> str:
 
 
 def _hidden(name: str, value) -> str:
-    return f'<input type="hidden" name="{name}" value="{_esc(value)}">'
+    return f'<input type="hidden" name="{_esc(name)}" value="{_esc(value)}">'
 
 
 def _time(stamp) -> str:
@@ -321,10 +321,12 @@ def _queue(base: str, queue: Mapping, params: Mapping, actor: Mapping, selected:
     if total and not items:
         empty = ('<div class="ws-empty ws-queue-empty"><h3>На этой странице нет обращений</h3>'
                  f'<a class="ws-btn ws-btn-quiet" href="{_esc(_url(base, params, page=1))}">На первую страницу</a></div>')
+    select_all_btn = ('<label class="ws-select-all" title="Выбрать все на странице"><input type="checkbox" data-select-all-tickets> <span>Все</span></label>'
+                      if _is_admin(actor) and rows else '')
     return (
         '<aside class="ws-queue" aria-labelledby="ws-queue-title">'
         '<div class="ws-queue-heading"><h2 id="ws-queue-title">Очередь</h2>'
-        f'<span class="ws-range">{summary}</span></div>'
+        f'<span class="ws-range">{summary}</span>{select_all_btn}</div>'
         f'<div class="ws-tabs" role="navigation" aria-label="Состояние обращений">{tabs}</div>'
         + _filter_form(base, params, actor, counts)
         + _bulk_admin(base, rows, params, actor, _text(actor.get("csrf_token")))
@@ -342,14 +344,19 @@ def _bulk_admin(base: str, rows: list[Mapping], params: Mapping, actor: Mapping,
         '<form id="ws-bulk-form" class="ws-bulk-admin" method="post" action="/panel/tickets/bulk">'
         + _hidden("csrf", csrf_token) + _hidden("return", return_to) + _hidden("all", ids)
         + '<input type="hidden" name="tids" value="">'
-        '<details><summary>' + icon("more", 18) + ' Групповые действия</summary>'
+        '<details class="ws-bulk-details"><summary>' + icon("more", 18) + ' Групповые действия</summary>'
         '<div class="ws-bulk-fields"><label class="ws-field"><span>Действие</span>'
         '<select class="ws-input" name="action">'
-        '<option value="assign">Назначить сотрудника</option><option value="status">Сменить статус</option>'
-        '<option value="pickup">Кабинет выдачи</option><option value="archive">В архив</option></select></label>'
-        '<label class="ws-field"><span>Куда</span><input class="ws-input" name="value" '
-        'placeholder="MAX ID, статус или кабинет"></label><button class="ws-btn" type="submit">Применить к отмеченным</button>'
-        '</div></details></form>'
+        '<option value="close">Закрыть обращения</option>'
+        '<option value="status">Сменить статус</option>'
+        '<option value="archive">В архив</option>'
+        '<option value="assign">Назначить сотрудника</option>'
+        '<option value="pickup">Кабинет выдачи</option></select></label>'
+        '<label class="ws-field"><span>Значение</span><input class="ws-input" name="value" '
+        'placeholder="в работе / закрыто / ID сотрудника / каб. 115"></label><button class="ws-btn" type="submit">Применить к отмеченным</button>'
+        '</div>'
+        '<p class="ws-field-hint" style="margin-top:6px">Для закрытия или архива поле «Значение» можно оставить пустым.</p>'
+        '</details></form>'
     )
     return form
 
@@ -365,7 +372,7 @@ def _delivery(row: Mapping) -> str:
     tone = "error" if state in {"failed", "forbidden", "blocked"} else "ok" if state == "delivered" else "muted"
     symbol = "warning" if tone == "error" else "check" if state in {"sent", "delivered"} else "clock"
     return (f'<span class="ws-delivery ws-delivery-{tone}">{icon(symbol, 16)}'
-            f'{labels.get(state, labels["unknown"])}</span>')
+            f'{_esc(labels.get(state, labels["unknown"]))}</span>')
 
 
 def _is_note(row: Mapping) -> bool:
@@ -528,17 +535,17 @@ def _form_open(base: str, ticket_id: str, detail: Mapping, mode: str, csrf_token
 
 
 def _textarea(detail: Mapping, mode: str, label: str, placeholder: str, required: bool = True) -> str:
-    return (f'<label class="ws-field ws-text-field" for="ws-{mode}-text"><span>{label}</span>'
-            f'<textarea class="ws-input ws-textarea" id="ws-{mode}-text" name="text" rows="5" '
-            f'placeholder="{placeholder}" maxlength="{4000 if mode == "reply" else 200}" '
-            f'data-ws-draft-field aria-describedby="ws-{mode}-hint"'
+    return (f'<label class="ws-field ws-text-field" for="ws-{_esc(mode)}-text"><span>{_esc(label)}</span>'
+            f'<textarea class="ws-input ws-textarea" id="ws-{_esc(mode)}-text" name="text" rows="5" '
+            f'placeholder="{_esc(placeholder)}" maxlength="{4000 if mode == "reply" else 200}" '
+            f'data-ws-draft-field aria-describedby="ws-{_esc(mode)}-hint"'
             f'{" required" if required else ""}>{_esc(_draft(detail, mode))}</textarea></label>')
 
 
 def _submit(action: str, label: str, primary: bool = False, symbol: str = "") -> str:
     return (f'<button class="ws-btn{" ws-btn-primary" if primary else " ws-btn-quiet"}" '
-            f'type="submit" name="action" value="{action}">'
-            + (icon(symbol, 18) if symbol else '') + f'{label}</button>')
+            f'type="submit" name="action" value="{_esc(action)}">'
+            + (icon(symbol, 18) if symbol else '') + f'{_esc(label)}</button>')
 
 
 def _composer(base: str, ticket: Mapping, detail: Mapping, actor: Mapping, csrf_token, operation_key, return_to: str) -> str:
@@ -576,6 +583,8 @@ def _composer(base: str, ticket: Mapping, detail: Mapping, actor: Mapping, csrf_
             reply += _submit("reply", "Ответить", True, "send")
         if "reply_close" in allowed:
             reply += _submit("reply_close", "Ответить и закрыть", False, "check")
+        if "close" in allowed:
+            reply += _submit("close", "Закрыть без ответа", False, "check")
         reply += '</div><p class="ws-draft-status ws-field-hint" data-ws-draft-status role="status" aria-live="polite"></p></form>'
     more = ""
     if "note" in allowed:

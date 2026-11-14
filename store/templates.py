@@ -1,4 +1,4 @@
-"""Шаблоны ответов сотрудника."""
+﻿"""Шаблоны ответов сотрудника."""
 
 import clock
 import database as db
@@ -34,6 +34,14 @@ async def add_template(title: str, text: str, category: str = "all", created_by:
 
 async def update_template_text(template_id: int, text: str) -> None:
     await db.run("UPDATE reply_templates SET text=? WHERE id=?", (as_str(text).strip()[:2000], int(template_id)))
+
+
+async def update_template(template_id: int, title: str, text: str, category: str = "all") -> None:
+    """Обновляет название, текст и категорию шаблона."""
+    await db.run(
+        "UPDATE reply_templates SET title=?, text=?, category=? WHERE id=?",
+        (as_str(title).strip()[:80], as_str(text).strip()[:2000], category or "all", int(template_id)),
+    )
 
 
 async def count_template_use(template_id: int) -> None:

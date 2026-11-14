@@ -471,27 +471,47 @@ async def update_ticket(ticket_id: int, actor_id: str = "", **fields) -> tuple[b
     return True, f"Обращение №{ticket_id} сохранено: {detail}"
 
 
+_STATUS_BULK_MAP = {
+    "новое": "new", "new": "new",
+    "в работе": "in_progress", "in_progress": "in_progress",
+    "принято": "accepted", "accepted": "accepted",
+    "готово": "ready", "ready": "ready",
+    "закрыто": "closed", "закрыть": "closed", "closed": "closed", "completed": "closed",
+    "отклонено": "rejected", "rejected": "rejected",
+    "в архиве": "archive", "archive": "archive",
+}
+
+
 async def bulk_update(ticket_ids: list, action: str, value: str = "",
                       actor_id: str = "") -> tuple[int, str]:
     """Массовые действия: назначить, сменить статус, поставить кабинет, убрать в архив."""
     done = 0
+    raw_val = as_str(value).strip()
     for raw in ticket_ids or []:
         try:
             ticket_id = int(raw)
         except (TypeError, ValueError):
             continue
-        if action == "assign":
-            ok, _ = await update_ticket(ticket_id, actor_id, target_admin_id=as_str(value))
+        if action == "close":
+            ok, _ = await update_ticket(ticket_id, actor_id, status="closed")
+        elif action == "assign":
+            target_uid = raw_val
+            if target_uid and not target_uid.isdigit():
+                admin_row = await db.one("SELECT user_id FROM admins WHERE full_name LIKE ?", (f"%{target_uid}%",))
+                if admin_row:
+                    target_uid = str(admin_row["user_id"])
+            ok, _ = await update_ticket(ticket_id, actor_id, target_admin_id=target_uid)
         elif action == "status":
-            ok, _ = await update_ticket(ticket_id, actor_id, status=as_str(value))
+            norm_status = _STATUS_BULK_MAP.get(raw_val.lower(), raw_val)
+            ok, _ = await update_ticket(ticket_id, actor_id, status=norm_status)
         elif action == "pickup":
-            ok, _ = await update_ticket(ticket_id, actor_id, pickup_place=as_str(value))
+            ok, _ = await update_ticket(ticket_id, actor_id, pickup_place=raw_val)
         elif action == "archive":
             ok, _ = await archive_ticket(ticket_id, actor_id)
         else:
             return done, f"Неизвестное действие: {action}"
         done += int(bool(ok))
-    labels = {"assign": "назначено", "status": "статус изменён",
+    labels = {"close": "закрыто", "assign": "назначено", "status": "статус изменён",
               "pickup": "кабинет обновлён", "archive": "в архиве"}
     return done, f"Обращений обработано: {done} ({labels.get(action, action)})"
 

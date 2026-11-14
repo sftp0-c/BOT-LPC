@@ -34,3 +34,4 @@ schedules/
 .idea/
 .vscode/
 
+docker-compose.override.yml

@@ -33,6 +33,7 @@ from utils import (
     has_position,
     norm_position,
     person_label,
+    short_name,
     position_group,
     position_label,
     short,
@@ -558,6 +559,8 @@ async def cb_ticket_more(x, arg):
     rows += [changes[i: i + 2] for i in range(0, len(changes), 2)]
     if can_archive:
         rows.append([btn(ARCHIVE_BTN, f"tarch:{tid}")])
+    if as_str(t["status"]) not in CLOSED_STATUSES:
+        rows.append([btn("🔒 Закрыть тихо", f"tclose:{tid}")])
     if can_delete:
         rows.append([btn("🗑 Удалить", f"tdel:{tid}")])
     await api.send(x, f"🔧 Ещё для обращения №{tid}", [*rows, [btn("↩️ К обращению", f"t:{tid}")], *BACK])
@@ -1825,6 +1828,120 @@ async def cb_template_more(x, arg):
     if not t or not staff_side:
         return await api.send(x, "Обращение не найдено.", BACK)
     await api.send(x, "Допишите текст — он уйдёт студенту после шаблона. Или /cancel.")
+
+
+@callback("write_student")
+async def cb_staff_write_student(x, arg):
+    a = await admin_of(x)
+    if not a:
+        return await api.send(x, "Доступно только сотрудникам.", BACK)
+    await db.set_state(x, "write_student_target")
+    await api.send(
+        x,
+        "✉️ Написать студенту\n\n"
+        "Введите ФИО, группу или MAX ID студента для поиска\n"
+        "(например: «Иванов ис-21», «Петров» или «300»), либо /cancel:",
+        BACK,
+    )
+
+
+@callback("wstud")
+async def cb_staff_pick_student(x, arg):
+    a = await admin_of(x)
+    if not a:
+        return await api.send(x, "Доступно только сотрудникам.", BACK)
+    uid = as_str(arg).strip()
+    u = await repo.get_user(uid)
+    if not u:
+        matches = await repo.find_students(uid)
+        u = matches[0] if matches else {"user_id": uid, "full_name": f"Студент {uid}", "group_code": "—"}
+    name = _row_value(u, "full_name") or f"Студент {uid}"
+    group = _row_value(u, "group_code") or "—"
+    await db.set_state(x, "write_student_text", {"student_id": uid, "student_name": name, "group": group})
+    await api.send(
+        x,
+        f"👤 Получатель: {name} ({group}) [ID {uid}]\n\n"
+        "Введите текст сообщения для студента (или /cancel):",
+        BACK,
+    )
+
+
+@state("write_student_target")
+async def st_staff_write_student_target(x, text, p):
+    target = as_str(text).strip()
+    if not target:
+        return await api.send(x, "Введите ФИО, группу или MAX ID студента (или /cancel):")
+    matches = await repo.find_students(target)
+    if not matches:
+        return await api.send(
+            x,
+            f"❌ Студент по запросу «{target}» не найден.\n\n"
+            "Попробуйте ввести часть фамилии, группу или точный MAX ID (либо /cancel):",
+            BACK,
+        )
+    if len(matches) == 1:
+        s = matches[0]
+        uid = str(s["user_id"])
+        name = _row_value(s, "full_name") or f"Студент {uid}"
+        group = _row_value(s, "group_code") or "—"
+        await db.set_state(x, "write_student_text", {"student_id": uid, "student_name": name, "group": group})
+        return await api.send(
+            x,
+            f"👤 Получатель: {name} ({group}) [ID {uid}]\n\n"
+            "Введите текст сообщения для студента (или /cancel):",
+            BACK,
+        )
+
+    buttons = []
+    lines = [f"🔍 Найдено студентов: {len(matches)}.\nНажмите на нужного:"]
+    for i, s in enumerate(matches[:6], 1):
+        uid = str(s["user_id"])
+        name = _row_value(s, "full_name") or f"Студент {uid}"
+        group = _row_value(s, "group_code") or "—"
+        lines.append(f"{i}. {name} — {group} (ID {uid})")
+        btn_label = f"{i}. {short_name(name, 12)}"[:18]
+        buttons.append([btn(btn_label, f"wstud:{uid}")])
+    buttons.append([btn("↩️ Отмена", "staff")])
+
+    if len(matches) > 6:
+        lines.append(f"\n...и ещё {len(matches) - 6}. Уточните запрос (например: «{matches[0]['full_name'].split()[0]} {matches[0]['group_code']}»).")
+
+    await api.send(x, "\n".join(lines), buttons)
+
+
+@state("write_student_text")
+async def st_staff_write_student_text(x, text, p):
+    content = as_str(text).strip()[:3000]
+    if not content:
+        return await api.send(x, "Текст сообщения не может быть пустым. Введите текст (или /cancel):")
+    await db.clear_state(x)
+    student_id = p.get("student_id")
+    ticket_id = await repo.create_ticket(student_id, x, "feedback", content, "")
+    await repo.add_ticket_message(ticket_id, x, "staff", content)
+    await repo.set_ticket_status(ticket_id, "accepted", actor_id=x)
+    a = await admin_of(x)
+    staff_name = as_str(a["full_name"]) if a else "Сотрудник колледжа"
+    await notify(
+        student_id,
+        f"📩 Новое сообщение от сотрудника колледжа ({staff_name}):\n\n{content}",
+        [[btn("✍️ Ответить", f"rp:{ticket_id}"), btn("📂 Открыть", f"t:{ticket_id}")]],
+    )
+    await api.send(x, f"✅ Сообщение отправлено студенту. Создано обращение №{ticket_id}.",
+                   [[btn("📂 Открыть", f"t:{ticket_id}"), *BACK]])
+
+
+@callback("tclose")
+async def cb_ticket_close_silent(x, arg):
+    """Закрыть обращение без отправки сообщения студенту."""
+    tid = to_int(arg)
+    t, staff_side = await load_ticket(x, tid)
+    if not t or not staff_side:
+        return await api.send(x, "Обращение не найдено.", BACK)
+    if as_str(t["status"]) in CLOSED_STATUSES:
+        return await api.send(x, f"Обращение №{tid} уже закрыто.", [[btn("↩️ К списку", "staff")]])
+    await repo.set_ticket_status(tid, "completed", actor_id=x)
+    await repo.log_ticket_event(tid, x, "status", "закрыто сотрудником (без ответа)")
+    await api.send(x, f"✅ Обращение №{tid} закрыто без ответа.", [[btn("↩️ К списку", "staff")]])
 
 
 # ── «Ответить и закрыть» ───────────────────────────────────────────────────

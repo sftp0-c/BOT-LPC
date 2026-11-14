@@ -27,7 +27,6 @@ import re
 from urllib.parse import quote
 
 import clock
-import database as db
 import repository as repo
 from fastapi import HTTPException, Request
 from fastapi.responses import Response
@@ -158,12 +157,7 @@ def link(base: str, **params) -> str:
 
 async def table_names() -> list:
     """Все таблицы базы, кроме служебных sqlite_*."""
-    rows = await db.many(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-    )
-    return [as_str(row["name"]) for row in rows
-            if not as_str(row["name"]).startswith("staff_web_")
-            and row["name"] not in ("workspace_operations", "ticket_files", "public_feedback_deleted_nonces")]
+    return await repo.data_table_names()
 
 
 async def known_table(name: str) -> str:
@@ -176,28 +170,15 @@ async def known_table(name: str) -> str:
 
 async def table_columns(name: str) -> list:
     """PRAGMA table_info: имя, тип, NOT NULL, значение по умолчанию, ключ."""
-    rows = await db.many(f"PRAGMA table_info({ident(name)})")
-    if name == "audit_log":
-        # Старые поля могут содержать переписку и сетевые данные: не показываем,
-        # не ищем и не выгружаем их; содержимое базы при этом не меняется.
-        safe = {"id", "created_at", "user_id", "role", "action", "target_type", "target_id", "result"}
-        rows = [row for row in rows if row["name"] in safe]
-    if name == "public_feedback":
-        rows = [row for row in rows if row["name"] != "submission_nonce"]
-    if name == "tickets":
-        rows = [row for row in rows if row["name"] != "workspace_revision"]
-    return [{"name": as_str(row["name"]), "type": as_str(row["type"]),
-             "notnull": bool(row["notnull"]), "default": as_str(row["dflt_value"]),
-             "pk": bool(row["pk"]), "time": is_time_column(row["name"])}
-            for row in rows]
+    return await repo.data_table_columns(name)
 
 
 async def table_sql(name: str) -> str:
     """Текст CREATE TABLE; его же показываем в разделе и он отвечает про rowid."""
-    row = await db.one("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (name,))
-    if not row:
+    sql = await repo.data_table_sql(name)
+    if sql is None:
         raise HTTPException(status_code=404, detail="Такой таблицы в базе нет")
-    return as_str(row["sql"])
+    return sql
 
 
 def has_rowid(sql: str) -> bool:
@@ -212,7 +193,7 @@ async def row_count(name: str) -> int:
     таблице: объём данных и время последней правки считать на каждый поиск
     незачем.
     """
-    return to_int((await db.one(f"SELECT COUNT(*) n FROM {ident(name)}"))["n"])
+    return await repo.data_row_count(name)
 
 
 async def table_stats(name: str, columns: list, has_rowid: bool) -> dict:
@@ -244,7 +225,7 @@ async def table_stats(name: str, columns: list, has_rowid: bool) -> dict:
               if c["name"] in ("created_at", "updated_at")]
     if has_rowid:
         parts.append("MAX(rowid) newest")
-    row = await db.one(f"SELECT {', '.join(parts)} FROM {ident(name)}")
+    row = await repo.data_table_stats_raw(name, parts)
     got = row.keys()
     stats["size_text"] = human_bytes(to_int(row["payload"]))
     stamps = [as_str(row[key]) for key in ("created_at", "updated_at")
@@ -292,8 +273,7 @@ async def fetch_rows(name: str, columns: list, has_rowid: bool, sort: str, direc
         order += ", rowid"
     # ключ строки нужен ссылке «№» и поиску: у таблицы без rowid его не будет
     prefix = "rowid AS _rid, " if has_rowid else ""
-    return await db.many(f"SELECT {prefix}* FROM {ident(name)}{where}{order} LIMIT ? OFFSET ?",
-                         params + (max(1, int(limit)), max(0, int(offset))))
+    return await repo.data_fetch_rows(name, prefix, where, order, params, limit, offset)
 
 
 # ── снимок базы перед опасным действием ──────────────────────────────────────
@@ -304,7 +284,7 @@ async def snapshot(note: str) -> str:
     равно выполняется, но в журнал падает ошибка, а не молчание).
     """
     try:
-        path = await db.backup_to()
+        path = await repo.backup_database()
     except Exception as exc:  # noqa: BLE001 - снимок не должен ронять действие
         log.error("панель «Данные»: снимок базы перед «%s» не создан (%s)", note, type(exc).__name__)
         return ""
@@ -388,7 +368,7 @@ def _search_hits(hits: list, needle: str) -> str:
                 f'ни в одной таблице</p>')
     found = [hit for hit in hits if not hit["skipped"]]
     rows = "".join(
-        f'<tr><td><a href="/panel/data/table/{quote(hit["table"])}/row/{hit["rowid"]}">'
+        f'<tr><td><a href="/panel/data/table/{quote(hit["table"])}/row/{quote(str(hit["rowid"]))}">'
         f'<code>{esc(hit["table"])}</code></a></td><td>{esc(hit["rowid"])}</td>'
         f'<td class="small mut">{esc(hit["column"])}</td><td><code>{esc(hit["value"])}</code></td></tr>'
         for hit in found)
@@ -436,11 +416,22 @@ async def search_everywhere(needle: str) -> list:
                 sql = (f"SELECT rowid rid, {ident(column['name'])} val FROM {ident(name)} "
                        f"WHERE {ident(column['name'])} LIKE ? ESCAPE '\\' LIMIT ?")
                 args = (like, SEARCH_HITS)
-            for row in await db.many(sql, args):
+            for row in await repo.data_search_query(sql, args):
                 hits.append({"table": name, "rowid": as_str(row["rid"]),
                              "column": column["name"], "value": as_str(row["val"])[:120],
                              "skipped": False})
     return hits
+
+
+def build_data_table_viewmodel(name: str, info: dict, sort: str, direction: str,
+                               columns: list[dict], total: int, pages: int,
+                               page_no: int, rows: list[dict], keep: dict, base: str) -> dict:
+    """Подготовка view-model для страницы таблицы: данные отдельно от HTML-разметки."""
+    return {
+        "name": name, "info": info, "sort": sort, "direction": direction,
+        "columns": columns, "total": total, "pages": pages, "page_no": page_no,
+        "rows": rows, "keep": keep, "base": base,
+    }
 
 
 # ── просмотр таблицы ─────────────────────────────────────────────────────────
@@ -455,7 +446,7 @@ async def data_table(request: Request, name: str, page_no: int = 1, sort: str = 
     sort = sort if sort in names else ""
     direction = "DESC" if as_str(dir).lower() == "desc" else "ASC"
     where, params = filters_of(columns, col, eq, fcol, like)
-    total = to_int((await db.one(f"SELECT COUNT(*) n FROM {ident(name)}{where}", params))["n"])
+    total = await repo.data_filtered_count(name, where, params)
     pages = pages_of(total, DATA_PAGE)
     page_no = max(1, min(to_int(page_no, 1), pages))
     rows = await fetch_rows(name, columns, info["rowid"], sort, direction, where, params,
@@ -463,6 +454,7 @@ async def data_table(request: Request, name: str, page_no: int = 1, sort: str = 
     base = f"/panel/data/table/{quote(name)}"
     keep = {"sort": sort, "dir": "desc" if direction == "DESC" else "asc",
             "col": col, "eq": eq, "fcol": fcol, "like": like}
+    _vm = build_data_table_viewmodel(name, info, sort, direction, columns, total, pages, page_no, rows, keep, base)
 
     def head_link(column: str) -> str:
         if column == sort:
@@ -475,8 +467,8 @@ async def data_table(request: Request, name: str, page_no: int = 1, sort: str = 
                    f"<div class='small mut'>{esc(c['type'] or '—')}</div></th>" for c in columns)
     body_rows = "".join(
         '<tr><td class="data-key">' + (
-            f'№{row["_rid"]}' if name in READ_ONLY_TABLES else
-            f'<a href="/panel/data/table/{quote(name)}/row/{row["_rid"]}">№{row["_rid"]}</a>'
+            f'№{esc(row["_rid"])}' if name in READ_ONLY_TABLES else
+            f'<a href="/panel/data/table/{quote(name)}/row/{quote(str(row["_rid"]))}">№{esc(row["_rid"])}</a>'
         ) + '</td>'
         + "".join(f'<td>{"—" if row[c["name"]] is None else esc(row[c["name"]])}</td>'
                   for c in columns) + "</tr>"
@@ -628,13 +620,13 @@ async def data_row(request: Request, name: str, rowid: str):
     info = await table_info(name)
     if not info["rowid"] or not as_str(rowid).isdigit():
         raise HTTPException(status_code=404, detail="Такой строки нет")
-    found = await db.one(f"SELECT rowid AS rid, * FROM {ident(name)} WHERE rowid=?", (int(rowid),))
+    found = await repo.data_get_row(name, int(rowid), prefix_rowid=True)
     if not found:
         raise HTTPException(status_code=404, detail="Такой строки нет")
     row = {key: found[key] for key in found.keys()}
     row["rowid"] = row.pop("rid")
     base = f"/panel/data/table/{quote(name)}"
-    back = f"{base}/row/{rowid}"
+    back = f"{base}/row/{quote(str(rowid))}"
     keys = "".join(f'<tr><th class="col-key">{esc(c["name"])}</th>'
                    f'<td>{esc(as_str(row[c["name"]]) or "—")}</td></tr>'
                    for c in info["columns"] if c["pk"])
@@ -685,7 +677,7 @@ async def _danger_card(request: Request, name: str, row: dict, back: str) -> str
                      f'есть правила проекта. Ниже — кнопки, которые зовут репозиторий.</p>')
     else:
         parts.append(_confirm_form(
-            request, f"/panel/data/table/{quote(name)}/row/{row['rowid']}/delete", name,
+            request, f"/panel/data/table/{quote(name)}/row/{quote(str(row['rowid']))}/delete", name,
             f"Удалить строку №{esc(as_str(row['rowid']))} из таблицы {esc(name)}",
             "Строка исчезнет из базы. Отменить это можно только из резервной копии.",
             f'{icon("delete", 16)} Удалить строку', "btn-bad", back))
@@ -784,7 +776,7 @@ async def data_row_save(request: Request, name: str, rowid: str):
     back = _safe_back(data, f"/panel/data/table/{quote(name)}")
     if not as_str(rowid).isdigit():
         raise HTTPException(status_code=404, detail="Такой строки нет")
-    row = await db.one(f"SELECT * FROM {ident(name)} WHERE rowid=?", (int(rowid),))
+    row = await repo.data_get_row(name, int(rowid))
     if not row:
         raise HTTPException(status_code=404, detail="Такой строки нет")
     columns = await table_columns(name)
@@ -815,8 +807,7 @@ async def data_row_save(request: Request, name: str, rowid: str):
         return redirect(back)
     path = await snapshot(f"правка {name} №{rowid}")
     try:
-        await db.run(f"UPDATE {ident(name)} SET {', '.join(sets)} WHERE rowid=?",
-                     tuple(params) + (int(rowid),))
+        await repo.data_update_row(name, int(rowid), sets, tuple(params))
     except Exception as exc:  # noqa: BLE001 - причину показываем сис-админу, а не 500
         log.error("панель «Данные»: правка %s №%s не удалась (%s)", name, rowid, type(exc).__name__)
         flash(f"!Правка не сохранена: {exc}")
@@ -858,8 +849,7 @@ async def data_row_create(request: Request, name: str):
         return redirect(f"/panel/data/table/{quote(name)}/row/new")
     path = await snapshot(f"новая строка {name}")
     try:
-        rowid = await db.run(f"INSERT INTO {ident(name)}({', '.join(keys)}) "
-                             f"VALUES({', '.join('?' * len(keys))})", tuple(params))
+        rowid = await repo.data_insert_row(name, keys, tuple(params))
     except Exception as exc:  # noqa: BLE001 - уникальность и внешние ключи видны сис-админу
         log.error("панель «Данные»: вставка в %s не удалась (%s)", name, type(exc).__name__)
         flash(f"!Строка не создана: {exc}")
@@ -887,14 +877,14 @@ async def data_row_delete(request: Request, name: str, rowid: str):
         return redirect(back)
     if not as_str(rowid).isdigit():
         raise HTTPException(status_code=404, detail="Такой строки нет")
-    row = await db.one(f"SELECT * FROM {ident(name)} WHERE rowid=?", (int(rowid),))
+    row = await repo.data_get_row(name, int(rowid))
     if not row:
         raise HTTPException(status_code=404, detail="Такой строки нет")
     if not _confirmed(data, name):
         flash(f"!Слово «{name}» не введено — строка не удалена.")
         return redirect(f"/panel/data/table/{quote(name)}/row/{rowid}")
     path = await snapshot(f"удаление {name} №{rowid}")
-    await db.run(f"DELETE FROM {ident(name)} WHERE rowid=?", (int(rowid),))
+    await repo.data_delete_row(name, int(rowid))
     fields = ", ".join(row.keys())
     log.warning("панель «Данные»: удалена строка %s №%s сис-админом %s; поля: %s", name, rowid, actor, fields)
     await repo.log_action(actor, "удалена строка данных", f"{name} №{rowid}; поля: {fields}")

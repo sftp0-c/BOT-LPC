@@ -192,7 +192,7 @@ async def _schedule_card(person: dict, group: str) -> str:
 <table>{_table(rows)}</table>
 <p class="small mut wb-tools">
 <a class="btn btn-grey" href="/panel/schedules">{icon("schedules", 16)} Все расписания</a>
-{f'<a class="btn btn-grey" href="/panel/schedules/{quote(esc(group))}">{icon("chevron-right", 16)} Пары группы {esc(group)}</a>' if group else ''}
+{f'<a class="btn btn-grey" href="/panel/schedules/{quote(group)}">{icon("chevron-right", 16)} Пары группы {esc(group)}</a>' if group else ''}
 </p>
 <p class="small mut">Подписку студент ставит себе сам кнопкой в боте: без неё
 уведомлений об изменении расписания ему не придёт. Разбор делает сис-админ на

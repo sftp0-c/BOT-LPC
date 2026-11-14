@@ -846,6 +846,15 @@ def _people_table(rows) -> str:
             f"{''.join(body) or empty}</table>")
 
 
+def build_people_viewmodel(user: str, kind: str, q: str, page_no: int, pages: int,
+                           total: int, rows: list, stats: str) -> dict:
+    """Подготовка view-model для списка людей: данные отдельно от HTML-разметки."""
+    return {
+        "user": user, "kind": kind, "q": q, "page_no": page_no,
+        "pages": pages, "total": total, "rows": rows, "stats": stats,
+    }
+
+
 @router.get("/people")
 async def people_list(request: Request, kind: str = "", q: str = "", page_no: int = 1):
     """Реестр всех, кто писал боту: фильтр, поиск и постраничный просмотр.
@@ -864,6 +873,7 @@ async def people_list(request: Request, kind: str = "", q: str = "", page_no: in
         f"{repo.CONTACT_KIND_LABELS[code]}: {overview[key]}"
         for code, key in (("student", "students"), ("staff", "staff"), ("guest", "guests"))
     )
+    _vm = build_people_viewmodel(user, kind, q, page_no, pages, total, rows, stats)
     filters = f"""
 <form method="get" action="/panel/people" class="grid" style="margin-bottom:14px"
  data-filters="kind,q" data-filter-key="people:{esc(user)}"{"" if (kind or q) else ' data-filters-saved="1"'}>
@@ -956,10 +966,10 @@ async def person_card(request: Request, user_id: str):
         remove = f"""
 <div class="card"><h2>{icon("warning", 20)} Удаление</h2>
 <p class="small mut">{esc(delete_note)}</p>
-{_action_form(request, f'/panel/people/{user_id}/delete',
+{_action_form(request, f'/panel/people/{esc(user_id)}/delete',
               f'{icon("delete", 16)} Удалить пользователя',
               confirm_text=f"Удалить {name} ({user_id})? Действие необратимо.")}
-{_action_form(request, f'/panel/people/{user_id}/delete',
+{_action_form(request, f'/panel/people/{esc(user_id)}/delete',
               f'{icon("delete", 16)} Удалить вместе с обращениями',
               '<input type="hidden" name="with_tickets" value="1">',
               f"Удалить {name} вместе с {tickets_count} обращениями и перепиской? Действие необратимо.",

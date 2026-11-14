@@ -18,6 +18,14 @@
     if (announcer && announcer.textContent !== message) { announcer.textContent = message; }
   }
 
+  root.addEventListener("change", function (event) {
+    if (event.target && event.target.hasAttribute("data-select-all-tickets")) {
+      var isChecked = event.target.checked;
+      var boxes = root.querySelectorAll('input[form="ws-bulk-form"][name="tids"]');
+      boxes.forEach(function (box) { box.checked = isChecked; });
+    }
+  });
+
   root.addEventListener("submit", function (event) {
     var form = event.target;
     if (!form || !form.classList || !form.classList.contains("ws-bulk-admin")) { return; }

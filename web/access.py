@@ -1,6 +1,5 @@
 ﻿"""Коды сотрудников, заявки на роль и приглашение по ссылке (без входа в панель)."""
 import config
-import database as db
 import repository as repo
 from fastapi import Request
 from fastapi.responses import HTMLResponse
@@ -124,8 +123,7 @@ async def join_page(request: Request, code: str):
             "Такого кода нет. Возможно, в ссылке опечатка или код уже удалён. "
             "Попросите сис-админа выдать новый.",
             "", "")
-    expires = await db.one("SELECT expires_at, full_name, user_id FROM staff_invites WHERE code=?",
-                           (normalized,))
+    expires = await repo.get_invite(normalized)
     until = as_str(expires["expires_at"]) if expires else ""
     hint = ""
     if state == "used":

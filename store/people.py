@@ -322,6 +322,92 @@ async def student_ids_by_name(needle: str, limit: int = 200) -> set:
     )
     return {as_str(row["user_id"]) for row in rows}
 
+async def find_students(query: str, limit: int = 20) -> list[dict]:
+    """Поиск зарегистрированных студентов по ФИО, коду группы или MAX ID.
+
+    Поддерживает составные запросы вида «Иванов ис-21», «Иванов», «ис-21», «300».
+    Каждый токен запроса должен сопоставиться хотя бы с одним из полей.
+    """
+    clean = as_str(query).strip()
+    if not clean:
+        return []
+    tokens = [t.strip().lower() for t in clean.split() if t.strip()]
+    if not tokens:
+        return []
+
+    conds = []
+    params = []
+    for token in tokens:
+        like = _like(token)
+        conds.append("(lower(u.full_name) LIKE lower(?) ESCAPE '\\' OR lower(u.group_code) LIKE lower(?) ESCAPE '\\' OR u.user_id LIKE ?)")
+        params.extend([like, like, f"%{token}%"])
+
+    sql = (
+        f"SELECT u.user_id, u.full_name, u.group_code FROM users u "
+        f"WHERE {' AND '.join(conds)} "
+        f"ORDER BY u.full_name LIMIT ?"
+    )
+    params.append(max(1, int(limit)))
+    rows = await db.many(sql, params)
+    res = [
+        {"user_id": as_str(r["user_id"]), "full_name": as_str(r["full_name"]), "group_code": as_str(r["group_code"])}
+        for r in rows
+    ]
+    if not res and clean.isdigit():
+        contact = await db.one("SELECT user_id, display_name FROM contacts WHERE user_id = ?", [clean])
+        if contact:
+            res.append({"user_id": clean, "full_name": as_str(contact["display_name"] or f"Студент {clean}"), "group_code": "—"})
+        else:
+            res.append({"user_id": clean, "full_name": f"Студент {clean}", "group_code": "—"})
+    return res
+
+
+async def find_people(query: str, limit: int = 50) -> list[dict]:
+    """Поиск людей (студентов, сотрудников, контактов) по ФИО, группе/должности или MAX ID."""
+    clean = as_str(query).strip()
+    if not clean:
+        return []
+    tokens = [t.strip().lower() for t in clean.split() if t.strip()]
+    if not tokens:
+        return []
+
+    conds = []
+    params = []
+    for token in tokens:
+        like = _like(token)
+        conds.append(
+            "(lower(COALESCE(u.full_name, a.full_name, c.display_name, '')) LIKE lower(?) ESCAPE '\\' "
+            "OR lower(COALESCE(u.group_code, a.position, '')) LIKE lower(?) ESCAPE '\\' "
+            "OR c.user_id LIKE ?)"
+        )
+        params.extend([like, like, f"%{token}%"])
+
+    sql = (
+        "SELECT c.user_id, "
+        "COALESCE(u.full_name, a.full_name, c.display_name, 'ID ' || c.user_id) full_name, "
+        "COALESCE(u.group_code, a.position, '') role_or_group, "
+        "CASE WHEN a.user_id IS NOT NULL THEN 'staff' "
+        "     WHEN u.user_id IS NOT NULL THEN 'student' "
+        "     ELSE 'guest' END kind "
+        "FROM contacts c "
+        "LEFT JOIN users u ON u.user_id=c.user_id "
+        "LEFT JOIN admins a ON a.user_id=c.user_id "
+        f"WHERE {' AND '.join(conds)} "
+        "ORDER BY full_name LIMIT ?"
+    )
+    params.append(max(1, int(limit)))
+    rows = await db.many(sql, params)
+    return [
+        {
+            "user_id": as_str(r["user_id"]),
+            "full_name": as_str(r["full_name"]),
+            "role_or_group": as_str(r["role_or_group"]),
+            "kind": as_str(r["kind"]),
+        }
+        for r in rows
+    ]
+
+
 
 def _mentions(details, user_id: str) -> bool:
     """Упоминается ли в строке именно этот ID, а не его начало или продолжение.

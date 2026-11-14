@@ -155,7 +155,7 @@ async def api_health(request: Request):
     """Диагностика панели доступна только вошедшему сис-админу."""
     await require_user(request)
     try:
-        await db.one("SELECT 1")
+        await repo.ping_database()
         database_ok = True
     except Exception as exc:  # noqa: BLE001 — в диагностике важно показать саму ошибку
         log.error("health: база недоступна: %s", exc)

@@ -1,11 +1,11 @@
-"""Рассылки объявлений студентам (все или одной группе)."""
+﻿"""Рассылки объявлений студентам (все или одной группе)."""
 import database as db
 import repository as repo
 from handlers.admin import STAFF_ROLES, office_of, role_of
 from handlers.common import BACK, admin_of, api, can_broadcast, is_super, notify, spawn
 from handlers.registry import callback, state
 from max_api import btn
-from utils import as_str, norm_group
+from utils import as_str, norm_group, short_name
 
 HEADLINE = "📢 Объявление колледжа:"
 
@@ -43,7 +43,11 @@ async def cb_broadcast(x, arg):
     if not can_broadcast(await admin_of(x)):
         return await api.send(x, "У вас нет права на рассылку.", BACK)
     await api.send(x, "📢 Кому отправить?",
-                   [[btn("👥 Всем студентам", "bcaud:all")], [btn("🎓 Одной группе", "bcaud:group")], *BACK])
+                   [[btn("👥 Всем студентам", "bcaud:all")],
+                    [btn("👨‍🏫 Преподавателям", "bcaud:staff")],
+                    [btn("🎓 Одной группе", "bcaud:group")],
+                    [btn("👤 Отдельным лицам", "bcaud:custom")],
+                    *BACK])
 
 
 @callback("bcaud")
@@ -53,8 +57,43 @@ async def cb_broadcast_audience(x, arg):
     if arg == "group":
         await db.set_state(x, "bc_group")
         return await api.send(x, "Введите код группы (или /cancel).")
+    if arg == "staff":
+        n = len(await repo.audience_ids("staff"))
+        await db.set_state(x, "bc_text", {"aud": "staff"})
+        return await api.send(x, f"Преподаватели и сотрудники: получателей {n}. Введите текст рассылки (или /cancel).")
+    if arg == "custom":
+        await db.set_state(x, "bc_custom")
+        return await api.send(x, "👤 Введите фамилии получателей через запятую или их MAX ID (например: «Ковалевский, Иванов» или «12345, 67890») либо /cancel:")
     await db.set_state(x, "bc_text", {"aud": "all"})
     await api.send(x, "Введите текст рассылки для всех студентов (или /cancel).")
+
+
+@state("bc_custom")
+async def st_bc_custom(x, text, p):
+    if not can_broadcast(await admin_of(x)):
+        return await db.clear_state(x)
+    raw = as_str(text).strip()
+    aud = f"custom:{raw}"
+    ids = await repo.audience_ids(aud)
+    if not ids:
+        return await api.send(
+            x,
+            "❌ Не найдено ни одного получателя по запросу. "
+            "Введите фамилии через запятую или MAX ID (или /cancel):",
+        )
+    names = []
+    for uid in ids[:5]:
+        u = await repo.get_user(uid) or await repo.get_admin(uid)
+        if u:
+            u_name = as_str(u['full_name'] if 'full_name' in u.keys() else '')
+            names.append(f"{short_name(u_name)} ({uid})")
+        else:
+            names.append(f"ID {uid}")
+    summary = ", ".join(names)
+    if len(ids) > 5:
+        summary += f" и ещё {len(ids) - 5}"
+    await db.set_state(x, "bc_text", {"aud": aud})
+    await api.send(x, f"✅ Выбранные получатели ({len(ids)}): {summary}.\n\nВведите текст рассылки (или /cancel):")
 
 
 @state("bc_group")
@@ -76,7 +115,10 @@ async def st_bc_text(x, text, p):
     text = text.strip()[:3500]
     n = len(await repo.audience_ids(p["aud"]))
     await db.set_state(x, "bc_confirm", {"aud": p["aud"], "text": text})
-    where = "всем студентам" if p["aud"] == "all" else f"группе {p['aud']}"
+    where = ("всем студентам" if p["aud"] == "all"
+             else "преподавателям и сотрудникам" if p["aud"] == "staff"
+             else "выбранным лицам" if p["aud"].startswith("custom:")
+             else f"группе {p['aud']}")
     preview = headline(text, await sender_signature(x))
     await api.send(x, f"Отправить {where} ({n} чел.)?\n\n{preview}",
                    [[btn("✅ Отправить", "bcgo"), btn("❌ Отмена", "home")]])

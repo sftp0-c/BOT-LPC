@@ -19,7 +19,7 @@ store.staff - сотрудники, store.groups - справочник груп
 from store import (  # noqa: F401 - фасад переэкспортирует пакет store
     # store.access
     attempts_count, attempts_log, clear_attempts, create_invite, create_staff_request,
-    delete_invite, get_staff_request, invite_state, list_invites, note_attempt, set_invite_ttl,
+    delete_invite, get_invite, get_staff_request, invite_state, list_invites, note_attempt, set_invite_ttl,
     set_staff_request_status, staff_requests, use_invite,
     # store.analytics
     audience_ids, broadcast_history, log_broadcast, response_speed, staff_load, stats_overview,
@@ -36,13 +36,16 @@ from store import (  # noqa: F401 - фасад переэкспортирует 
     known_groups, list_groups, rename_group, resolve_group, set_group_active, suggest_groups,
     upsert_group,
     # store.panel
-    _duration_ru, admin_today, all_admins, all_settings, data_gaps, dedupe_stats,
-    event_feed_label, list_users, list_users_count, recent_ticket_events,
+    _duration_ru, admin_today, all_admins, all_settings, backup_database, data_delete_row,
+    data_fetch_rows, data_filtered_count, data_gaps, data_get_row, data_insert_row,
+    data_row_count, data_search_query, data_table_columns, data_table_names, data_table_sql,
+    data_table_stats_raw, data_update_row, dedupe_stats, event_feed_label, faq_counts,
+    list_users, list_users_count, ping_database, recent_ticket_events, toggle_faq_item,
     # store.people
     CONTACT_KINDS, CONTACT_KIND_LABELS, KIND_TITLES, consent_of, contact_full_name,
 contact_kind, delete_user, get_user, give_consent, is_registered,
     people, people_count,
-    people_overview, set_user_group, set_user_name, student_ids_by_name, student_open_tickets_count, touch_contact,
+    people_overview, set_user_group, set_user_name, find_people, find_students, student_ids_by_name, student_open_tickets_count, touch_contact,
     upsert_user, user_card, users_without_consent,
     # store.schedules
     all_parsed_groups, delete_schedule, delete_schedule_subscription, get_schedule,
@@ -63,7 +66,7 @@ contact_kind, delete_user, get_user, give_consent, is_registered,
     prune_audit, revoke_sysadmin, revoked_sysadmins, sysadmin_count,
     # store.templates
     add_template, count_template_use, delete_template, get_template, list_templates,
-    templates_count, update_template_text,
+    templates_count, update_template, update_template_text,
     # store.tickets
     add_internal_note, add_ticket_message, admin_tickets, archive_count, archive_ticket,
     bulk_update, create_ticket, delete_ticket, forward_ticket, get_ticket, latest_message_roles, latest_message_states,

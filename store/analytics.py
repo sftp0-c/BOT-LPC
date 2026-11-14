@@ -1,4 +1,4 @@
-"""Рассылки, сводная статистика и числа для диаграмм панели.
+﻿"""Рассылки, сводная статистика и числа для диаграмм панели.
 
 Все запросы считают в SQLite: панель показывает картинку по этим числам, а
 не собирает строки в Python - иначе объём данных упирается в память."""
@@ -13,11 +13,46 @@ from .people import people_overview
 
 # ── рассылки и статистика ─────────────────────────────────────────────────────
 async def audience_ids(audience: str) -> list:
-    """Список user_id получателей: 'all' или код группы."""
+    """Список user_id получателей: 'all', 'staff', 'custom:...' или код группы."""
+    aud = (audience or "").strip()
+    if aud in ("staff", "teachers", "преподаватели", "сотрудники"):
+        admins = await db.many("SELECT user_id FROM admins WHERE role_type IN ('staff', 'sysadmin', 'owner', 'superadmin')")
+        return [str(row["user_id"]) for row in admins if row["user_id"]]
+    if aud.startswith("custom:") or aud.startswith("users:"):
+        raw_list = aud.split(":", 1)[1]
+        parts = [part.strip() for part in raw_list.replace(";", ",").split(",") if part.strip()]
+        resolved: list[str] = []
+        for part in parts:
+            subtokens = part.split()
+            if subtokens and all(t.isdigit() for t in subtokens):
+                for t in subtokens:
+                    if t not in resolved:
+                        resolved.append(t)
+            elif part.isdigit():
+                if part not in resolved:
+                    resolved.append(part)
+            else:
+                matched = await db.many(
+                    "SELECT user_id FROM users WHERE lower(full_name) LIKE lower(?) "
+                    "UNION "
+                    "SELECT user_id FROM admins WHERE lower(full_name) LIKE lower(?) "
+                    "UNION "
+                    "SELECT user_id FROM contacts WHERE lower(display_name) LIKE lower(?)",
+                    [f"%{part}%", f"%{part}%", f"%{part}%"],
+                )
+                for m in matched:
+                    uid = str(m["user_id"])
+                    if uid not in resolved:
+                        resolved.append(uid)
+        return resolved
+    if "," in aud:
+        parts = [p.strip() for p in aud.replace(";", ",").split(",") if p.strip()]
+        if parts and all(p.isdigit() for p in parts):
+            return parts
     rows = await db.many("SELECT user_id, group_code FROM users")
-    if audience == "all":
+    if aud == "all":
         return [str(row["user_id"]) for row in rows]
-    code = _code(audience)
+    code = _code(aud)
     if not code:
         return []
     return [str(row["user_id"]) for row in rows if _code(row["group_code"]) == code]

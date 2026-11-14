@@ -1,6 +1,9 @@
-"""Скрипт установки: он должен оставаться рабочим, а не просто лежать в репозитории."""
+﻿"""Скрипт установки: он должен оставаться рабочим, а не просто лежать в репозитории."""
+import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "install.ps1"
@@ -22,8 +25,11 @@ def test_script_has_utf8_bom():
 
 def test_script_parses():
     """Синтаксис должен быть валидным: ошибка разбора делает скрипт бесполезным."""
+    ps = shutil.which("powershell") or shutil.which("pwsh")
+    if not ps:
+        pytest.skip("PowerShell не установлен на этой системе")
     result = subprocess.run(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+        [ps, "-NoProfile", "-ExecutionPolicy", "Bypass",
          "-Command", "$errors = $null; "
                      "[void][System.Management.Automation.Language.Parser]::ParseFile("
                      f"'{SCRIPT}', [ref]$null, [ref]$errors); "

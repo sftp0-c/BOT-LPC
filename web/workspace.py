@@ -32,7 +32,7 @@ from .workspace_view import render_workbench
 log = logging.getLogger("workspace")
 STATIC = Path(__file__).with_name("static")
 HEADERS = dict(WORKSPACE_SECURITY)
-ACTIONS = frozenset({"reply", "reply_close", "status", "note", "forward", "template_preview"})
+ACTIONS = frozenset({"reply", "reply_close", "status", "note", "forward", "template_preview", "close"})
 FILTER_NAMES = ("tab", "status", "category", "q", "scope", "view", "mine", "date_from", "date_to", "period")
 _NOTICES: dict[str, dict] = {}
 
@@ -363,8 +363,12 @@ async def _deliver(result: dict) -> bool:
             text = f"🔔 Статус обращения №{tid}: {STATUS.get(status, status)}"
         elif not text:
             text = f"Обновление по обращению №{tid}. Откройте карточку, чтобы увидеть изменения."
+        buttons = []
+        if kind in ("reply", "message"):
+            buttons.append({"type": "callback", "text": "✍️ Ответить", "payload": f"rp:{tid}"})
+        buttons.append({"type": "callback", "text": "📂 Открыть", "payload": f"t:{tid}"})
         try:
-            await bot_common.api.send(uid, text, [[{"type": "callback", "text": "📂 Открыть", "payload": f"t:{tid}"}]])
+            await bot_common.api.send(uid, text, [buttons])
         except Exception as exc:  # текст, адресат и исключение с телом запроса не журналируются
             failed = True
             log.warning("Не доставлено уведомление рабочего места, обращение %s: %s", tid, type(exc).__name__)
@@ -444,7 +448,8 @@ async def workspace_action(request: Request, actor: dict, ticket_id: int) -> Res
         _check_result(result)
     failed = await _deliver(result) if code == "ok" else False
     labels = {"reply": "Ответ сохранён и отправлен в MAX.", "reply_close": "Ответ сохранён, обращение завершено; уведомление отправлено в MAX.",
-              "status": "Статус сохранён.", "note": "Внутренняя заметка сохранена. Студент её не видит.", "forward": "Обращение передано сотруднику."}
+              "status": "Статус сохранён.", "note": "Внутренняя заметка сохранена. Студент её не видит.", "forward": "Обращение передано сотруднику.",
+              "close": "Обращение закрыто без ответа."}
     message = "Это действие уже выполнено; повторной отправки не было." if code == "replay" else labels[action]
     if failed:
         message = "Изменение сохранено, но доставка уведомления в MAX не подтверждена. Не отправляйте ответ повторно: он уже в истории."

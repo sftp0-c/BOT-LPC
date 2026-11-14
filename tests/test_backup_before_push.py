@@ -27,7 +27,9 @@ import pytest
 
 import backup_before_push as backup
 
-HOOK_SOURCE = Path(r"C:\BOT-LPC\.git\hooks\pre-push")
+HOOK_SOURCE = Path(__file__).resolve().parent.parent / ".git" / "hooks" / "pre-push"
+if not HOOK_SOURCE.exists():
+    HOOK_SOURCE = Path(r"C:\BOT-LPC\.git\hooks\pre-push")
 STAMP = "2026-01-01-000000"
 
 
@@ -298,7 +300,9 @@ def make_repo(tmp_path: Path) -> Path:
                     ["git", "remote", "add", "origin", str(remote)]):
         subprocess.run(command, cwd=repo, check=True, capture_output=True)
     (repo / "backup_before_push.py").write_bytes(Path(backup.__file__).read_bytes())
-    (repo / ".git" / "hooks" / "pre-push").write_bytes(HOOK_SOURCE.read_bytes())
+    hook_dest = repo / ".git" / "hooks" / "pre-push"
+    hook_dest.write_bytes(HOOK_SOURCE.read_bytes())
+    hook_dest.chmod(0o755)
     (repo / "файл.txt").write_text("что-то", encoding="utf-8")
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-qm", "первый"], cwd=repo, check=True, capture_output=True)

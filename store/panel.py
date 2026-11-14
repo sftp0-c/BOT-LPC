@@ -208,3 +208,130 @@ async def dedupe_stats() -> dict:
     """Сколько событий уже обработано (таблица processed_updates) и какого возраста самое новое."""
     row = await db.one("SELECT COUNT(*) n, MIN(created_at) oldest, MAX(created_at) newest FROM processed_updates")
     return {"processed": row["n"], "oldest": row["oldest"], "newest": row["newest"]}
+
+
+def _ident(name: str) -> str:
+    """Имя таблицы или колонки в кавычках: защита от пробелов и ключевых слов."""
+    clean = as_str(name).replace('"', '""')
+    return f'"{clean}"'
+
+
+async def ping_database() -> bool:
+    """Проверка доступности базы данных для диагностики панели."""
+    res = await db.one("SELECT 1")
+    return bool(res)
+
+
+async def faq_counts() -> tuple[int, int]:
+    """Счётчики частых вопросов: (всего, включено)."""
+    row = await db.one("SELECT COUNT(*) AS total, COALESCE(SUM(active),0) AS enabled FROM faq")
+    return int(row["total"] or 0), int(row["enabled"] or 0)
+
+
+async def toggle_faq_item(faq_id: int) -> tuple[bool, int]:
+    """Переключает статус вопроса FAQ (активен/выключен).
+
+    Возвращает (найден, старый_статус_active).
+    """
+    row = await db.one("SELECT active FROM faq WHERE id=?", (int(faq_id),))
+    if not row:
+        return False, 0
+    was_active = int(row["active"] or 0)
+    await db.run("UPDATE faq SET active=CASE active WHEN 1 THEN 0 ELSE 1 END WHERE id=?", (int(faq_id),))
+    return True, was_active
+
+
+async def backup_database(target: str | None = None) -> str:
+    """Создаёт резервную копию базы данных."""
+    return await db.backup_to(target)
+
+
+async def data_table_names() -> list[str]:
+    """Все таблицы базы, кроме служебных sqlite_* и закрытых."""
+    rows = await db.many(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+    )
+    return [
+        as_str(row["name"]) for row in rows
+        if not as_str(row["name"]).startswith("staff_web_")
+        and row["name"] not in ("workspace_operations", "ticket_files", "public_feedback_deleted_nonces")
+    ]
+
+
+async def data_table_columns(name: str) -> list[dict]:
+    """PRAGMA table_info: имя, тип, NOT NULL, значение по умолчанию, ключ."""
+    rows = await db.many(f"PRAGMA table_info({_ident(name)})")
+    if name == "audit_log":
+        safe = {"id", "created_at", "user_id", "role", "action", "target_type", "target_id", "result"}
+        rows = [row for row in rows if row["name"] in safe]
+    elif name == "public_feedback":
+        rows = [row for row in rows if row["name"] != "submission_nonce"]
+    elif name == "tickets":
+        rows = [row for row in rows if row["name"] != "workspace_revision"]
+    return [
+        {"name": as_str(row["name"]), "type": as_str(row["type"]),
+         "notnull": bool(row["notnull"]), "default": as_str(row["dflt_value"]),
+         "pk": bool(row["pk"]),
+         "time": as_str(row["name"]).endswith("_at") or row["name"] in ("created", "updated")}
+        for row in rows
+    ]
+
+
+async def data_table_sql(name: str) -> str | None:
+    """Текст CREATE TABLE таблицы."""
+    row = await db.one("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (name,))
+    return as_str(row["sql"]) if row else None
+
+
+async def data_row_count(name: str) -> int:
+    """Сколько строк в таблице."""
+    row = await db.one(f"SELECT COUNT(*) n FROM {_ident(name)}")
+    return to_int(row["n"]) if row else 0
+
+
+async def data_table_stats_raw(name: str, parts: list[str]):
+    """Выполняет вычисление статистики таблицы."""
+    return await db.one(f"SELECT {', '.join(parts)} FROM {_ident(name)}")
+
+
+async def data_fetch_rows(name: str, prefix: str, where: str, order: str, params: tuple, limit: int, offset: int = 0) -> list:
+    """Строки таблицы с сортировкой и фильтрами."""
+    return await db.many(
+        f"SELECT {prefix}* FROM {_ident(name)}{where}{order} LIMIT ? OFFSET ?",
+        params + (max(1, int(limit)), max(0, int(offset)))
+    )
+
+
+async def data_search_query(sql: str, args: tuple) -> list:
+    """Результаты поиска по колонке таблицы."""
+    return await db.many(sql, args)
+
+
+async def data_filtered_count(name: str, where: str, params: tuple) -> int:
+    """Количество строк с учётом фильтра WHERE."""
+    row = await db.one(f"SELECT COUNT(*) n FROM {_ident(name)}{where}", params)
+    return to_int(row["n"]) if row else 0
+
+
+async def data_get_row(name: str, rowid: int, prefix_rowid: bool = False):
+    """Строка таблицы по rowid."""
+    prefix = "rowid AS rid, " if prefix_rowid else ""
+    return await db.one(f"SELECT {prefix}* FROM {_ident(name)} WHERE rowid=?", (int(rowid),))
+
+
+async def data_update_row(name: str, rowid: int, sets: list[str], params: tuple) -> None:
+    """Обновление строки таблицы по rowid."""
+    await db.run(f"UPDATE {_ident(name)} SET {', '.join(sets)} WHERE rowid=?", params + (int(rowid),))
+
+
+async def data_insert_row(name: str, keys: list[str], params: tuple) -> int:
+    """Вставка строки в таблицу."""
+    return await db.run(
+        f"INSERT INTO {_ident(name)}({', '.join(keys)}) VALUES({', '.join('?' * len(keys))})",
+        params
+    )
+
+
+async def data_delete_row(name: str, rowid: int) -> None:
+    """Удаление строки таблицы по rowid."""
+    await db.run(f"DELETE FROM {_ident(name)} WHERE rowid=?", (int(rowid),))
