@@ -353,7 +353,7 @@ def _vacation_replacement(staff, all_rows: list[dict], away: dict) -> dict | Non
 def _row_edit_cell(request: Request, row, cat_ask: str) -> str:
     """Форма правки в строке сотрудника. Раздел — с подтверждением, см. ниже."""
     uid = as_str(row["user_id"])
-    form = (f'<form method="post" action="/panel/staff/{esc(uid)}/quick" class="grid"'
+    form = (f'<form method="post" action="/panel/staff/{esc(uid)}/quick" class="grid staff-quick-box"'
             f' style="{QUICK_MIN_WIDTH}">'
             f'{csrf(request)}'
             f'<div><label>Должность</label><input name="position" value="{esc(row["position"])}"'
@@ -463,13 +463,33 @@ async def staff_list(request: Request, q: str = "", cat_ask: str = ""):
                    f"{csrf(request)}<button class='btn-bad'>{icon('delete', 16)} Удалить</button></form>"
                    f"<a class='btn-grey btn' href='/panel/people/{esc(uid)}/dossier'>"
                    f"{icon('eye', 16)} Всё о сотруднике</a></div>")
-        body += (f"{head_row}<tr><td colspan='9' style='background:var(--surface-sunken);padding:10px'>"
+        body += (f"{head_row}<tr><td colspan='9' style='background:var(--surface-sunken);padding:12px;border-bottom:2px solid var(--line)'>"
+                 f"<div class='staff-subrow-card'>"
+                 f"<div class='staff-subrow-header'><strong>{icon('settings', 16)} Настройки сотрудника: {esc(row['full_name'])}</strong> "
+                 f"<span class='small mut'>MAX ID: {esc(uid)}</span>"
+                 f"<a class='btn btn-grey btn-sm' href='/panel/people/{esc(uid)}/dossier'>{icon('eye', 14)} Досье сотрудника</a></div>"
                  f"{form(request, f'/panel/staff/{esc(uid)}', fields)}"
                  f"{position_pick_form(request, uid, norm_position(row['position']))}"
-                 f"{actions}</td></tr>")
-    search = ('<form method="get" action="/panel/staff" class="grid" style="margin-bottom:14px">'
-              f'<div><input name="q" value="{esc(q)}" placeholder="Поиск: ФИО, ID, должность, отдел, кабинет"></div>'
-              f"<div><button>{icon('search', 16)} Найти</button></div></form>")
+                 f"{actions}</div></td></tr>")
+    search = (
+        f'<form method="get" action="/panel/staff" class="staff-search-box" style="margin-bottom:14px">'
+        f'<div style="display:flex; gap:var(--space-sm); align-items:center; flex-wrap:wrap;">'
+        f'<div style="flex:1 1 280px; position:relative;">'
+        f'<input name="q" value="{esc(q)}" placeholder="Поиск: ФИО, ID, должность, отдел, кабинет" style="width:100%">'
+        f'</div>'
+        f'<button class="btn">{icon("search", 16)} Найти</button>'
+        f'{"""<a class="btn btn-grey" href="/panel/staff">Сбросить поиск</a>""" if q else ""}'
+        f'</div>'
+        f'<div class="staff-quick-filters">'
+        f'<span class="small mut">Быстрый фильтр:</span> '
+        f'<a class="staff-filter-chip{"" if q else " is-active"}" href="/panel/staff">Все ({len(every_staff)})</a>'
+        f'<a class="staff-filter-chip{" is-active" if q == "отпуск" else ""}" href="/panel/staff?q=отпуск">В отпуске ({len(away)})</a>'
+        f'<a class="staff-filter-chip{" is-active" if q == "справк" else ""}" href="/panel/staff?q=справк">Справки</a>'
+        f'<a class="staff-filter-chip{" is-active" if q == "бухгалтер" else ""}" href="/panel/staff?q=бухгалтер">Бухгалтерия</a>'
+        f'<a class="staff-filter-chip{" is-active" if q == "учеб" else ""}" href="/panel/staff?q=учеб">Учёба</a>'
+        f'<a class="staff-filter-chip{" is-active" if q == "связь" else ""}" href="/panel/staff?q=связь">Связь</a>'
+        f'</div></form>'
+    )
     # staff-table - крючок для темы: колонке «Правка в строке» нужен минимум
     # ширины, иначе таблица отдаёт ей 190px и форма выглядит сжатой.
     table = f'{search}<table class="staff-table"><tr><th>Сотрудник</th><th>Роль в боте</th>' \
@@ -532,20 +552,56 @@ async def staff_list(request: Request, q: str = "", cat_ask: str = ""):
     reference = ("<p class=\"small mut\">Список должностей правый: он лежит в "
                  "<code>utils.POSITIONS</code>, и там же живут синонимы — «ПК», «Уч. часть» и "
                  "«зам директора» попадают в ту же должность, что и полное название.</p>")
+    total_staff = len(every_staff)
+    on_vacation_count = len(away)
+    sysadmin_count = len(sysadmins)
+    total_open = sum(load.get("open", 0) for load in activity.values())
+
+    stats_kpi = f"""
+<div class="staff-kpi-grid">
+  <div class="staff-kpi-card">
+    <div class="staff-kpi-label">{icon("staff", 16)} Всего в штате</div>
+    <div class="staff-kpi-value">{total_staff}</div>
+  </div>
+  <div class="staff-kpi-card">
+    <div class="staff-kpi-label">{icon("clock", 16)} Сейчас в отпуске</div>
+    <div class="staff-kpi-value">{on_vacation_count}</div>
+  </div>
+  <div class="staff-kpi-card">
+    <div class="staff-kpi-label">{icon("access", 16)} Сис-админы</div>
+    <div class="staff-kpi-value">{sysadmin_count}</div>
+  </div>
+  <div class="staff-kpi-card">
+    <div class="staff-kpi-label">{icon("tickets", 16)} Открытых обращений</div>
+    <div class="staff-kpi-value">{total_open}</div>
+  </div>
+</div>"""
+
+    toolbar = f"""
+<div class="staff-toolbar">
+  <a class="btn btn-ok" href="#add-staff">{icon("user-add", 16)} Добавить сотрудника</a>
+  <a class="btn btn-grey" href="/panel/staff-access">{icon("lock", 16)} Права на сайте</a>
+  <a class="btn btn-grey" href="/panel/staff-bulk">{icon("link", 16)} Массовые приглашения</a>
+  <a class="btn btn-grey" href="/panel/nostaff">{icon("people", 16)} Без прав</a>
+  <a class="btn btn-grey" href="#sysadmins">{icon("access", 16)} Сис-админы ({sysadmin_count})</a>
+</div>"""
+
     body_all = f"""
 {position_datalist()}
-{sysadmins_card}
-<div class="card"><h2>{icon("staff", 20)} Сотрудники</h2>{table}
+{stats_kpi}
+{toolbar}
+<div class="card" id="staff-list"><h2>{icon("staff", 20)} Сотрудники</h2>{table}
 <p class="small mut">Колонка «Правка в строке» меняет должность, кабинет и раздел обращений
 не заходя в карточку. Пустое поле означает «не трогать», а не «стереть». Раздел обращений
 спрашивает подтверждение: он решает, какие обращения сотрудник увидит.
 {reference}</p></div>
-<div class="grid" style="align-items:stretch">
+<div class="grid" style="align-items:stretch" id="add-staff">
   <div class="card" style="flex:2"><h2>Добавить сотрудника</h2>{add}
   <p class="small mut">Можно вписать сразу несколько ID через запятую — должность, отдел и категория
   применятся ко всем. Тех, кто уже есть в списке, добавлять не нужно: пропустим и покажем кого.
   Тех, кто писал боту, но прав ещё не имеет, видно на вкладке <a href="/panel/nostaff">Без прав</a>.</p></div>
-</div>"""
+</div>
+<div id="sysadmins">{sysadmins_card}</div>"""
     from .tickets import _tickets_access
 
     bot_access = await _tickets_access(request, "/panel/staff", q=q)
