@@ -24,7 +24,7 @@
       ? event.target.closest("[data-updates-expand],[data-updates-collapse]") : null;
     if (!button) { return; }
     var open = button.hasAttribute("data-updates-expand");
-    var details = root.querySelectorAll(".upd-release:not([hidden]) details");
+    var details = root.querySelectorAll(".upd-release details");
     for (var i = 0; i < details.length; i++) { details[i].open = open; }
   });
 }());

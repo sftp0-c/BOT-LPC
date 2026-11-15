@@ -101,6 +101,8 @@ def test_updates_assets_progressive_safe_and_touch_ready():
     for forbidden in ("innerHTML", "outerHTML", "insertAdjacentHTML", "eval(", "fetch(", "XMLHttpRequest", "localStorage"):
         assert forbidden not in js
     assert "textContent" in js and "items[i].hidden" in js
+    assert 'querySelectorAll(".upd-release details")' in js
+    assert ':not([hidden])' not in js
 
 
 def test_updates_module_has_no_runtime_git_network_or_database_imports():
