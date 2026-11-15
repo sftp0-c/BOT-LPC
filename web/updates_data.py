@@ -1,13 +1,25 @@
 ﻿"""Снимок истории выпусков; генерируется make_updates.py, вручную не изменять."""
 
-SOURCE_HEAD = '3589adf'
+SOURCE_HEAD = '81de29f'
 RELEASES = ({'version': '',
   'tag': '',
   'state': 'development',
   'base_version': '2.2.0',
   'date': '15 ноября 2026',
   'notes': (),
-  'commits': ({'hash': '3589adf',
+  'commits': ({'hash': '81de29f',
+               'when': '15.11.2026',
+               'subject': 'fix(panel): изолирую скрипт истории обновлений',
+               'files': 5,
+               'add': 38,
+               'del': 39},
+              {'hash': 'c95292d',
+               'when': '15.11.2026',
+               'subject': 'chore(panel): синхронизирую снимок истории обновлений',
+               'files': 1,
+               'add': 16,
+               'del': 3},
+              {'hash': '3589adf',
                'when': '15.11.2026',
                'subject': 'fix(panel): честно подписываю незавершённые обновления',
                'files': 4,
