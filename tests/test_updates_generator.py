@@ -60,7 +60,7 @@ def test_parse_numstat_handles_binary_and_rename():
     rows = generator.parse_records(text)
     assert rows == ({"hash": "abc1234", "full": "a" * 40, "date": "2026-11-15",
                      "when": "15.11.2026", "subject": "feat: test", "files": 2,
-                     "add": 4, "del": 2},)
+                     "add": 4, "del": 2, "paths": ("image.png", "old => new")},)
 
 
 def test_build_explicit_ranges_source_head_and_atomic_output(tmp_path):
@@ -103,6 +103,21 @@ def test_build_rejects_bad_tag_and_secret_subject(tmp_path):
     git(root, "commit", "-m", "fix: token abcdefghijklmnop")
     with pytest.raises(generator.BuildError, match="ручной проверки"):
         generator.build(root=root, output=root / "updates_data.py")
+
+
+def test_generator_excludes_data_only_snapshot_commit(tmp_path):
+    root = repo(tmp_path)
+    output = root / "web" / "updates_data.py"
+    write(output, "SOURCE_HEAD = 'old'\n")
+    git(root, "add", "web/updates_data.py")
+    git(root, "commit", "-m", "chore(panel): обновляю снимок")
+    write(root / "product.txt", "изменение продукта\n")
+    git(root, "add", "product.txt")
+    git(root, "commit", "-m", "fix: продуктовая правка")
+    snapshot = generator.build(root=root, output=output)
+    subjects = [row["subject"] for release in snapshot["releases"] for row in release["commits"]]
+    assert "fix: продуктовая правка" in subjects
+    assert "chore(panel): обновляю снимок" not in subjects
 
 
 def test_generator_is_host_only_and_portable():

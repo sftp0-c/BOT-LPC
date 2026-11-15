@@ -25,6 +25,11 @@ LONG_NUMBER = re.compile(r"(?<![0-9])[1-9][0-9]{9,18}(?![0-9])")
 MONTHS = ("января", "февраля", "марта", "апреля", "мая", "июня", "июля",
           "августа", "сентября", "октября", "ноября", "декабря")
 NOTES = {
+    (2, 3, 0): (
+        "Владельцу доступна закрытая история выпусков и текущих изменений панели.",
+        "История строится заранее из Git и не обращается к репозиторию или рабочей базе при просмотре.",
+        "Исправлены SQL-бюджет страниц панели и дата сегодняшнего дня в расписании.",
+    ),
     (2, 2, 0): (
         "Витрина показывает семь шагов работы сервиса на синтетических данных.",
         "Эмблема колледжа добавлена в сайт, панель, кабинет и социальную карточку.",
@@ -87,11 +92,13 @@ def parse_records(text: str) -> tuple[dict, ...]:
         if not re.fullmatch(r"[0-9a-f]{7,12}", short) or not re.fullmatch(r"[0-9a-f]{40,64}", full):
             raise BuildError("Некорректный хеш коммита")
         files = added = deleted = 0
+        paths = []
         for line in stats.splitlines():
             columns = line.split("\t", 2)
             if len(columns) < 3:
                 continue
             files += 1
+            paths.append(columns[2])
             if columns[0].isdigit():
                 added += int(columns[0])
             if columns[1].isdigit():
@@ -99,7 +106,7 @@ def parse_records(text: str) -> tuple[dict, ...]:
         rows.append({"hash": short, "full": full, "date": date,
                      "when": datetime.strptime(date, "%Y-%m-%d").strftime("%d.%m.%Y"),
                      "subject": safe_subject(subject), "files": files,
-                     "add": added, "del": deleted})
+                     "add": added, "del": deleted, "paths": tuple(paths)})
     return tuple(rows)
 
 
@@ -107,7 +114,8 @@ def commits(revision_range: str, *, root: Path = ROOT) -> tuple[dict, ...]:
     value = git("log", "--no-merges", "--date=format:%Y-%m-%d",
                 "--pretty=format:%x1e%h%x1f%H%x1f%ad%x1f%s", "--numstat",
                 revision_range, root=root)
-    return parse_records(value)
+    rows = parse_records(value)
+    return tuple(row for row in rows if row["paths"] != ("web/updates_data.py",))
 
 
 def build(*, root: Path = ROOT, source_head: str = "HEAD", output: Path = OUTPUT) -> dict:
@@ -148,7 +156,7 @@ def build(*, root: Path = ROOT, source_head: str = "HEAD", output: Path = OUTPUT
     clean = []
     for release in releases:
         clean.append({**release, "commits": tuple({key: value for key, value in row.items()
-                                                    if key not in {"full", "date"}}
+                                                    if key not in {"full", "date", "paths"}}
                                                    for row in release["commits"])})
     snapshot = {"source_head": short_head, "releases": tuple(clean)}
     text = ('"""Снимок истории выпусков; генерируется make_updates.py, вручную не изменять."""\n\n'
