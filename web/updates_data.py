@@ -1,13 +1,25 @@
 ﻿"""Снимок истории выпусков; генерируется make_updates.py, вручную не изменять."""
 
-SOURCE_HEAD = '81de29f'
+SOURCE_HEAD = 'f796cce'
 RELEASES = ({'version': '',
   'tag': '',
   'state': 'development',
   'base_version': '2.2.0',
   'date': '15 ноября 2026',
   'notes': (),
-  'commits': ({'hash': '81de29f',
+  'commits': ({'hash': 'f796cce',
+               'when': '15.11.2026',
+               'subject': 'fix(panel): применяю управление ко всем выпускам',
+               'files': 2,
+               'add': 3,
+               'del': 1},
+              {'hash': 'edbe653',
+               'when': '15.11.2026',
+               'subject': 'chore(panel): обновляю снимок после изоляции JS',
+               'files': 1,
+               'add': 14,
+               'del': 2},
+              {'hash': '81de29f',
                'when': '15.11.2026',
                'subject': 'fix(panel): изолирую скрипт истории обновлений',
                'files': 5,
