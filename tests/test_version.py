@@ -104,6 +104,8 @@ def test_no_module_hardcodes_a_version_number():
             continue
         if path.name == "version.py":
             continue      # в докстринге номер стоит как пример формата
+        if path.as_posix() == "web/updates_data.py":
+            continue      # генерируемая история выпусков проверяется test_panel_updates.py
         source = path.read_text(encoding="utf-8-sig", errors="replace")
         if number in source or "v1.0.0" in source:
             offenders.append(str(path))

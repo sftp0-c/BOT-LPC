@@ -216,6 +216,7 @@ async def require_user(request: Request) -> str:
     request.state.audit_user = user
     if not await is_sysadmin(user):
         raise HTTPException(status_code=403, detail="Панель доступна только сис-админам")
+    request.state.panel_role = await panel_role(user)
     # бейджи нужны только страницам: JSON-API и выгрузки CSV их не показывают
     if request.method == "GET" and "/api/" not in request.url.path \
             and not request.url.path.endswith(".csv"):
@@ -573,9 +574,16 @@ def page(title: str, body: str, user: str = "", tab: str = "",
             status_code=status_code, headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow", **PANEL_SECURITY_HEADERS},
         )
     scripts += f'<script>{nav_scroll_script()}</script><script>{hotkeys_script(NAV_SECTIONS)}</script>'
+    request = _current_request.get()
+    owner_link = ""
+    if request is not None and getattr(request.state, "panel_role", "") == "owner":
+        current = ' aria-current="page"' if tab == "updates" else ""
+        owner_link = (f'<a class="updates-tab" href="/panel/updates" aria-label="Обновления"{current}>'
+                      f'{icon("spark", 18)}<span>Обновления</span></a>')
     nav = nav_html(tab, _nav_badges.get())
     section = next((group for group, items in NAV_GROUPS
-                    if any(item[0] == tab for item in items)), "Рабочее пространство")
+                    if any(item[0] == tab for item in items)),
+                   "Служебное" if tab == "updates" else "Рабочее пространство")
     head = (f'<div class="dochead"><div class="dochead-title"><span class="eyebrow">{esc(section)}</span>'
             f'<h1 class="page-title">{esc(title)}</h1></div>'
             f'<div class="page-actions">{actions}</div></div>')
@@ -586,6 +594,7 @@ def page(title: str, body: str, user: str = "", tab: str = "",
 <header class="app-header">
   <div class="brand"><span class="logo"><img class="ico ico-navigator" src="/public/logo-emblem.png" width="24" height="24" alt="" aria-hidden="true"></span><span>
     <b>Навигатор <em>ЛПК</em></b><small><span class="panel-beta">Бета-тестирование</span></small></span></div>
+  {owner_link}
   <button class="gsearch palette-trigger" type="button" data-palette-open aria-label="Поиск по панели">
     {icon("search", 18)}<span>Найти обращение, человека, группу</span><kbd>Ctrl K</kbd>
   </button>

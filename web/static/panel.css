@@ -1106,3 +1106,46 @@ pre{max-height:560px;margin:0;padding:var(--space-lg);overflow:auto;
 .feedback-body{overflow-wrap:anywhere;line-height:1.7;padding:var(--space-md) 0;margin-bottom:var(--space-md)}
 @media (max-width:1000px){.foot-ver{margin-left:0;padding:10px 12px 0}}
 @media print{.foot-ver{display:none}}
+
+/* ── История выпусков: owner-only вкладка и временная шкала ─────────────── */
+.updates-tab{display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  min-width:44px;min-height:44px;padding:0 14px;border:1px solid var(--acc-line);
+  border-radius:var(--radius-pill);background:var(--acc-soft);color:var(--acc);
+  font-size:var(--text-sm);font-weight:var(--weight-semi);text-decoration:none}
+.updates-tab:hover,.updates-tab[aria-current=page]{background:var(--acc);border-color:var(--acc);
+  color:var(--acc-ink);text-decoration:none}.updates-tab .ico{flex:none}
+.upd-wrap{max-width:960px}.upd-lead{max-width:80ch;color:var(--mut);line-height:1.65}
+.upd-tools{display:flex;align-items:flex-end;gap:var(--space-sm);flex-wrap:wrap;
+  margin:var(--space-md) 0 var(--space-sm)}
+.upd-search{flex:1 1 260px;margin:0}.upd-search span{display:block;margin-bottom:5px}
+.upd-search input{margin:0}.upd-results{min-height:20px;color:var(--mut);font-size:var(--text-xs)}
+.upd-timeline{position:relative;list-style:none;margin:0;padding:0}
+.upd-timeline::before{content:"";position:absolute;left:20px;top:12px;bottom:18px;width:2px;
+  background:var(--line-soft)}
+.upd-release{position:relative;padding:0 0 var(--space-lg) 58px}.upd-release[hidden]{display:none}
+.upd-release details{margin:0}.upd-node{position:absolute;left:7px;top:16px;z-index:1;
+  display:grid;place-items:center;width:28px;height:28px;border:2px solid var(--acc-line);
+  border-radius:50%;background:var(--mark-plate);box-shadow:var(--shadow-sm)}
+.upd-node img{display:block;width:16px;height:16px;object-fit:contain}
+.upd-release::after{content:"";position:absolute;left:35px;top:29px;width:21px;height:2px;
+  background:var(--line-soft)}.upd-summary{min-height:48px;flex-wrap:wrap}
+.upd-version{font:var(--weight-bold) var(--text-lg)/1.4 var(--font-mono);color:var(--ink)}
+.upd-date{color:var(--mut);font-size:var(--text-sm)}.upd-stats{color:var(--mut);font-size:var(--text-xs)}
+.upd-badge{padding:2px 10px;border-radius:var(--radius-pill);font-size:var(--text-xs);white-space:nowrap}
+.upd-badge-live{background:var(--ok-soft);border:1px solid var(--ok-line);color:var(--ok-ink)}
+.upd-badge-dev{background:var(--warn-soft);border:1px solid var(--warn-line);color:var(--warn)}
+.upd-body{margin-bottom:var(--space-sm);padding:var(--space-md);border:1px solid var(--line-soft);
+  border-radius:var(--radius-md);background:var(--surface-sunken)}
+.upd-highlights,.upd-commits{margin:0;padding:0;list-style:none}.upd-highlights{display:grid;gap:5px;margin-bottom:var(--space-md)}
+.upd-highlights li{position:relative;padding-left:20px;line-height:1.55}.upd-highlights li::before{content:"";
+  position:absolute;left:4px;top:8px;width:7px;height:7px;border-radius:2px;background:var(--acc);transform:rotate(45deg)}
+.upd-commits{display:grid;gap:2px}.upd-commit{display:flex;align-items:baseline;gap:var(--space-sm);
+  flex-wrap:wrap;padding:5px 8px;border-radius:var(--radius-sm)}.upd-commit:hover{background:var(--surface-raised)}
+.upd-hash{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--acc)}
+.upd-subject{overflow-wrap:anywhere}.upd-meta{color:var(--mut);font-size:var(--text-xs)}
+.upd-add{color:var(--ok-ink)}.upd-del{color:var(--bad-ink)}.upd-note{color:var(--mut);font-size:var(--text-xs);line-height:1.6}
+.upd-empty{padding:var(--space-lg);color:var(--mut)}
+@media(max-width:1000px){.gsearch{min-width:44px}.updates-tab{flex:0 0 44px;padding:0}.updates-tab span{display:none}}
+@media(max-width:640px){.upd-release{padding-left:44px}.upd-timeline::before{left:13px}.upd-node{left:0;width:26px;height:26px}
+  .upd-release::after{left:26px;top:27px;width:16px}.upd-tools>.btn{min-height:44px}.updates-tab{width:44px;height:44px}}
+@media print{.upd-tools,.upd-results{display:none}}
