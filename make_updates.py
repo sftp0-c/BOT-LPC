@@ -132,8 +132,9 @@ def build(*, root: Path = ROOT, source_head: str = "HEAD", output: Path = OUTPUT
     if ordered:
         current = commits(f"{ordered[-1]}..{full_head}", root=root)
         if current:
-            releases.append({"version": "0.0.0", "tag": "", "state": "development",
-                             "date": human_date(current[0]["date"]), "notes": (), "commits": current})
+            releases.append({"version": "", "tag": "", "state": "development",
+                             "base_version": ordered[-1][1:], "date": human_date(current[0]["date"]),
+                             "notes": (), "commits": current})
     for index in range(len(ordered) - 1, -1, -1):
         tag = ordered[index]
         previous = ordered[index - 1] if index else None

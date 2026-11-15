@@ -33,9 +33,14 @@ def _safe_release(item: Mapping) -> dict | None:
     value = str(item.get("version", ""))
     tag = str(item.get("tag", ""))
     state = str(item.get("state", ""))
-    if not SEMVER.fullmatch(value) or state not in {"released", "development"}:
-        return None
-    if (state == "released" and tag != "v" + value) or (state == "development" and tag):
+    base_version = str(item.get("base_version", ""))
+    if state == "released":
+        if not SEMVER.fullmatch(value) or tag != "v" + value or base_version:
+            return None
+    elif state == "development":
+        if value or tag or not SEMVER.fullmatch(base_version):
+            return None
+    else:
         return None
     notes = tuple(str(note)[:300] for note in item.get("notes", ()) if isinstance(note, str))[:12]
     commits = []
@@ -52,8 +57,8 @@ def _safe_release(item: Mapping) -> dict | None:
                         "del": _number(row.get("del"))})
     if not commits:
         return None
-    return {"version": value, "tag": tag, "state": state, "date": str(item.get("date", ""))[:40],
-            "notes": notes, "commits": tuple(commits)}
+    return {"version": value, "tag": tag, "state": state, "base_version": base_version,
+            "date": str(item.get("date", ""))[:40], "notes": notes, "commits": tuple(commits)}
 
 
 def _word(number: int, forms: tuple[str, str, str]) -> str:
@@ -79,18 +84,19 @@ def _release(item: Mapping, current: str) -> str:
         return ""
     live = rel["state"] == "released" and rel["version"] == current
     development = rel["state"] == "development"
+    label = f'После {rel["base_version"]}' if development else rel["version"]
     badge = ('<b class="upd-badge upd-badge-live">Сейчас на сервере</b>' if live else
              '<b class="upd-badge upd-badge-dev">Разрабатывается</b>' if development else "")
     notes = "".join(f'<li>{esc(note)}</li>' for note in rel["notes"])
     notes_html = f'<ul class="upd-highlights">{notes}</ul>' if notes else ""
     commits = "".join(_commit(row) for row in rel["commits"])
     total_files = sum(row["files"] for row in rel["commits"])
-    dom_id = "release-" + rel["version"].replace(".", "-")
-    return (f'<li class="upd-release" id="{esc(dom_id)}" data-release="{esc(rel["version"])}">'
+    dom_id = "release-development" if development else "release-" + rel["version"].replace(".", "-")
+    return (f'<li class="upd-release" id="{esc(dom_id)}" data-release="{esc(label)}">'
             f'<details{" open" if live or development else ""}><summary class="upd-summary">'
             '<span class="upd-node" aria-hidden="true"><img src="/public/logo-emblem.png" '
             'width="16" height="16" alt=""></span>'
-            f'<span class="upd-version">{esc(rel["version"])}</span>'
+            f'<span class="upd-version">{esc(label)}</span>'
             f'<span class="upd-date">{esc(rel["date"])}</span>'
             f'<span class="upd-stats">{len(rel["commits"])} '
             f'{_word(len(rel["commits"]), ("коммит", "коммита", "коммитов"))}, '

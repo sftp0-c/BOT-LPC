@@ -83,7 +83,9 @@ def test_snapshot_shape_privacy_freshness_and_single_live_marker():
     assert len([item for item in released if item["version"] == version.__version__]) == 1
     html = updates.render_updates()
     assert html.count("Сейчас на сервере") == 1
-    assert "Разрабатывается" not in html or any(item["state"] == "development" for item in updates.RELEASES)
+    if any(item["state"] == "development" for item in updates.RELEASES):
+        assert "Разрабатывается" in html and "После 2.2.0" in html
+        assert "0.0.0" not in html
 
 
 def test_updates_assets_progressive_safe_and_touch_ready():

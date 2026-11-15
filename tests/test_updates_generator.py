@@ -69,8 +69,9 @@ def test_build_explicit_ranges_source_head_and_atomic_output(tmp_path):
     snapshot = generator.build(root=root, output=output)
     assert snapshot["source_head"] == git(root, "rev-parse", "--short=7", "HEAD").stdout.strip()
     releases = snapshot["releases"]
-    assert [item["version"] for item in releases] == ["0.0.0", "1.1.0", "1.0.0"]
+    assert [item["version"] for item in releases] == ["", "1.1.0", "1.0.0"]
     assert releases[0]["state"] == "development" and releases[0]["tag"] == ""
+    assert releases[0]["base_version"] == "1.1.0"
     assert releases[1]["tag"] == "v1.1.0" and len(releases[1]["commits"]) == 1
     source = output.read_text(encoding="utf-8-sig")
     compile(source, str(output), "exec")
