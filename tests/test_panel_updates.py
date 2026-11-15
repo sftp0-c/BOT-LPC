@@ -41,6 +41,7 @@ async def test_updates_owner_only_headers_and_tab(panel_client, monkeypatch, env
     assert 'aria-label="Обновления"' in response.text
     assert 'aria-current="page"' in response.text
     assert response.text.count('href="/panel/updates"') == 1
+    assert f'/panel/static/updates.js?v={version.__version__}' in response.text
 
 
 async def test_updates_route_does_not_read_database_after_auth(owner_client, monkeypatch):
@@ -90,19 +91,16 @@ def test_snapshot_shape_privacy_freshness_and_single_live_marker():
 
 def test_updates_assets_progressive_safe_and_touch_ready():
     css = open("web/static/panel.css", encoding="utf-8-sig").read()
-    js = open("web/static/panel.js", encoding="utf-8-sig").read()
+    js = open("web/static/updates.js", encoding="utf-8-sig").read()
     tab_rule = re.search(r"\.updates-tab\{([^}]*)\}", css)
     assert tab_rule and "min-width:44px" in tab_rule[1] and "min-height:44px" in tab_rule[1]
     mobile = css.split("@media(max-width:640px)", 1)[1]
     assert ".updates-tab{width:44px;height:44px}" in mobile
     assert '[aria-current=page]' in css
-    marker = "/* История выпусков: прогрессивный локальный поиск и управление details. */"
-    assert marker in js
-    block = js.split(marker, 1)[1]
-    assert 'querySelector("[data-updates-root]")' in block
+    assert 'querySelector("[data-updates-root]")' in js
     for forbidden in ("innerHTML", "outerHTML", "insertAdjacentHTML", "eval(", "fetch(", "XMLHttpRequest", "localStorage"):
-        assert forbidden not in block
-    assert "textContent" in block and "items[i].hidden" in block
+        assert forbidden not in js
+    assert "textContent" in js and "items[i].hidden" in js
 
 
 def test_updates_module_has_no_runtime_git_network_or_database_imports():

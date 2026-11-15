@@ -128,4 +128,5 @@ def render_updates(releases=RELEASES, source_head: str = SOURCE_HEAD, current: s
 @router.get("/updates", include_in_schema=False)
 async def updates_page(request: Request):
     user = await require_owner(request)
-    return page("Обновления", render_updates(), user=user, tab="updates")
+    return page("Обновления", render_updates(), user=user, tab="updates",
+                extra_scripts=f'<script src="/panel/static/updates.js?v={version.__version__}" defer></script>')

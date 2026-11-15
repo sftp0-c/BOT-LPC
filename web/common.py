@@ -529,6 +529,7 @@ async def panel_static_asset(name: str):
     allowed = {
         "panel.css": "text/css; charset=utf-8",
         "panel.js": "text/javascript; charset=utf-8",
+        "updates.js": "text/javascript; charset=utf-8",
     }
     if name not in allowed:
         return Response(status_code=404)
