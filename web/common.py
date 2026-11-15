@@ -29,7 +29,8 @@ import database as db
 import repository as repo
 from panel_theme import (ICON_NAMES_BY_PATH, STYLESHEET, actions_script, hotkeys_script, icon,
                           nav_scroll_script, panel_toast_js, theme_boot_script, theme_script)
-from utils import as_str, cut_plain, norm_code, person_label, short_name, to_int
+from utils import (as_str, cut_plain, is_owner_role, is_sysadmin_role, norm_code,
+                   person_label, short_name, to_int)
 
 from .router import router
 
@@ -180,12 +181,17 @@ async def is_sysadmin(user_id: str) -> bool:
 
 
 async def panel_role(user_id: str) -> str:
-    """Точная роль вошедшего человека для безопасного аудита панели."""
-    if not user_id:
+    """Точная роль за одно чтение: проверка доступа не удваивает SQL каждой страницы."""
+    uid = as_str(user_id)
+    if not uid:
         return "unknown"
-    if await repo.is_owner(user_id):
+    if uid in {as_str(value) for value in config.ROOT_IDS or []}:
         return "owner"
-    return "sysadmin" if await repo.is_sysadmin(user_id) else "unknown"
+    row = await repo.get_admin(uid)
+    role = as_str(row["role_type"]) if row else ""
+    if is_owner_role(role):
+        return "owner"
+    return "sysadmin" if is_sysadmin_role(role) else "unknown"
 
 
 async def log_panel_audit(user_id: str, action: str, target_type: str = "",
@@ -214,9 +220,10 @@ async def require_user(request: Request) -> str:
     if not user:
         raise HTTPException(status_code=303, headers={"Location": "/panel/login"})
     request.state.audit_user = user
-    if not await is_sysadmin(user):
+    role = await panel_role(user)
+    if role not in ("owner", "sysadmin"):
         raise HTTPException(status_code=403, detail="Панель доступна только сис-админам")
-    request.state.panel_role = await panel_role(user)
+    request.state.panel_role = role
     # бейджи нужны только страницам: JSON-API и выгрузки CSV их не показывают
     if request.method == "GET" and "/api/" not in request.url.path \
             and not request.url.path.endswith(".csv"):
@@ -561,8 +568,9 @@ def page(title: str, body: str, user: str = "", tab: str = "",
                 f'<title>{esc(title)} — Навигатор ЛПК</title>'
                 f'<link rel="stylesheet" href="/panel/static/panel.css?v={version.__version__}">'
                 f'<style>{STYLE}</style>{extra_head}')
-    scripts = (f'<script src="/panel/static/panel.js?v={version.__version__}" defer></script>'
-               f'<script>{theme_script()}</script><script>{panel_toast_js()}</script>'
+    # Общие скрипты собираются сервером из panel_theme. panel.js остаётся
+    # совместимым статическим адресом, но не подключается второй раз.
+    scripts = (f'<script>{theme_script()}</script><script>{panel_toast_js()}</script>'
                f'<script>{actions_script()}</script>{extra_scripts}')
     if title in ("Вход", "Панель выключена"):
         return HTMLResponse(

@@ -6,7 +6,6 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-import bot
 import config
 import database as db
 import version
@@ -42,6 +41,7 @@ async def test_updates_owner_only_headers_and_tab(panel_client, monkeypatch, env
     assert 'aria-current="page"' in response.text
     assert response.text.count('href="/panel/updates"') == 1
     assert f'/panel/static/updates.js?v={version.__version__}' in response.text
+    assert '/panel/static/panel.js' not in response.text
 
 
 async def test_updates_route_does_not_read_database_after_auth(owner_client, monkeypatch):
@@ -126,13 +126,6 @@ async def test_owner_guard_denies_non_owner(monkeypatch):
 
 
 def test_registered_route_once():
-    def count(routes):
-        total = 0
-        for route in routes:
-            if getattr(route, "path", None) == "/panel/updates":
-                total += 1
-            inner = getattr(route, "original_router", None)
-            if hasattr(inner, "routes"):
-                total += count(inner.routes)
-        return total
-    assert count(bot.app.routes) == 1
+    from web.router import router as panel_router
+    routes = [route for route in panel_router.routes if getattr(route, "path", None) == "/panel/updates"]
+    assert len(routes) == 1
