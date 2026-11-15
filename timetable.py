@@ -602,9 +602,9 @@ def day_title(weekday: int, day_date: date | None = None) -> str:
         return name
     today = clock.today()
     if day_date == today:
-        return f"{name}, сегодня"
+        return f"{name} {day_date:%d.%m}, сегодня"
     if day_date == today + timedelta(days=1):
-        return f"{name}, завтра"
+        return f"{name} {day_date:%d.%m}, завтра"
     return f"{name} {day_date:%d.%m}"
 
 
@@ -637,7 +637,7 @@ def format_day(day: DaySchedule, day_date: date | None = None, today: bool = Fal
     Сборка дня живёт здесь одной функцией, её зовёт бот (handlers/menus.py -
     «расписание на сегодня» и «на день», handlers/admin.py - день в карточке).
     """
-    # Пометка «сегодня» приходит из day_title («Понедельник, сегодня»).
+    # Пометка «сегодня» приходит из day_title («Понедельник 16.11, сегодня»).
     # Раньше сюда же добавляли «• сегодня» - на экране выходило «Среда, сегодня
     # • сегодня», дважды. Одной пометки достаточно.
     lines = [f"📅 {day_title(day.weekday, day_date)}"]
