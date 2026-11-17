@@ -247,7 +247,8 @@ async def render_workspace(request: Request, actor: dict, *, selected: int = 0, 
 
 @workspace_router.get("/assets/{name}", include_in_schema=False)
 async def workspace_asset(name: str):
-    types = {"workspace.css": "text/css; charset=utf-8", "workspace.js": "text/javascript; charset=utf-8"}
+    types = {"workspace.css": "text/css; charset=utf-8", "workspace.js": "text/javascript; charset=utf-8",
+             "workspace-login.js": "text/javascript; charset=utf-8"}
     if name not in types:
         return Response(status_code=404)
     return FileResponse(STATIC / name, media_type=types[name], headers={

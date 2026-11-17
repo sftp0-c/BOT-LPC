@@ -351,6 +351,7 @@ async def test_staff_access_has_clear_status_and_no_empty_pager(access_client):
     assert 'class="pill pill-off">Выключен</span>' in response.text
     assert "Код не отправляется, пока доступ выключен" in response.text
     assert "Существующие сотрудники не получают веб-доступ автоматически" in response.text
+    assert "Новый публичный вход по ФИО этот режим не использует" in response.text
     assert "Если сотруднику не приходит код" in response.text
     assert 'href="/workspace/login"' in response.text
     assert await access.get_staff_web_access("7555666777") is None

@@ -81,9 +81,18 @@ def test_snapshot_shape_privacy_freshness_and_single_live_marker():
     assert not re.search(r"(?<![0-9])[1-9][0-9]{9,18}(?![0-9])", serialized)
     assert "text_content" not in serialized and "submission_nonce" not in serialized
     released = [item for item in updates.RELEASES if item["state"] == "released"]
-    assert len([item for item in released if item["version"] == version.__version__]) == 1
+    current = [item for item in released if item["version"] == version.__version__]
+    assert len(current) <= 1
     html = updates.render_updates()
-    assert html.count("Сейчас на сервере") == 1
+    if current:
+        assert html.count("Сейчас на сервере") == 1
+    else:
+        # Между повышением VERSION и выпускным snapshot новая версия ещё не должна
+        # притворяться развёрнутой. Генератор добавит её после релизного коммита/тега.
+        current_number = tuple(map(int, version.__version__.split(".")))
+        released_numbers = [tuple(map(int, item["version"].split("."))) for item in released]
+        assert released_numbers and current_number > max(released_numbers)
+        assert "Сейчас на сервере" not in html
     if any(item["state"] == "development" for item in updates.RELEASES):
         assert "Разрабатывается" in html and "После 2.2.0" in html
         assert "0.0.0" not in html

@@ -88,7 +88,9 @@ def test_every_post_route_has_csrf_guard():
                     broken.append(f"{path.name}:{node.name}")
             elif any(guard in source for guard in ("require_form(", "require_owner_form(", "require_staff_form(")):
                 continue
-            elif path.name == "workspace_auth.py" and node.name in ("workspace_login_request", "workspace_login_verify"):
+            elif path.name == "workspace_auth.py" and node.name in (
+                    "workspace_staff_search", "workspace_login_request", "workspace_login_verify"):
+
                 helper = next(item for item in tree.body if isinstance(item, ast.AsyncFunctionDef) and item.name == "_login_form")
                 assert "_login_form(" in source
                 assert "compare_digest" in ast.unparse(helper) and "_browser_csrf(cookie)" in ast.unparse(helper)

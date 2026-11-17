@@ -10,16 +10,18 @@ from contextlib import contextmanager
 from urllib.parse import parse_qs, urlsplit
 
 from fastapi import HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.requests import ClientDisconnect
 
 import config
+import version
 from handlers import common as bot_common
 from panel_theme import STYLESHEET, icon, theme_boot_script, theme_script
 from store.web_access import (
-    STAFF_WEB_SESSION_TTL, cancel_staff_web_challenge, request_staff_web_code,
-    revoke_staff_web_session, staff_web_hash, staff_web_principal, staff_web_secret,
-    staff_web_session_hash, verify_staff_web_code,
+    STAFF_WEB_SESSION_TTL, cancel_staff_web_challenge, find_public_staff,
+    request_staff_web_code, resolve_public_staff_choice, revoke_staff_web_session,
+    staff_web_hash, staff_web_principal, staff_web_secret, staff_web_session_hash,
+    verify_staff_web_code,
 )
 
 from .common import esc
@@ -39,7 +41,7 @@ WORKSPACE_SECURITY = {
     "connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
 }
-NEUTRAL_REQUEST = "Если для этого MAX ID включён веб-доступ и бот может написать вам, код придёт в MAX. Он действует 5 минут."
+NEUTRAL_REQUEST = "Если для выбранного сотрудника включён веб-доступ и бот может написать ему, код придёт в MAX. Он действует 5 минут."
 NEUTRAL_VERIFY = "Код не подошёл или истёк. Проверьте его либо запросите новый."
 log = logging.getLogger("workspace.auth")
 _delivery_private = contextvars.ContextVar("workspace_otp_delivery", default=False)
@@ -150,7 +152,8 @@ def workspace_auth_page(title: str, content: str, *, status_code: int = 200) -> 
     return HTMLResponse(f"""<!doctype html><html lang="ru" data-theme="dark"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark light">
 <title>{esc(title)} — Навигатор ЛПК</title><script>{theme_boot_script()}</script><style>{STYLESHEET}</style>
-<link rel="stylesheet" href="/workspace/assets/workspace.css"></head><body class="ws-auth">
+<link rel="stylesheet" href="/workspace/assets/workspace.css?v={version.__version__}">
+<script src="/workspace/assets/workspace-login.js?v={version.__version__}" defer></script></head><body class="ws-auth">
 <a class="skip-link" href="#main-content">Перейти к содержимому</a>
 <header class="ws-auth-header"><a class="ws-auth-brand" href="/"><img class="ico ico-navigator" src="/public/logo-emblem.png" width="28" height="28" alt="" aria-hidden="true">
 <span><b>Навигатор ЛПК</b><small>Для сотрудников колледжа</small></span></a>
@@ -190,22 +193,27 @@ def _login_page(cookie: str, challenge: str = "", notice: str = "", *, status_co
 <button class="btn btn-primary" type="submit">Войти</button></form>
 <a class="ws-auth-back" href="/workspace/login">Запросить другой код</a>"""
     else:
-        step, intro = "Шаг 1 из 2 · Идентификатор", "Укажите свой MAX ID — код входа придёт в MAX."
-        fields = f"""<form class="ws-auth-form" method="post" action="/workspace/login/request" accept-charset="UTF-8">
-<input type="hidden" name="csrf" value="{token}"><div class="ws-auth-input-group">
-<label class="ws-auth-field" for="workspace-id">Ваш MAX ID</label>
-<input id="workspace-id" name="user_id" type="text" inputmode="numeric" pattern="[0-9]+" maxlength="19"
- autocomplete="username" aria-describedby="id-hint" required>
-<p id="id-hint" class="ws-auth-hint">Вход доступен сотрудникам, которым сис-админ отдельно разрешил веб-доступ.
-Сначала откройте диалог с ботом в MAX и нажмите «Начать» или отправьте /start.
-Ваш ID можно узнать командой /id.</p></div><button class="btn btn-primary" type="submit">Получить код в MAX</button></form>"""
+        step, intro = "Шаг 1 из 2 · Выбор сотрудника", "Начните вводить фамилию или должность и выберите себя."
+        fields = f"""<form class="ws-auth-form" method="post" action="/workspace/login/request" accept-charset="UTF-8" data-staff-login>
+<input type="hidden" name="csrf" value="{token}"><input id="workspace-staff-token" type="hidden" name="staff_token" value="">
+<div class="ws-auth-input-group"><label class="ws-auth-field" for="workspace-staff">Найдите себя</label>
+<div class="ws-staff-combobox"><input id="workspace-staff" type="search" maxlength="80" autocomplete="off"
+ role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="workspace-staff-results"
+ aria-describedby="staff-hint staff-status" aria-required="true" placeholder="Например: Иванова или зам. директора">
+<div id="workspace-staff-results" class="ws-staff-results" role="listbox" aria-label="Сотрудники" hidden></div></div>
+<p id="staff-hint" class="ws-auth-hint">В списке показаны сотрудники колледжа без MAX ID. Код придёт только тому,
+кому сис-админ отдельно включил доступ к кабинету и кто уже открыл диалог с ботом в MAX.</p>
+<p id="staff-status" class="ws-staff-status" role="status" aria-live="polite">Введите не менее трёх букв.</p></div>
+<button id="workspace-request-code" class="btn btn-primary" type="submit" disabled>Получить код в MAX</button>
+<noscript><p class="ws-auth-notice" role="alert">Для выбора сотрудника включите JavaScript в браузере.</p></noscript></form>"""
     return workspace_auth_page("Вход сотрудника", f'<p class="ws-auth-step">{step}</p>'
                                '<h1 id="auth-title">Кабинет сотрудника</h1>'
                                f'<p class="ws-auth-intro">{intro}</p>' + message + fields
                                + '<details class="ws-auth-help"><summary>Код не приходит?</summary>'
                                '<p class="ws-auth-hint">Попросите сис-админа проверить «Доступ сотрудников» → '
                                '«Доступ к кабинету»: он должен быть включён. Приглашение в MAX не включает веб-доступ. '
-                               'Убедитесь, что указан ваш MAX ID, а диалог с ботом уже открыт. '
+                               'Убедитесь, что выбрали себя из списка, а диалог с ботом уже открыт. '
+                               'Если вас нет в списке, попросите сис-админа проверить профиль сотрудника. '
                                'После нескольких запросов подряд подождите 10 минут перед новой попыткой.</p></details>'
                                '<a class="ws-auth-back ws-auth-admin" href="/panel/login">Я сис-админ — вход по паролю</a>',
                                status_code=status_code)
@@ -335,15 +343,37 @@ def _login_failure(exc: HTTPException) -> HTMLResponse:
                                status_code=exc.status_code)
 
 
+@workspace_router.post("/login/staff-search", include_in_schema=False)
+async def workspace_staff_search(request: Request):
+    try:
+        data, cookie, expires = await _login_form(request, {"csrf", "q"})
+    except HTTPException as exc:
+        return JSONResponse({"results": [], "message": "Обновите страницу входа."},
+                            status_code=exc.status_code, headers=WORKSPACE_SECURITY)
+    browser_hash = staff_web_hash("browser-id", cookie)
+    try:
+        results = await find_public_staff(data.get("q", "")[:100], browser_hash, _peer_hash(request),
+                                          browser_expires=expires)
+    except sqlite3.Error:
+        return JSONResponse({"results": [], "message": "Поиск временно недоступен."},
+                            status_code=503, headers=WORKSPACE_SECURITY)
+    if results is None:
+        return JSONResponse({"results": [], "message": "Слишком много запросов. Подождите 10 минут."},
+                            status_code=429, headers={**WORKSPACE_SECURITY, "Retry-After": "600"})
+    return JSONResponse({"results": results}, headers=WORKSPACE_SECURITY)
+
+
 @workspace_router.post("/login/request", include_in_schema=False)
 async def workspace_login_request(request: Request):
     try:
-        data, cookie, expires = await _login_form(request, {"csrf", "user_id"})
+        data, cookie, expires = await _login_form(request, {"csrf", "staff_token"})
     except HTTPException as exc:
         return _login_failure(exc)
+    browser_hash = staff_web_hash("browser-id", cookie)
     try:
-        delivery = await request_staff_web_code(data.get("user_id", "")[:100], staff_web_hash("browser-id", cookie),
-                                               _peer_hash(request), browser_expires=expires)
+        user_id = await resolve_public_staff_choice(data.get("staff_token", "")[:100], browser_hash)
+        delivery = await request_staff_web_code(user_id, browser_hash, _peer_hash(request),
+                                                browser_expires=expires, allow_auto_access=False)
     except sqlite3.Error:
         raise _error(503, "Вход временно недоступен. Попробуйте позже.") from None
     if delivery["user_id"]:

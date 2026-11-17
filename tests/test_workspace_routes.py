@@ -48,7 +48,12 @@ def hidden(source, name):
 
 def login_staff(client, data, user="200"):
     page = client.get("/workspace/login")
-    request = client.post("/workspace/login/request", data={"csrf": hidden(page, "csrf"), "user_id": user}, headers={"Origin": ORIGIN})
+    cookie = client.cookies.get(workspace_auth.WORKSPACE_BROWSER_COOKIE)
+    browser = repo.staff_web_hash("browser-id", cookie)
+    expires = workspace_auth._browser_expires(cookie, workspace_auth._now())
+    selected = repo.public_staff_choice_token(user, browser, expires)
+    request = client.post("/workspace/login/request", data={"csrf": hidden(page, "csrf"), "staff_token": selected},
+                          headers={"Origin": ORIGIN})
     code = re.search(r"\b[0-9]{8}\b", data["api"].last(user)[1])[0]
     response = client.post("/workspace/login/verify", data={"csrf": hidden(request, "csrf"),
                            "challenge": hidden(request, "challenge"), "code": code}, headers={"Origin": ORIGIN})
@@ -227,7 +232,7 @@ async def test_raw_auth_data_never_available_even_to_owner(client, data, monkeyp
 
 
 def test_static_allowlist_and_preserved_landing(client):
-    for name in ("workspace.css", "workspace.js"):
+    for name in ("workspace.css", "workspace.js", "workspace-login.js"):
         response = client.get("/workspace/assets/" + name)
         assert response.status_code == 200 and response.headers["x-content-type-options"] == "nosniff"
     assert client.get("/workspace/assets/.env").status_code == 404

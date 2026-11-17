@@ -239,7 +239,7 @@ def test_every_module_imports_standalone():
 def test_store_does_not_depend_on_the_rest_of_the_project():
     """Раздел тянет только стандартную библиотеку, database, clock, config, utils и соседей."""
     allowed = {"clock", "config", "database", "datetime", "typing", "utils", "",
-               "contextlib", "hashlib", "hmac", "json", "os", "re", "secrets", "time"}
+               "contextlib", "hashlib", "hmac", "json", "os", "re", "secrets", "time", "unicodedata"}
     for path in store_modules():
         for node in ast.walk(tree_of(path)):
             if isinstance(node, ast.Import):

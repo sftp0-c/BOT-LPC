@@ -87,7 +87,8 @@ from .web_access import (  # noqa: F401 - публичные функции ве
     WEB_PERMISSIONS, WEB_WORK_PERMISSIONS, WEB_PERMISSION_PRESETS, get_staff_web_access,
     list_staff_web_access, set_staff_web_access, revoke_staff_web_sessions, staff_web_principal,
     staff_web_principal_in_tx, normalize_staff_web_permissions, normalize_staff_web_id,
-    staff_web_secret, staff_web_hash, staff_web_session_hash, request_staff_web_code,
+    normalize_public_staff_search, staff_web_secret, staff_web_hash, staff_web_session_hash,
+    public_staff_choice_token, find_public_staff, resolve_public_staff_choice, request_staff_web_code,
     verify_staff_web_code, cancel_staff_web_challenge, revoke_staff_web_session,
     STAFF_AUTO_CODES_KEY, is_staff_auto_codes_enabled, set_staff_auto_codes_mode, enable_all_staff_web_access,
 )

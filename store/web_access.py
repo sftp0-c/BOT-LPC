@@ -5,6 +5,7 @@ import json
 import re
 import secrets
 import time
+import unicodedata
 
 import clock
 import config
@@ -20,17 +21,21 @@ STAFF_WEB_SESSION_TTL = 12 * 3600
 STAFF_WEB_CODE_TTL = 5 * 60
 STAFF_WEB_CODE_ATTEMPTS = 5
 STAFF_WEB_RATE_RULES = {
+    "search": (("browser", 40, 600), ("peer", 600, 3600), ("global", 1200, 3600)),
     "request": (("browser", 5, 600), ("id", 5, 600), ("peer", 30, 3600)),
     "verify": (("browser", 15, 600), ("id", 15, 600), ("peer", 90, 3600)),
 }
+PUBLIC_STAFF_SEARCH_MIN = 3
+PUBLIC_STAFF_SEARCH_LIMIT = 6
 
 __all__ = (
     "WEB_PERMISSIONS", "WEB_WORK_PERMISSIONS", "WEB_PERMISSION_PRESETS",
     "get_staff_web_access", "list_staff_web_access", "set_staff_web_access",
     "revoke_staff_web_sessions", "staff_web_principal", "staff_web_principal_in_tx",
-    "normalize_staff_web_permissions", "normalize_staff_web_id",
-    "staff_web_secret", "staff_web_hash", "staff_web_session_hash",
-    "request_staff_web_code", "verify_staff_web_code", "cancel_staff_web_challenge",
+    "normalize_staff_web_permissions", "normalize_staff_web_id", "normalize_public_staff_search",
+    "staff_web_secret", "staff_web_hash", "staff_web_session_hash", "public_staff_choice_token",
+    "find_public_staff", "resolve_public_staff_choice", "request_staff_web_code",
+    "verify_staff_web_code", "cancel_staff_web_challenge",
     "revoke_staff_web_session", "STAFF_AUTO_CODES_KEY", "is_staff_auto_codes_enabled",
     "set_staff_auto_codes_mode", "enable_all_staff_web_access",
 )
@@ -94,6 +99,29 @@ def normalize_staff_web_id(value: str) -> str:
     return value
 
 
+def normalize_public_staff_search(value: str) -> str:
+    """Нормализует открытый поиск без SQL-шаблонов и управляющих символов."""
+    if not isinstance(value, str):
+        return ""
+    value = unicodedata.normalize("NFKC", value)
+    if any(unicodedata.category(char).startswith("C") for char in value):
+        return ""
+    value = " ".join(value.split())
+    if not PUBLIC_STAFF_SEARCH_MIN <= len(value) <= 80:
+        return ""
+    return value.casefold().replace("ё", "е")
+
+
+def public_staff_choice_token(user_id: str, browser_hash: str, expires: int, *, now: int | None = None) -> str:
+    """Непрозрачный выбор сотрудника, привязанный к браузеру и сроку формы."""
+    user_id = normalize_staff_web_id(user_id)
+    now = _now() if now is None else int(now)
+    if not user_id or not _valid_hash(browser_hash) or not now < int(expires) <= now + 600:
+        return ""
+    signature = staff_web_hash("staff-choice", f"{browser_hash}:{int(expires)}:{user_id}")
+    return _PrivateText(f"{int(expires)}.{signature}")
+
+
 def normalize_staff_web_permissions(permissions) -> list[str]:
     if not isinstance(permissions, (list, tuple, set, frozenset)) or any(
             not isinstance(item, str) or item not in WEB_PERMISSIONS for item in permissions):
@@ -109,6 +137,81 @@ def _read_permissions(raw: str) -> list[str]:
         return normalize_staff_web_permissions(json.loads(raw))
     except (ValueError, TypeError):
         raise ValueError("Повреждены права веб-доступа") from None
+
+
+def _public_staff_text(value: str, limit: int) -> str:
+    value = unicodedata.normalize("NFKC", str(value or ""))
+    if any(unicodedata.category(char).startswith("C") for char in value):
+        return ""
+    return " ".join(value.split())[:limit]
+
+
+async def find_public_staff(search: str, browser_hash: str, peer_hash: str, *, browser_expires: int,
+                            now: int | None = None) -> list[dict] | None:
+    """Публичные ФИО/должности без MAX ID; None означает исчерпанный лимит."""
+    needle = normalize_public_staff_search(search)
+    if not needle:
+        return []
+    live_clock = now is None
+    now = _now() if now is None else int(now)
+    if not _valid_hash(browser_hash) or not _valid_hash(peer_hash) or not now < browser_expires <= now + 600:
+        raise ValueError("Некорректный контекст поиска")
+    async with db._conn() as conn:
+        await conn.execute("BEGIN IMMEDIATE")
+        if live_clock:
+            now = _now()
+        if browser_expires <= now:
+            await conn.rollback()
+            return []
+        await _prune_in_tx(conn, now)
+        if not await _take_rates(conn, "search", now, browser_hash, "", peer_hash):
+            await conn.commit()
+            return None
+        rows = await (await conn.execute(
+            "SELECT user_id,full_name,position FROM admins "
+            "WHERE role_type='staff' AND is_test=0 ORDER BY full_name,user_id"
+        )).fetchall()
+        await conn.commit()
+    found = []
+    for row in rows:
+        user_id = normalize_staff_web_id(row["user_id"])
+        name = _public_staff_text(row["full_name"], 100)
+        position = _public_staff_text(row["position"], 100)
+        # Служебная подпись «Сотрудник <MAX ID>» не должна публиковать сам ID.
+        if not user_id or not name or user_id in name or user_id in position:
+            continue
+        name_key = normalize_public_staff_search(name) or name.casefold().replace("ё", "е")
+        position_key = normalize_public_staff_search(position) or position.casefold().replace("ё", "е")
+        if needle not in name_key and needle not in position_key:
+            continue
+        words = name_key.split()
+        rank = 0 if any(word.startswith(needle) for word in words) else 1
+        found.append((rank, name_key, user_id, name, position))
+    found.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [{"name": item[3], "position": item[4],
+             "token": public_staff_choice_token(item[2], browser_hash, browser_expires, now=now)}
+            for item in found[:PUBLIC_STAFF_SEARCH_LIMIT]]
+
+
+async def resolve_public_staff_choice(token: str, browser_hash: str, *, now: int | None = None) -> str:
+    """Разрешает подписанный выбор только в текущего действующего сотрудника."""
+    now = _now() if now is None else int(now)
+    if not _valid_hash(browser_hash) or not isinstance(token, str)             or not re.fullmatch(r"[0-9]{1,12}\.[0-9a-f]{64}", token):
+        return ""
+    expires_text, signature = token.split(".", 1)
+    expires = int(expires_text)
+    if not now < expires <= now + 600:
+        return ""
+    rows = await db.many("SELECT user_id FROM admins WHERE role_type='staff' AND is_test=0")
+    selected = ""
+    for row in rows:
+        user_id = normalize_staff_web_id(row["user_id"])
+        if not user_id:
+            continue
+        expected = staff_web_hash("staff-choice", f"{browser_hash}:{expires}:{user_id}")
+        if hmac.compare_digest(signature, expected):
+            selected = user_id
+    return _PrivateText(selected)
 
 
 async def get_staff_web_access(user_id: str) -> dict | None:
@@ -252,7 +355,8 @@ async def _prune_in_tx(conn, now: int) -> None:
 
 
 async def _take_rates(conn, phase: str, now: int, browser_hash: str, id_hash: str, peer_hash: str) -> bool:
-    keys = {"browser": browser_hash, "id": id_hash, "peer": peer_hash}
+    keys = {"browser": browser_hash, "id": id_hash, "peer": peer_hash,
+            "global": staff_web_hash("rate-global", phase)}
     rules = [(f"{phase}:{kind}:{keys[kind]}", maximum, window)
              for kind, maximum, window in STAFF_WEB_RATE_RULES[phase] if keys[kind]]
     for key, maximum, _window in rules:
@@ -269,8 +373,11 @@ async def _take_rates(conn, phase: str, now: int, browser_hash: str, id_hash: st
 
 
 async def request_staff_web_code(user_id: str, browser_hash: str, peer_hash: str, *,
-                                 browser_expires: int, now: int | None = None) -> dict:
+                                 browser_expires: int, now: int | None = None,
+                                 allow_auto_access: bool = True) -> dict:
     """Результат для HTTP одинаков; код/адресат доступны лишь внутреннему отправителю."""
+    if type(allow_auto_access) is not bool:
+        raise ValueError("Некорректная политика веб-доступа")
     live_clock = now is None
     now = _now() if now is None else now
     if not _valid_hash(browser_hash) or not _valid_hash(peer_hash) or not now < browser_expires <= now + 600:
@@ -303,7 +410,7 @@ async def request_staff_web_code(user_id: str, browser_hash: str, peer_hash: str
                 _read_permissions(row["permissions"])
             except ValueError:
                 row = None
-        elif row and row["enabled"] is None and await is_staff_auto_codes_enabled():
+        elif row and row["enabled"] is None and allow_auto_access and await is_staff_auto_codes_enabled():
             default_perms = json.dumps(list(WEB_WORK_PERMISSIONS), separators=(",", ":"))
             await conn.execute(
                 "INSERT INTO staff_web_access(user_id,enabled,permissions,auth_version,created_at,updated_at,updated_by) "

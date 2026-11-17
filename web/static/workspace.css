@@ -326,6 +326,20 @@ body.ws-auth {
 .ws-auth .ws-auth-field { margin: 0; color: var(--ink-soft); font-size: 14px; font-weight: var(--weight-semi); }
 .ws-auth-form :is(input:not([type=hidden]), select) { background: var(--surface-sunken); border-color: var(--line-strong); }
 .ws-auth-form input:focus { background: var(--surface); border-color: var(--acc); box-shadow: var(--shadow-focus); }
+.ws-auth-form input[aria-invalid=true] { border-color: var(--bad); }
+.ws-staff-combobox { position: relative; }
+.ws-staff-combobox > input { width: 100%; }
+.ws-staff-results { position: absolute; z-index: 5; top: calc(100% + 6px); left: 0; right: 0;
+  max-height: min(320px, 42vh); overflow-y: auto; padding: 6px; border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md); background: var(--surface); box-shadow: var(--shadow-md); }
+.ws-staff-results[hidden] { display: none; }
+.ws-staff-option { width: 100%; min-height: 52px; display: flex; flex-direction: column; align-items: flex-start;
+  gap: 2px; padding: 10px 12px; border: 0; border-radius: var(--radius-sm); color: var(--ink);
+  background: transparent; text-align: left; cursor: pointer; }
+.ws-staff-option:hover, .ws-staff-option.is-active { color: var(--ink); background: var(--surface-raised); }
+.ws-staff-option strong { font-size: 14px; font-weight: var(--weight-semi); }
+.ws-staff-option span { color: var(--mut); font-size: 12px; line-height: 1.45; }
+.ws-staff-status { min-height: 20px; margin: 0; color: var(--mut); font-size: 12px; line-height: 1.5; }
 .ws-auth-form input[name=code] { font-size: 25px; letter-spacing: .28em; font-variant-numeric: tabular-nums; }
 .ws-auth-form .btn-primary, .ws-auth-form .ws-btn-primary { width: 100%; margin: 0; min-height: 48px; font-size: 15px; }
 .ws-auth .ws-auth-hint { color: var(--mut); font-size: 13px; line-height: 1.65; margin: 0; }

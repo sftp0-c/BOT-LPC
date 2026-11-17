@@ -50,9 +50,27 @@ def hidden(response, name):
     return found[1]
 
 
+def search_staff(client, query="Анна"):
+    login = client.get("/workspace/login")
+    return login, client.post("/workspace/login/staff-search",
+                              data={"q": query, "csrf": hidden(login, "csrf")},
+                              headers={"Origin": "https://college.example"})
+
+
+def staff_token(client, query="Анна"):
+    _login, response = search_staff(client, query)
+    assert response.status_code == 200
+    results = response.json()["results"]
+    assert results
+    return results[0]["token"]
+
+
 def request_code(client, user_id="7123456789"):
     login = client.get("/workspace/login")
-    return client.post("/workspace/login/request", data={"user_id": user_id, "csrf": hidden(login, "csrf")},
+    browser = access.staff_web_hash("browser-id", client.cookies.get(auth.WORKSPACE_BROWSER_COOKIE))
+    expires = auth._browser_expires(client.cookies.get(auth.WORKSPACE_BROWSER_COOKIE), auth._now())
+    token = access.public_staff_choice_token(user_id, browser, expires)
+    return client.post("/workspace/login/request", data={"staff_token": token, "csrf": hidden(login, "csrf")},
                        headers={"Origin": "https://college.example"})
 
 
@@ -70,6 +88,109 @@ def login_staff(client, api):
     response = request_code(client)
     assert verify_code(client, response, last_code(api)).status_code == 303
     return client.cookies.get(auth.STAFF_WEB_COOKIE)
+
+
+async def test_public_staff_search_returns_names_positions_and_opaque_browser_bound_tokens(ws_client, staff_auth):
+    await db.run("INSERT INTO admins(user_id,full_name,role_type,position) VALUES(?,?,?,?)",
+                 ("7222222222", "Иванова Мария Петровна", "staff", "Зам. директора"))
+    await db.run("INSERT INTO admins(user_id,full_name,role_type,position,is_test) VALUES(?,?,?,?,1)",
+                 ("7333333333", "Иванова Тестовая", "staff", "Секретарь"))
+    await db.run("INSERT INTO admins(user_id,full_name,role_type,position) VALUES(?,?,?,?)",
+                 ("7444444444", "Иванова Системная", "sysadmin", "Сис-админ"))
+    login, response = search_staff(ws_client, "иван")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    payload = response.json()
+    assert payload == {"results": [{"name": "Иванова Мария Петровна", "position": "Зам. директора",
+                                      "token": payload["results"][0]["token"]}]}
+    encoded = response.text
+    assert "7222222222" not in encoded and "7333333333" not in encoded and "7444444444" not in encoded
+    choice = payload["results"][0]["token"]
+    assert re.fullmatch(r"[0-9]{1,12}\.[0-9a-f]{64}", choice)
+    assert "7222222222" not in choice
+    cookie = ws_client.cookies.get(auth.WORKSPACE_BROWSER_COOKIE)
+    browser = access.staff_web_hash("browser-id", cookie)
+    assert await access.resolve_public_staff_choice(choice, browser) == "7222222222"
+    other = access.staff_web_hash("browser-id", auth._new_browser(auth._now()))
+    assert await access.resolve_public_staff_choice(choice, other) == ""
+    assert hidden(login, "staff_token") == ""
+
+
+@pytest.mark.parametrize("query", ["", "ив", "  ", "x%_", "\x00иванов"])
+async def test_public_staff_search_rejects_short_empty_pattern_and_control_queries(ws_client, staff_auth, query):
+    _login, response = search_staff(ws_client, query)
+    assert response.status_code == 200
+    assert response.json() == {"results": []}
+    assert not await db.many("SELECT * FROM staff_web_login_challenges")
+
+
+async def test_search_supports_position_case_and_yo_normalization_without_ids(ws_client, staff_auth):
+    await db.run("INSERT INTO admins(user_id,full_name,role_type,position) VALUES(?,?,?,?)",
+                 ("7222222222", "Фёдорова Елена", "staff", "Заместитель директора"))
+    _login, by_name = search_staff(ws_client, "фед")
+    assert [item["name"] for item in by_name.json()["results"]] == ["Фёдорова Елена"]
+    _login, by_position = search_staff(ws_client, "ДИРЕК")
+    assert [item["name"] for item in by_position.json()["results"]] == ["Фёдорова Елена"]
+    assert "7222222222" not in by_name.text + by_position.text
+
+
+async def test_public_selection_never_auto_grants_access(ws_client, staff_auth):
+    await db.run("INSERT INTO admins(user_id,full_name,role_type,position) VALUES(?,?,?,?)",
+                 ("7222222222", "Иванова Без Доступа", "staff", "Преподаватель"))
+    assert await access.is_staff_auto_codes_enabled()
+    login, found = search_staff(ws_client, "Иванова")
+    selected = found.json()["results"][0]["token"]
+    response = ws_client.post("/workspace/login/request",
+                              data={"csrf": hidden(login, "csrf"), "staff_token": selected},
+                              headers={"Origin": "https://college.example"})
+    assert response.status_code == 200 and auth.NEUTRAL_REQUEST in response.text
+    assert not staff_auth.sent
+    assert await access.get_staff_web_access("7222222222") is None
+    challenge = await db.one("SELECT user_id,auth_version FROM staff_web_login_challenges")
+    assert challenge["user_id"] == "" and challenge["auth_version"] == 0
+
+
+async def test_public_selection_tamper_expiry_role_change_and_duplicate_fields_fail_closed(ws_client, staff_auth):
+    login, found = search_staff(ws_client, "Анна")
+    selected = found.json()["results"][0]["token"]
+    tampered = selected[:-1] + ("0" if selected[-1] != "0" else "1")
+    for token in ("", "invalid", tampered):
+        response = ws_client.post("/workspace/login/request",
+                                  data={"csrf": hidden(login, "csrf"), "staff_token": token},
+                                  headers={"Origin": "https://college.example"})
+        assert response.status_code == 200 and auth.NEUTRAL_REQUEST in response.text
+    assert not staff_auth.sent
+    encoded = urlencode({"csrf": hidden(login, "csrf"), "staff_token": selected}) + "&staff_token=" + selected
+    duplicate = ws_client.post("/workspace/login/request", content=encoded,
+                               headers={"Origin": "https://college.example",
+                                        "Content-Type": "application/x-www-form-urlencoded"})
+    assert duplicate.status_code == 400
+    await db.run("UPDATE admins SET role_type='sysadmin' WHERE user_id='7123456789'")
+    changed = ws_client.post("/workspace/login/request",
+                             data={"csrf": hidden(login, "csrf"), "staff_token": selected},
+                             headers={"Origin": "https://college.example"})
+    assert changed.status_code == 200 and not staff_auth.sent
+
+
+async def test_public_search_requires_csrf_origin_and_rate_limits(ws_client, staff_auth, monkeypatch):
+    login = ws_client.get("/workspace/login")
+    csrf = hidden(login, "csrf")
+    assert ws_client.post("/workspace/login/staff-search", data={"q": "Анна"},
+                          headers={"Origin": "https://college.example"}).status_code == 403
+    assert ws_client.post("/workspace/login/staff-search", data={"q": "Анна", "csrf": csrf},
+                          headers={"Origin": "https://evil.example"}).status_code == 403
+    monkeypatch.setitem(access.STAFF_WEB_RATE_RULES, "search",
+                        (("browser", 2, 600), ("peer", 20, 3600), ("global", 20, 3600)))
+    first = ws_client.post("/workspace/login/staff-search", data={"q": "Анна", "csrf": csrf},
+                           headers={"Origin": "https://college.example"})
+    second = ws_client.post("/workspace/login/staff-search", data={"q": "Анна", "csrf": csrf},
+                            headers={"Origin": "https://college.example"})
+    limited = ws_client.post("/workspace/login/staff-search", data={"q": "Анна", "csrf": csrf},
+                             headers={"Origin": "https://college.example"})
+    assert first.status_code == second.status_code == 200
+    assert limited.status_code == 429 and limited.headers["retry-after"] == "600"
+    for row in await db.many("SELECT bucket_key FROM staff_web_rate_buckets"):
+        assert "Анна" not in row["bucket_key"] and "7123456789" not in row["bucket_key"]
 
 
 async def test_code_login_is_separate_and_revocable(ws_client, staff_auth):
@@ -157,7 +278,7 @@ async def test_login_post_requires_csrf_origin_and_live_browser(ws_client, staff
     page = ws_client.get("/workspace/login")
     token = hidden(page, "csrf")
     cookie = ws_client.cookies.get(auth.WORKSPACE_BROWSER_COOKIE)
-    data = {"csrf": token, **({"user_id": "7123456789"} if path.endswith("request") else {"challenge": "x", "code": "12345678"})}
+    data = {"csrf": token, **({"staff_token": "invalid"} if path.endswith("request") else {"challenge": "x", "code": "12345678"})}
     headers = {"Origin": "https://college.example"}
     if bad == "missing":
         data.pop("csrf")
@@ -209,7 +330,9 @@ async def test_login_security_headers_and_no_panel_navigation(ws_client):
     assert 'action="/panel/' not in response.text
     assert 'href="/panel/database' not in response.text
     assert 'name="remember"' not in response.text
-    assert 'aria-describedby="id-hint"' in response.text
+    assert 'aria-describedby="staff-hint staff-status"' in response.text
+    assert '/workspace/assets/workspace-login.js' in response.text
+    assert 'name="user_id"' not in response.text
 
 
 async def test_request_rate_limits_survive_reload_and_sqlite_reopen(ws_client, staff_auth):
@@ -293,7 +416,9 @@ async def test_delivery_failure_and_debug_logs_never_expose_secrets(ws_client, s
 
     monkeypatch.setattr(bot_common.api, "send", failed_send)
     caplog.set_level(logging.DEBUG)
-    response = ws_client.post("/workspace/login/request", data={"csrf": hidden(page, "csrf"), "user_id": "7123456789"},
+    browser = access.staff_web_hash("browser-id", cookie)
+    selected = access.public_staff_choice_token("7123456789", browser, auth._browser_expires(cookie, auth._now()))
+    response = ws_client.post("/workspace/login/request", data={"csrf": hidden(page, "csrf"), "staff_token": selected},
                               headers={"Origin": "https://college.example", "User-Agent": "PRIVATE-UA-9227",
                                        "X-Forwarded-For": "198.51.100.177"})
     assert response.status_code == 200 and auth.NEUTRAL_REQUEST in response.text
@@ -321,7 +446,7 @@ async def test_sessions_absolute_expiry_and_secret_rotation(ws_client, staff_aut
 @pytest.mark.parametrize("kind", ["oversized", "multipart", "duplicate", "encoding"])
 async def test_login_body_limit_and_parser(ws_client, kind):
     page = ws_client.get("/workspace/login")
-    payload = urlencode({"csrf": hidden(page, "csrf"), "user_id": "7123456789"})
+    payload = urlencode({"csrf": hidden(page, "csrf"), "staff_token": "invalid"})
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
     expected = 400
     if kind == "oversized":
@@ -332,7 +457,7 @@ async def test_login_body_limit_and_parser(ws_client, kind):
         headers["Content-Type"] = "multipart/form-data"
         expected = 415
     elif kind == "duplicate":
-        payload += "&user_id=7123456789"
+        payload += "&staff_token=invalid"
     else:
         payload += "&broken=%ZZ"
     response = ws_client.post("/workspace/login/request", content=payload, headers=headers)
@@ -371,10 +496,10 @@ async def test_secure_cookie_uses_trusted_config_not_forwarded_headers(staff_aut
 
 
 async def test_successful_login_debug_logs_hide_token_hash_code_and_id(ws_client, staff_auth, caplog):
-    page = ws_client.get("/workspace/login")
+    ws_client.get("/workspace/login")
     browser_cookie = ws_client.cookies.get(auth.WORKSPACE_BROWSER_COOKIE)
     caplog.set_level(logging.DEBUG)
-    response = ws_client.post("/workspace/login/request", data={"csrf": hidden(page, "csrf"), "user_id": "7123456789"})
+    response = request_code(ws_client)
     code, challenge = last_code(staff_auth), hidden(response, "challenge")
     assert verify_code(ws_client, response, code).status_code == 303
     token = ws_client.cookies.get(auth.STAFF_WEB_COOKIE)
@@ -431,7 +556,7 @@ async def test_auth_composition_keeps_real_forms_and_no_private_demo_data(ws_cli
 
 
 async def test_auth_error_uses_the_same_composition(ws_client):
-    response = ws_client.post("/workspace/login/request", data={"csrf": "wrong", "user_id": "1"})
+    response = ws_client.post("/workspace/login/request", data={"csrf": "wrong", "staff_token": "invalid"})
     assert response.status_code == 403
     assert 'class="ws-auth-card"' in response.text and 'class="ws-auth-header"' in response.text
     assert 'id="auth-title">Не удалось войти' in response.text

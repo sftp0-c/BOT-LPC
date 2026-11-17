@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "web" / "workspace_view.py"
 CSS = ROOT / "web" / "static" / "workspace.css"
 JS = ROOT / "web" / "static" / "workspace.js"
+LOGIN_JS = ROOT / "web" / "static" / "workspace-login.js"
 SPEC = importlib.util.spec_from_file_location("workspace_renderer_tested", SOURCE)
 view = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(view)
@@ -532,16 +533,21 @@ def test_css_tokens_scoping_mobile_accessibility_and_auth():
 
 def test_js_no_html_injection_no_localstorage_or_caret_jumps():
     js = JS.read_text(encoding="utf-8-sig")
-    for forbidden in ("innerHTML", "outerHTML", "insertAdjacentHTML", "localStorage", "eval(", "setSelectionRange", ".focus(", "history.pushState", "location.replace"):
-        assert forbidden not in js
-    assert "sessionStorage" in js and "JSON.stringify" in js and "textContent" in js
-    assert 'credentials: "same-origin"' in js and 'redirect: "error"' in js
+    login_js = LOGIN_JS.read_text(encoding="utf-8-sig")
+    for source in (js, login_js):
+        for forbidden in ("innerHTML", "outerHTML", "insertAdjacentHTML", "localStorage", "eval(",
+                          "setSelectionRange", ".focus(", "history.pushState", "location.replace"):
+            assert forbidden not in source
+        assert "textContent" in source
+        assert 'credentials: "same-origin"' in source and 'redirect: "error"' in source
+        assert 'input[name="csrf"]' in source
+    assert "sessionStorage" in js and "JSON.stringify" in js
     assert 'Accept: "text/plain, application/json"' in js
-    assert 'input[name="csrf"]' in js
+    assert 'Accept": "application/json"' in login_js
     assert '"beforeunload"' in js and '"pageshow"' in js
 
 
-@pytest.mark.parametrize("path", [SOURCE, CSS, JS, Path(__file__)])
+@pytest.mark.parametrize("path", [SOURCE, CSS, JS, LOGIN_JS, Path(__file__)])
 def test_sources_utf8_bom_and_readable_russian(path):
     data = path.read_bytes()
     assert data.startswith(b"\xef\xbb\xbf")
